@@ -6,6 +6,7 @@ namespace Psalm\Internal\Fork;
 
 use Composer\XdebugHandler\XdebugHandler;
 use Override;
+use Psalm\JitMode;
 
 use function array_merge;
 use function array_splice;
@@ -55,7 +56,7 @@ final class PsalmRestarter extends XdebugHandler
         'jit_blacklist_side_trace' => 255,
     ];
 
-    public bool $enableJit = false;
+    public JitMode $jitMode = JitMode::Auto;
 
     private bool $required = false;
 
@@ -194,12 +195,17 @@ final class PsalmRestarter extends XdebugHandler
         parent::restart($command);
     }
 
+    private function shouldEnableJit(): bool
+    {
+        return $this->jitMode !== JitMode::Off;
+    }
+
     /**
      * @return array<string, int|string>
      */
     private function getEffectiveOpcacheSettings(): array
     {
-        if ($this->enableJit) {
+        if ($this->shouldEnableJit()) {
             return self::REQUIRED_OPCACHE_SETTINGS + self::JIT_OPCACHE_SETTINGS;
         }
 
@@ -214,7 +220,7 @@ final class PsalmRestarter extends XdebugHandler
         // Reserve for byte-codes
         $result = 256;
 
-        if ($this->enableJit) {
+        if ($this->shouldEnableJit()) {
             $result += self::JIT_OPCACHE_SETTINGS['jit_buffer_size'] / 1024 / 1024;
         }
 

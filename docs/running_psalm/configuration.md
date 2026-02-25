@@ -262,10 +262,14 @@ When `true`, Psalm will attempt to find all unused code (including unused variab
 #### forceJit
 ```xml
 <psalm
-  forceJit="[bool]"
+  forceJit="auto|on|off"
 >
 ```
-When `true`, Psalm will enable JIT acceleration and exit immediately if it cannot be enabled, the equivalent of running with `--force-jit`. When `false` (default), Psalm runs without JIT.
+Controls JIT acceleration behavior. Accepts `auto` (default), `on`, or `off`. For backward compatibility, `true` maps to `on` and `false` maps to `off`.
+
+- **`auto`** — enable JIT when available, continue without it if not
+- **`on`** — enable JIT and exit immediately if it cannot be enabled (equivalent to `--force-jit`)
+- **`off`** — never enable JIT
 
 #### noCache
 ```xml

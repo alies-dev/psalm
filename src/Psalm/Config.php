@@ -415,7 +415,7 @@ final class Config
 
     public bool $all_constants_global = false;
 
-    public bool $force_jit = false;
+    public JitMode $jit_mode = JitMode::Auto;
 
     public int $max_graph_size = 200;
 
@@ -1156,8 +1156,7 @@ final class Config
         }
 
         if (isset($config_xml['forceJit'])) {
-            $attribute_text = (string) $config_xml['forceJit'];
-            $config->force_jit = $attribute_text === 'true' || $attribute_text === '1';
+            $config->jit_mode = JitMode::fromConfig((string) $config_xml['forceJit']);
         }
 
         if (isset($config_xml['findUnusedVariablesAndParams'])) {
