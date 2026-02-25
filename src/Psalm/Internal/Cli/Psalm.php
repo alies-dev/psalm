@@ -8,6 +8,7 @@ use Composer\Autoload\ClassLoader;
 use Fidry\CpuCoreCounter\CpuCoreCounter;
 use Psalm\Config;
 use Psalm\Config\Creator;
+use Psalm\JitMode;
 use Psalm\ErrorBaseline;
 use Psalm\Exception\ConfigCreationException;
 use Psalm\Exception\ConfigException;
@@ -286,8 +287,8 @@ final class Psalm
 
         $progress = self::initProgress($options, $config, $in_ci);
 
-        $force_jit = $config->force_jit || isset($options['force-jit']);
-        self::restart($options, $force_jit, $threads, $scanThreads, $progress);
+        $jit_mode = isset($options['force-jit']) ? JitMode::On : $config->jit_mode;
+        self::restart($options, $jit_mode, $threads, $scanThreads, $progress);
 
         if (isset($options['debug-emitted-issues'])) {
             $config->debug_emitted_issues = true;
@@ -947,13 +948,13 @@ final class Psalm
 
     private static function restart(
         array $options,
-        bool $force_jit,
+        JitMode $jit_mode,
         int $threads,
         int $scanThreads,
         Progress $progress,
     ): void {
         $ini_handler = new PsalmRestarter('PSALM');
-        $ini_handler->enableJit = $force_jit;
+        $ini_handler->jitMode = $jit_mode;
 
         if (isset($options['disable-extension'])) {
             if (is_array($options['disable-extension'])) {
@@ -1002,19 +1003,23 @@ final class Psalm
                 $progress->write(PHP_EOL
                     . 'JIT acceleration: ON'
                     . PHP_EOL . PHP_EOL);
-            } elseif ($force_jit) {
+            } elseif ($jit_mode === JitMode::On) {
                 $progress->write(PHP_EOL
                     . 'JIT acceleration: OFF (an error occurred while enabling JIT)' . PHP_EOL
                     . 'Please report this to https://github.com/vimeo/psalm with your OS and PHP configuration!'
                     . PHP_EOL . PHP_EOL);
+            } elseif ($jit_mode === JitMode::Off) {
+                $progress->write(PHP_EOL
+                    . 'JIT acceleration: OFF (disabled via config)'
+                    . PHP_EOL . PHP_EOL);
             }
-        } elseif ($force_jit) {
+        } elseif ($jit_mode === JitMode::On) {
             $progress->write(PHP_EOL
                 . 'JIT acceleration: OFF (opcache not installed or not enabled)' . PHP_EOL
                 . 'Install and enable the opcache extension to use JIT with --force-jit.'
                 . PHP_EOL . PHP_EOL);
         }
-        if ($force_jit && !$hasJit) {
+        if ($jit_mode === JitMode::On && !$hasJit) {
             $progress->write('Exiting because --force-jit was set but JIT is not available.' . PHP_EOL . PHP_EOL);
             exit(1);
         }
