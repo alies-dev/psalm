@@ -52,6 +52,7 @@ use Psalm\Type\Union;
 
 use function array_any;
 use function array_filter;
+use function array_key_first;
 use function array_merge;
 use function array_values;
 use function count;
@@ -471,9 +472,32 @@ final class FunctionLikeDocblockScanner
                         if (!isset($param_type_mapping[$token_body])) {
                             $template_name = 'TGeneratedFromParam' . $j;
                             if (isset($storage->template_types[$template_name])) {
+                                // The storage is being re-scanned (stub overriding a previously
+                                // scanned method). The TGeneratedFromParam template was created
+                                // during the first scan, but params were reset in between, so the
+                                // current $param_storage is fresh and still has the docblock type
+                                // rather than a TTemplateParam wrap. Without the wrap, argument
+                                // binding never sets a lower bound for this template at call time,
+                                // and replaceConditional falls back to a `never` bound, which makes
+                                // the conditional return type collapse to its null branch.
+                                $existing_template_function_id =
+                                    isset($storage->template_types[$template_name][$template_function_id])
+                                        ? $template_function_id
+                                        : array_key_first($storage->template_types[$template_name]);
+                                $existing_as_type =
+                                    $storage->template_types[$template_name][$existing_template_function_id];
+
                                 $function_template_types[$template_name]
                                     = $storage->template_types[$template_name];
                                 $param_type_mapping[$token_body] = $template_name;
+
+                                $param_storage->type = new Union([
+                                    new TTemplateParam(
+                                        $template_name,
+                                        $existing_as_type,
+                                        $existing_template_function_id,
+                                    ),
+                                ]);
                             } else {
                                 $template_as_type = $param_storage->type ?: Type::getMixed();
 

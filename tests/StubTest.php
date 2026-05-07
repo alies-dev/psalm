@@ -134,6 +134,66 @@ final class StubTest extends TestCase
         $this->analyzeFile($file_path, new Context());
     }
 
+    public function testStubOverridingScannedConditionalReturnPreservesParamBinding(): void
+    {
+        $this->project_analyzer = $this->getProjectAnalyzerWithConfig(
+            TestConfig::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm errorLevel="1">
+                    <projectFiles>
+                        <directory name="src" />
+                    </projectFiles>
+
+                    <stubs>
+                        <file name="tests/fixtures/stubs/conditional_return_with_this_overrides_extra.phpstub" />
+                    </stubs>
+                </psalm>',
+            ),
+        );
+
+        $extra_path = (string) getcwd() . '/extra/Route.php';
+        $this->addFile(
+            $extra_path,
+            '<?php
+                namespace Psalm\Tests\Fixtures\ConditionalThisOverride;
+
+                class Route
+                {
+                    /**
+                     * @param array|string|null $middleware
+                     * @return ($middleware is null ? array : $this)
+                     */
+                    public function middleware($middleware = null)
+                    {
+                        if ($middleware === null) {
+                            return [];
+                        }
+                        return $this;
+                    }
+                }',
+        );
+
+        $file_path = (string) getcwd() . '/src/somefile.php';
+        $this->addFile(
+            $file_path,
+            '<?php
+                use Psalm\Tests\Fixtures\ConditionalThisOverride\Route;
+
+                /** @return Route */
+                function returnsRouteFromNonNullArg(Route $route): Route {
+                    return $route->middleware(["x"]);
+                }
+
+                /** @return string[] */
+                function returnsArrayFromNullArg(Route $route): array {
+                    return $route->middleware(null);
+                }',
+        );
+
+        $this->analyzeFile($file_path, new Context());
+    }
+
     /**
      * @psalm-pure
      */
