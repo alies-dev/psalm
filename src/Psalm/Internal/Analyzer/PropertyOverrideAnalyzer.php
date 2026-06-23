@@ -10,7 +10,6 @@ use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Issue\InvalidOverride;
 use Psalm\Issue\MissingOverrideAttribute;
 use Psalm\IssueBuffer;
-use Psalm\StatementsSource;
 use Psalm\Storage\ClassLikeStorage;
 use Psalm\Storage\PropertyStorage;
 
@@ -29,7 +28,7 @@ use Psalm\Storage\PropertyStorage;
 final class PropertyOverrideAnalyzer
 {
     public static function analyze(
-        StatementsSource $source,
+        SourceAnalyzer $source,
         Codebase $codebase,
         ClassLikeStorage $class_storage,
         string $property_name,
@@ -90,7 +89,7 @@ final class PropertyOverrideAnalyzer
         if (!$can_apply_fix
             || !$codebase->alter_code
             || $property_storage->stmt_location === null
-            || !isset(ProjectAnalyzer::getInstance()->getIssuesToFix()['MissingOverrideAttribute'])
+            || !isset($source->getProjectAnalyzer()->getIssuesToFix()['MissingOverrideAttribute'])
         ) {
             return;
         }
@@ -122,12 +121,12 @@ final class PropertyOverrideAnalyzer
         // Interface properties (abstract property hooks, PHP 8.4+) are not copied into the
         // implementing class, so check the implemented interfaces directly. This keeps property
         // handling consistent with methods, whose getOverriddenMethodIds() already spans interfaces.
-        foreach ($class_storage->class_implements as $interface_fqcln) {
-            if (!$codebase->classlike_storage_provider->has($interface_fqcln)) {
+        foreach ($class_storage->class_implements as $interface_fqcln_lc => $_) {
+            if (!$codebase->classlike_storage_provider->has($interface_fqcln_lc)) {
                 continue;
             }
 
-            $interface_storage = $codebase->classlike_storage_provider->get($interface_fqcln);
+            $interface_storage = $codebase->classlike_storage_provider->get($interface_fqcln_lc);
 
             if (isset($interface_storage->properties[$property_name])
                 && $interface_storage->properties[$property_name]->visibility
