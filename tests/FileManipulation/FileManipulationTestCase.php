@@ -20,6 +20,12 @@ abstract class FileManipulationTestCase extends TestCase
 {
     protected ProjectAnalyzer $project_analyzer;
 
+    /**
+     * Subclasses that exercise the `#[\Override]` fixer opt in by setting this to true, since the
+     * shared {@see TestConfig} disables the requirement by default.
+     */
+    protected bool $ensure_override_attribute = false;
+
     #[Override]
     public function setUp(): void
     {
@@ -46,6 +52,7 @@ abstract class FileManipulationTestCase extends TestCase
         }
 
         $config = new TestConfig();
+        $config->ensure_override_attribute = $this->ensure_override_attribute;
 
         $this->project_analyzer = new ProjectAnalyzer(
             $config,
