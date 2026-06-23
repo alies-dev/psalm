@@ -14,7 +14,9 @@ use Psalm\Internal\Analyzer\NamespaceAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\SimpleTypeInferer;
 use Psalm\Internal\Analyzer\Statements\ExpressionAnalyzer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
+use Psalm\Internal\PhpVersionDeprecations;
 use Psalm\Internal\Provider\NodeDataProvider;
+use Psalm\Issue\DeprecatedConstant;
 use Psalm\Issue\ForbiddenCode;
 use Psalm\Issue\UndefinedConstant;
 use Psalm\IssueBuffer;
@@ -87,6 +89,23 @@ final class ConstFetchAnalyzer
                     $fq_const_name = $const_name;
                 } else {
                     $fq_const_name = Type::getFQCLNFromString($const_name, $statements_analyzer->getAliases());
+                }
+
+                $php_version_deprecation = PhpVersionDeprecations::getDeprecatedConstantMessage(
+                    $const_name,
+                    $codebase->analysis_php_version_id,
+                );
+
+                if ($php_version_deprecation !== null
+                    && self::getGlobalConstType($codebase, $fq_const_name, $const_name) !== null
+                ) {
+                    IssueBuffer::maybeAdd(
+                        new DeprecatedConstant(
+                            $php_version_deprecation,
+                            new CodeLocation($statements_analyzer->getSource(), $stmt),
+                        ),
+                        $statements_analyzer->getSuppressedIssues(),
+                    );
                 }
 
                 $codebase->analyzer->addNodeReference(

@@ -234,6 +234,7 @@
             <xs:element name="ConstantDeclarationInTrait" type="IssueHandlerType" minOccurs="0" />
             <xs:element name="ConstructorSignatureMismatch" type="IssueHandlerType" minOccurs="0" />
             <xs:element name="ContinueOutsideLoop" type="IssueHandlerType" minOccurs="0" />
+            <xs:element name="DeprecatedCast" type="IssueHandlerType" minOccurs="0" />
             <xs:element name="DeprecatedClass" type="ClassIssueHandlerType" minOccurs="0" />
             <xs:element name="DeprecatedConstant" type="IssueHandlerType" minOccurs="0" />
             <xs:element name="DeprecatedFunction" type="FunctionIssueHandlerType" minOccurs="0" />

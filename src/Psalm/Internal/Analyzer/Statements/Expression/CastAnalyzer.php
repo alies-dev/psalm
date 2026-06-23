@@ -15,6 +15,7 @@ use Psalm\Internal\Codebase\VariableUseGraph;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Type\TypeCombiner;
+use Psalm\Issue\DeprecatedCast;
 use Psalm\Issue\InvalidCast;
 use Psalm\Issue\PossiblyInvalidCast;
 use Psalm\Issue\RedundantCast;
@@ -75,6 +76,8 @@ final class CastAnalyzer
         PhpParser\Node\Expr\Cast $stmt,
         Context $context,
     ): bool {
+        self::checkDeprecatedCastKind($statements_analyzer, $stmt);
+
         if ($stmt instanceof PhpParser\Node\Expr\Cast\Int_) {
             if (ExpressionAnalyzer::analyze($statements_analyzer, $stmt->expr, $context) === false) {
                 return false;
@@ -307,6 +310,49 @@ final class CastAnalyzer
         );
 
         return false;
+    }
+
+    /**
+     * PHP 8.5 deprecates the non-canonical scalar cast spellings ((boolean),
+     * (integer), (double), (binary)) in favour of the canonical short ones.
+     * php-parser records the spelling actually used in the node's "kind"
+     * attribute, which is how the deprecated alias is told apart from the
+     * canonical cast that produces the same node type.
+     */
+    private static function checkDeprecatedCastKind(
+        StatementsAnalyzer $statements_analyzer,
+        PhpParser\Node\Expr\Cast $stmt,
+    ): void {
+        if ($statements_analyzer->getCodebase()->analysis_php_version_id < 8_05_00) {
+            return;
+        }
+
+        $kind = (int) $stmt->getAttribute('kind');
+
+        $spellings = match (true) {
+            $stmt instanceof PhpParser\Node\Expr\Cast\Bool_
+                && $kind === PhpParser\Node\Expr\Cast\Bool_::KIND_BOOLEAN => ['boolean', 'bool'],
+            $stmt instanceof PhpParser\Node\Expr\Cast\Int_
+                && $kind === PhpParser\Node\Expr\Cast\Int_::KIND_INTEGER => ['integer', 'int'],
+            $stmt instanceof PhpParser\Node\Expr\Cast\Double
+                && $kind === PhpParser\Node\Expr\Cast\Double::KIND_DOUBLE => ['double', 'float'],
+            $stmt instanceof PhpParser\Node\Expr\Cast\String_
+                && $kind === PhpParser\Node\Expr\Cast\String_::KIND_BINARY => ['binary', 'string'],
+            default => null,
+        };
+
+        if ($spellings === null) {
+            return;
+        }
+
+        IssueBuffer::maybeAdd(
+            new DeprecatedCast(
+                'The (' . $spellings[0] . ') cast is deprecated since PHP 8.5; use ('
+                    . $spellings[1] . ') instead',
+                new CodeLocation($statements_analyzer->getSource(), $stmt),
+            ),
+            $statements_analyzer->getSuppressedIssues(),
+        );
     }
 
     public static function castIntAttempt(

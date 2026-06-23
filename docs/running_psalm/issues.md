@@ -15,6 +15,7 @@
  - [ConstantDeclarationInTrait](issues/ConstantDeclarationInTrait.md)
  - [ConstructorSignatureMismatch](issues/ConstructorSignatureMismatch.md)
  - [ContinueOutsideLoop](issues/ContinueOutsideLoop.md)
+ - [DeprecatedCast](issues/DeprecatedCast.md)
  - [DeprecatedClass](issues/DeprecatedClass.md)
  - [DeprecatedConstant](issues/DeprecatedConstant.md)
  - [DeprecatedFunction](issues/DeprecatedFunction.md)

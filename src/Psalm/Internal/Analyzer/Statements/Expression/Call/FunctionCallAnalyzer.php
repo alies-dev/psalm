@@ -21,6 +21,7 @@ use Psalm\Internal\Codebase\TaintFlowGraph;
 use Psalm\Internal\DataFlow\TaintSink;
 use Psalm\Internal\DataFlow\TaintSource;
 use Psalm\Internal\MethodIdentifier;
+use Psalm\Internal\PhpVersionDeprecations;
 use Psalm\Internal\Type\Comparator\CallableTypeComparator;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeCombiner;
@@ -396,6 +397,24 @@ final class FunctionCallAnalyzer extends CallAnalyzer
                 IssueBuffer::maybeAdd(
                     new DeprecatedFunction(
                         'The function ' . $function_call_info->function_id . ' has been marked as deprecated',
+                        $code_location,
+                        $function_call_info->function_id,
+                    ),
+                    $statements_analyzer->getSuppressedIssues(),
+                );
+            }
+        }
+
+        if ($function_call_info->function_id !== null) {
+            $php_version_deprecation = PhpVersionDeprecations::getDeprecatedFunctionMessage(
+                $function_call_info->function_id,
+                $codebase->analysis_php_version_id,
+            );
+
+            if ($php_version_deprecation !== null) {
+                IssueBuffer::maybeAdd(
+                    new DeprecatedFunction(
+                        $php_version_deprecation,
                         $code_location,
                         $function_call_info->function_id,
                     ),
