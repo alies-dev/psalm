@@ -2055,6 +2055,42 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 }
             }
 
+            // PHP 8.5 allows `#[\Override]` on constructor-promoted properties, so mirror the method
+            // checks above for each promoted parameter. Skipped on the initialization and mutation
+            // passes so the diagnostics and the fixer run exactly once.
+            if ($storage->cased_name === '__construct'
+                && !$context->collect_initializations
+                && !$context->collect_mutations
+                && ($storage->defining_fqcln === null
+                    || !$codebase->classlike_storage_provider->get($storage->defining_fqcln)->is_trait)
+            ) {
+                foreach ($storage->params as $param) {
+                    if (!$param->promoted_property
+                        || !isset($appearing_class_storage->properties[$param->name])
+                    ) {
+                        continue;
+                    }
+
+                    $has_promoted_override_attribute = false;
+                    foreach ($param->attributes as $attribute_storage) {
+                        if ($attribute_storage->fq_class_name === 'Override') {
+                            $has_promoted_override_attribute = true;
+                            break;
+                        }
+                    }
+
+                    PropertyOverrideAnalyzer::analyze(
+                        $this,
+                        $codebase,
+                        $appearing_class_storage,
+                        $param->name,
+                        $appearing_class_storage->properties[$param->name],
+                        $has_promoted_override_attribute,
+                        true,
+                    );
+                }
+            }
+
             if ($overridden_method_ids
                 && !$context->collect_initializations
                 && !$context->collect_mutations

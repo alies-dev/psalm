@@ -1572,6 +1572,27 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
             $property_storage->suppressed_issues + $this->getSuppressedIssues(),
         );
 
+        $has_override_attribute = false;
+        foreach ($property_storage->attributes as $attribute_storage) {
+            if ($attribute_storage->fq_class_name === 'Override') {
+                $has_override_attribute = true;
+                break;
+            }
+        }
+
+        PropertyOverrideAnalyzer::analyze(
+            $source,
+            $codebase,
+            $class_storage,
+            $property_name,
+            $property_storage,
+            $has_override_attribute,
+            // A multi-property statement (`public int $a, $b;`) shares one attribute group, so adding
+            // `#[\Override]` would apply it to every property and could break the ones that do not
+            // override. The diagnostic still fires; only the auto-fix is withheld.
+            $source === $this && count($stmt->props) === 1,
+        );
+
         if ($class_property_type && ($property_storage->type_location || !$codebase->alter_code)) {
             return;
         }

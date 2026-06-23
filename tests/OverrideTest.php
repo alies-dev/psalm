@@ -118,6 +118,141 @@ final class OverrideTest extends TestCase
                     }
                 ',
             ],
+            'overridePropertyClass' => [
+                'code' => '<?php
+                    class P {
+                        public int $a = 0;
+                    }
+
+                    class C extends P {
+                        #[\Override]
+                        public int $a = 1;
+                    }
+                ',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.5',
+            ],
+            'overrideStaticPropertyClass' => [
+                'code' => '<?php
+                    class P {
+                        public static int $a = 0;
+                    }
+
+                    class C extends P {
+                        #[\Override]
+                        public static int $a = 1;
+                    }
+                ',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.5',
+            ],
+            'overridePromotedProperty' => [
+                'code' => '<?php
+                    class P {
+                        public int $a = 0;
+                    }
+
+                    class C extends P {
+                        public function __construct(#[\Override] public int $a = 1) {}
+                    }
+                ',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.5',
+            ],
+            'overrideInterfaceProperty' => [
+                'code' => '<?php
+                    interface I {
+                        public int $a { get; }
+                    }
+
+                    class C implements I {
+                        #[\Override]
+                        public int $a = 1;
+                    }
+                ',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.5',
+            ],
+            'overrideTransitiveInterfaceProperty' => [
+                'code' => '<?php
+                    interface I {
+                        public int $a { get; }
+                    }
+
+                    interface J extends I {}
+
+                    class C implements J {
+                        #[\Override]
+                        public int $a = 1;
+                    }
+                ',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.5',
+            ],
+            'redeclaredPrivateParentPropertyNeedsNoAttribute' => [
+                'code' => '<?php
+                    class P {
+                        private int $a = 0;
+                    }
+
+                    class C extends P {
+                        private int $a = 1;
+                    }
+                ',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.5',
+            ],
+            'overrideOnTraitPropertyIsIgnored' => [
+                'code' => '<?php
+                    trait T {
+                        #[\Override]
+                        public int $a = 0;
+                    }
+                ',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.5',
+            ],
+            'traitPropertyUsedInOverridingClassNotFlagged' => [
+                // The attribute lives on the shared trait, so Psalm leaves it unchecked, the same
+                // way it leaves trait methods unchecked.
+                'code' => '<?php
+                    trait T {
+                        public int $a = 0;
+                    }
+
+                    class P {
+                        public int $a = 0;
+                    }
+
+                    class C extends P {
+                        use T;
+                    }
+                ',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.5',
+            ],
+            'missingPropertyAttributeIgnoredBelow85' => [
+                'code' => '<?php
+                    class P {
+                        public int $a = 0;
+                    }
+
+                    class C extends P {
+                        public int $a = 1;
+                    }
+                ',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.4',
+            ],
         ];
     }
 
@@ -236,6 +371,97 @@ final class OverrideTest extends TestCase
                 'error_message' => 'MissingOverrideAttribute',
                 'error_levels' => [],
                 'php_version' => '8.3',
+            ],
+            'propertyMissingAttribute' => [
+                'code' => '<?php
+                    class P {
+                        public int $a = 0;
+                    }
+
+                    class C extends P {
+                        public int $a = 1;
+                    }
+                ',
+                'error_message' => 'MissingOverrideAttribute',
+                'error_levels' => [],
+                'php_version' => '8.5',
+            ],
+            'staticPropertyMissingAttribute' => [
+                'code' => '<?php
+                    class P {
+                        public static int $a = 0;
+                    }
+
+                    class C extends P {
+                        public static int $a = 1;
+                    }
+                ',
+                'error_message' => 'MissingOverrideAttribute',
+                'error_levels' => [],
+                'php_version' => '8.5',
+            ],
+            'promotedPropertyMissingAttribute' => [
+                'code' => '<?php
+                    class P {
+                        public int $a = 0;
+                    }
+
+                    class C extends P {
+                        public function __construct(public int $a = 1) {}
+                    }
+                ',
+                'error_message' => 'MissingOverrideAttribute',
+                'error_levels' => [],
+                'php_version' => '8.5',
+            ],
+            'interfacePropertyMissingAttribute' => [
+                'code' => '<?php
+                    interface I {
+                        public int $a { get; }
+                    }
+
+                    class C implements I {
+                        public int $a = 1;
+                    }
+                ',
+                'error_message' => 'MissingOverrideAttribute',
+                'error_levels' => [],
+                'php_version' => '8.5',
+            ],
+            'multiPropertyStatementStillReports' => [
+                'code' => '<?php
+                    class P {
+                        public int $a = 0;
+                    }
+
+                    class C extends P {
+                        public int $a = 1, $b = 2;
+                    }
+                ',
+                'error_message' => 'MissingOverrideAttribute',
+                'error_levels' => [],
+                'php_version' => '8.5',
+            ],
+            'propertyWithAttributeButNoParent' => [
+                'code' => '<?php
+                    class C {
+                        #[\Override]
+                        public int $a = 1;
+                    }
+                ',
+                'error_message' => 'InvalidOverride',
+                'error_levels' => [],
+                'php_version' => '8.5',
+            ],
+            'promotedPropertyWithAttributeButNoParent' => [
+                'code' => '<?php
+                    class C {
+                        public function __construct(#[\Override] public int $a = 1) {}
+                    }
+                ',
+                'error_message' => 'InvalidOverride',
+                'error_levels' => [],
+                'php_version' => '8.5',
             ],
         ];
     }

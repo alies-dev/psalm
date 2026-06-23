@@ -19,6 +19,21 @@ class B extends A {
 }
 ```
 
+On PHP 8.5 and above, the same applies to a property carrying the attribute that does not override a parent (or implemented interface) property.
+
+```php
+<?php
+
+class A {
+    public int $value = 0;
+}
+
+class B extends A {
+    #[Override]
+    public int $other = 1;
+}
+```
+
 ## Why this is bad
 
 A fatal error will be thrown.
