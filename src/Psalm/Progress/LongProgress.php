@@ -7,9 +7,9 @@ namespace Psalm\Progress;
 use LogicException;
 use Override;
 
-use function floor;
+use function intdiv;
 use function microtime;
-use function round;
+use function number_format;
 use function sprintf;
 use function str_repeat;
 use function strlen;
@@ -17,11 +17,20 @@ use function strlen;
 use const PHP_EOL;
 
 /**
+ * Line-based progress output.
+ *
+ * In quiet mode (CI, or a stderr that isn't a terminal) every phase prints a start line,
+ * a status line every few seconds so that a long run doesn't look stuck, and a summary line.
+ * Otherwise (--long-progress) it prints a grid with a marker per task.
+ *
  * @api
  */
 class LongProgress extends Progress
 {
     final public const NUMBER_OF_COLUMNS = 60;
+
+    /** Seconds between status lines in quiet mode */
+    private const STATUS_INTERVAL = 10.0;
 
     protected ?int $number_of_tasks = null;
 
@@ -31,13 +40,21 @@ class LongProgress extends Progress
 
     /**
      * True when the current phase runs an unknown number of tasks (e.g. taint
-     * graph resolution, which loops to a fixed point). A percentage bar is
-     * meaningless in that case, so we only emit a tick per task.
+     * graph resolution, which loops to a fixed point). A percentage is
+     * meaningless in that case.
      */
     protected bool $indeterminate = false;
 
-    protected ?Phase $prevPhase = null;
+    protected ?Phase $phase = null;
+
+    protected int $threads = 1;
+
     protected float $started = 0.0;
+
+    private float $last_status = 0.0;
+
+    /** Whether the grid left the cursor in the middle of a line */
+    private bool $mid_line = false;
 
     /**
      * @psalm-mutation-free
@@ -60,52 +77,29 @@ class LongProgress extends Progress
     #[Override]
     public function startPhase(Phase $phase, int $threads = 1): void
     {
-        $threads = $threads === 1 ? '' : " ($threads threads)";
-        $this->reportPhaseDuration($phase);
-        $this->write(match ($phase) {
-            Phase::SCAN => "\nScanning files$threads...\n\n",
-            Phase::ANALYSIS => "\nAnalyzing files$threads...\n\n",
-            Phase::ALTERING => "\nUpdating files$threads...\n",
-            Phase::TAINT_GRAPH_RESOLUTION => "\n\nResolving taint graph$threads...\n\n",
-            Phase::JIT_COMPILATION => "JIT compilation in progress$threads...\n\n",
-            Phase::PRELOADING => "Preloading in progress$threads...\n\n",
-            Phase::MERGING_THREAD_RESULTS => "\nMerging thread results$threads...\n\n",
-        });
-        $this->fixed_size = $phase === Phase::ANALYSIS
-            || $phase === Phase::ALTERING
-            || $phase === Phase::JIT_COMPILATION
-            || $phase === Phase::PRELOADING
-            || $phase === Phase::MERGING_THREAD_RESULTS;
-        $this->indeterminate = $phase === Phase::TAINT_GRAPH_RESOLUTION;
-    }
-
-    protected function reportPhaseDuration(?Phase $newPhase = null): void
-    {
-        if ($this->prevPhase === $newPhase) {
+        if ($phase === $this->phase) {
             return;
         }
+
+        $this->endPhase();
+
+        $this->phase = $phase;
+        $this->threads = $threads;
         $this->progress = 0;
         $this->number_of_tasks = 0;
-        if ($this->prevPhase !== null) {
-            $took = round(microtime(true) - $this->started, 1);
-            $this->write(match ($this->prevPhase) {
-                Phase::SCAN => "\n\nScan took $took seconds.\n",
-                Phase::ANALYSIS => "\n\nAnalysis took $took seconds.\n",
-                Phase::ALTERING => "\n\nUpdating files took $took seconds.\n",
-                Phase::TAINT_GRAPH_RESOLUTION => "\n\nTaint graph resolution took $took seconds.\n",
-                Phase::JIT_COMPILATION => "JIT compilation took $took seconds.\n\n",
-                Phase::PRELOADING => "Preloading took $took seconds.\n\n",
-                Phase::MERGING_THREAD_RESULTS => "\nMerging thread results took $took seconds.\n\n",
-            });
+        $this->started = $this->last_status = microtime(true);
+        $this->fixed_size = $phase !== Phase::SCAN && $phase !== Phase::TAINT_GRAPH_RESOLUTION;
+        $this->indeterminate = $phase === Phase::TAINT_GRAPH_RESOLUTION;
+
+        if (!self::isSilent($phase)) {
+            $this->phaseStarted();
         }
-        $this->started = microtime(true);
-        $this->prevPhase = $newPhase;
     }
 
     #[Override]
     public function alterFileDone(string $file_name): void
     {
-        $this->write('Altered ' . $file_name . "\n");
+        $this->writeLine('Altered ' . $file_name);
     }
 
     /**
@@ -121,43 +115,63 @@ class LongProgress extends Progress
     public function taskDone(int $level): void
     {
         if ($this->number_of_tasks === null) {
-            throw new LogicException('Progress::start() should be called before Progress::taskDone()');
+            throw new LogicException('Progress::startPhase() should be called before Progress::taskDone()');
         }
 
         ++$this->progress;
 
-        if ($this->indeterminate) {
-            // The total number of tasks is unknown, so a percentage would be
-            // misleading. Emit one tick per task, wrapping into rows.
-            $this->write(self::doesTerminalSupportUtf8() ? '░' : '_');
-            if (($this->progress % self::NUMBER_OF_COLUMNS) === 0) {
-                $this->write(PHP_EOL);
+        if ($this->phase !== null && !self::isSilent($this->phase)) {
+            $this->reportTask($level);
+        }
+    }
+
+    #[Override]
+    public function finish(): void
+    {
+        $this->endPhase();
+    }
+
+    protected function phaseStarted(): void
+    {
+        $this->writeLine($this->getLabel() . '...');
+    }
+
+    protected function reportTask(int $level): void
+    {
+        if ($this->in_ci) {
+            $now = microtime(true);
+            if ($now - $this->last_status >= self::STATUS_INTERVAL) {
+                $this->last_status = $now;
+                $this->writeLine('  ' . $this->getStatus());
             }
+
+            return;
+        }
+
+        if ($this->indeterminate) {
+            $this->writeTick(self::doesTerminalSupportUtf8() ? '░' : '_');
+            if (($this->progress % self::NUMBER_OF_COLUMNS) === 0) {
+                $this->writeLine('');
+            }
+
             return;
         }
 
         if (!$this->fixed_size) {
-            if ($this->in_ci) {
-                return;
+            if ($this->progress === 1 || $this->progress === $this->number_of_tasks || $this->progress % 10 === 0) {
+                $this->writeTick(sprintf("\r%s / %s...", $this->progress, (int) $this->number_of_tasks));
             }
-            if ($this->progress == 1 || $this->progress == $this->number_of_tasks || $this->progress % 10 == 0) {
-                $this->write(sprintf(
-                    "\r%s / %s...",
-                    $this->progress,
-                    $this->number_of_tasks,
-                ));
-            }
+
             return;
         }
 
         if ($level === 0 || ($level === 1 && !$this->print_infos) || !$this->print_errors) {
-            $this->write(self::doesTerminalSupportUtf8() ? '░' : '_');
+            $this->writeTick(self::doesTerminalSupportUtf8() ? '░' : '_');
         } elseif ($level === 1) {
-            $this->write('I');
+            $this->writeTick('I');
         } else {
-            $this->write('E');
+            $this->writeTick('E');
         }
-
 
         if (($this->progress % self::NUMBER_OF_COLUMNS) !== 0) {
             if ($this->progress !== $this->number_of_tasks) {
@@ -168,14 +182,61 @@ class LongProgress extends Progress
             }
         }
 
-        $this->printOverview();
-        $this->write(PHP_EOL);
+        $this->writeLine($this->getOverview());
     }
 
-    #[Override]
-    public function finish(): void
+    protected function phaseEnded(Phase $phase): void
     {
-        $this->reportPhaseDuration(null);
+        $summary = $this->getSummary($phase);
+        if ($summary !== null) {
+            $this->writeLine($summary);
+        }
+    }
+
+    /**
+     * What the current phase is doing, e.g. "Analyzing files (16 threads)"
+     *
+     * @psalm-mutation-free
+     */
+    protected function getLabel(): string
+    {
+        $label = match ($this->phase) {
+            Phase::SCAN => 'Scanning files',
+            Phase::ANALYSIS => 'Analyzing files',
+            Phase::ALTERING => 'Updating files',
+            Phase::TAINT_GRAPH_RESOLUTION => 'Resolving taint graph',
+            Phase::JIT_COMPILATION, Phase::PRELOADING => 'Preloading',
+            Phase::MERGING_THREAD_RESULTS => 'Merging thread results',
+            Phase::FINISHING => 'Finishing',
+            null => '',
+        };
+
+        return $label . $this->getThreadsSuffix();
+    }
+
+    /**
+     * How far the current phase got, e.g. "4,320 / 8,629 files (50%), 12s"
+     */
+    protected function getStatus(): string
+    {
+        $elapsed = (int) (microtime(true) - $this->started) . 's';
+
+        if ($this->indeterminate) {
+            return ($this->progress > 0 ? 'pass ' . $this->progress . ', ' : '') . $elapsed;
+        }
+
+        if ($this->number_of_tasks === null || $this->number_of_tasks === 0) {
+            return $elapsed;
+        }
+
+        $status = number_format($this->progress) . ' / ' . number_format($this->number_of_tasks)
+            . ($this->phase === Phase::MERGING_THREAD_RESULTS ? ' threads' : ' files');
+
+        if ($this->fixed_size) {
+            $status .= ' (' . intdiv($this->progress * 100, $this->number_of_tasks) . '%)';
+        }
+
+        return $status . ', ' . $elapsed;
     }
 
     /**
@@ -184,12 +245,12 @@ class LongProgress extends Progress
     protected function getOverview(): string
     {
         if ($this->number_of_tasks === null) {
-            throw new LogicException('Progress::start() should be called before Progress::startDone()');
+            throw new LogicException('Progress::startPhase() should be called before Progress::getOverview()');
         }
 
         $leadingSpaces = 1 + strlen((string) $this->number_of_tasks) - strlen((string) $this->progress);
         // Don't show 100% unless this is the last line of the progress bar.
-        $percentage = floor($this->progress / $this->number_of_tasks * 100);
+        $percentage = $this->number_of_tasks > 0 ? intdiv($this->progress * 100, $this->number_of_tasks) : 0;
 
         return sprintf(
             '%s%s / %s (%s%%)',
@@ -200,8 +261,87 @@ class LongProgress extends Progress
         );
     }
 
-    private function printOverview(): void
+    /**
+     * Writes a full line, ending a line the grid left open first.
+     */
+    protected function writeLine(string $line): void
     {
-        $this->write($this->getOverview());
+        if ($this->mid_line) {
+            $this->mid_line = false;
+            $this->write(PHP_EOL);
+        }
+
+        $this->write($line . PHP_EOL);
+    }
+
+    /**
+     * Preloading takes a fraction of a second and only concerns Psalm itself, so it isn't reported.
+     *
+     * @psalm-pure
+     */
+    protected static function isSilent(Phase $phase): bool
+    {
+        return $phase === Phase::PRELOADING || $phase === Phase::JIT_COMPILATION;
+    }
+
+    /**
+     * Merging and finishing are usually quick; they're only worth reporting when they aren't.
+     *
+     * @psalm-pure
+     */
+    protected static function isWorthReporting(Phase $phase, float $duration): bool
+    {
+        return ($phase !== Phase::MERGING_THREAD_RESULTS && $phase !== Phase::FINISHING) || $duration >= 1.0;
+    }
+
+    private function endPhase(): void
+    {
+        if ($this->phase === null) {
+            return;
+        }
+
+        if (!self::isSilent($this->phase)) {
+            $this->phaseEnded($this->phase);
+        }
+
+        $this->phase = null;
+    }
+
+    /**
+     * Returns null for a phase that isn't worth reporting
+     */
+    private function getSummary(Phase $phase): ?string
+    {
+        $duration = microtime(true) - $this->started;
+        if (!self::isWorthReporting($phase, $duration)) {
+            return null;
+        }
+
+        $took = number_format($duration, 1) . 's';
+        $tasks = number_format($this->progress);
+
+        return match ($phase) {
+            Phase::SCAN => "Scanned $tasks files in $took",
+            Phase::ANALYSIS => "Analyzed $tasks files in $took",
+            Phase::ALTERING => "Processed $tasks files in $took",
+            Phase::TAINT_GRAPH_RESOLUTION => "Resolved taint graph in $took",
+            Phase::JIT_COMPILATION, Phase::PRELOADING => "Preloaded in $took",
+            Phase::MERGING_THREAD_RESULTS => "Merged thread results in $took",
+            Phase::FINISHING => "Finished up in $took",
+        } . $this->getThreadsSuffix();
+    }
+
+    /**
+     * @psalm-mutation-free
+     */
+    private function getThreadsSuffix(): string
+    {
+        return $this->threads > 1 ? " ({$this->threads} threads)" : '';
+    }
+
+    private function writeTick(string $tick): void
+    {
+        $this->mid_line = true;
+        $this->write($tick);
     }
 }

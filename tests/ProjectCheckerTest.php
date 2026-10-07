@@ -189,8 +189,6 @@ function checkDirRegression(): int
         $output = (string) ob_get_clean();
 
         $this->assertStringContainsString('Target PHP version: 8.1 (set by tests)', $output);
-        $this->assertStringContainsString('Scanning files...', $output);
-        $this->assertStringContainsString('Analyzing files...', $output);
 
         $this->assertSame(0, IssueBuffer::getErrorCount());
 
@@ -199,7 +197,7 @@ function checkDirRegression(): int
         $this->assertSame([0, 5], $codebase->analyzer->getTotalTypeCoverage($codebase));
 
         $this->assertSame(
-            'Psalm was able to infer types for 100% of the codebase',
+            'Type coverage: 100%',
             $codebase->analyzer->getTypeInferenceSummary(
                 $codebase,
             ),
@@ -293,7 +291,7 @@ function checkDirRegression(): int
         ob_end_clean();
 
         $this->assertSame(
-            'Psalm was able to infer types for 100% of the codebase',
+            'Type coverage: 100%',
             $this->project_analyzer->getCodebase()->analyzer->getTypeInferenceSummary(
                 $this->project_analyzer->getCodebase(),
             ),
@@ -306,7 +304,7 @@ function checkDirRegression(): int
         $this->assertSame(0, IssueBuffer::getErrorCount());
 
         $this->assertSame(
-            "No files analyzed\nPsalm was able to infer types for 100% of the codebase",
+            "No files analyzed\nType coverage: 100%",
             $this->project_analyzer->getCodebase()->analyzer->getTypeInferenceSummary(
                 $this->project_analyzer->getCodebase(),
             ),
@@ -337,7 +335,7 @@ function checkDirRegression(): int
         ob_end_clean();
 
         $this->assertSame(
-            'Psalm was able to infer types for 100% of the codebase',
+            'Type coverage: 100%',
             $this->project_analyzer->getCodebase()->analyzer->getTypeInferenceSummary(
                 $this->project_analyzer->getCodebase(),
             ),
@@ -371,7 +369,7 @@ final class Bat
         $this->assertSame(0, IssueBuffer::getErrorCount());
 
         $this->assertSame(
-            'Psalm was able to infer types for 100% of the codebase',
+            'Type coverage: 100%',
             $this->project_analyzer->getCodebase()->analyzer->getTypeInferenceSummary(
                 $this->project_analyzer->getCodebase(),
             ),
@@ -403,13 +401,11 @@ final class Bat
         $output = (string) ob_get_clean();
 
         $this->assertStringContainsString('Target PHP version: 8.1 (set by tests)', $output);
-        $this->assertStringContainsString('Scanning files...', $output);
-        $this->assertStringContainsString('Analyzing files...', $output);
 
         $this->assertSame(0, IssueBuffer::getErrorCount());
 
         $this->assertSame(
-            'Psalm was able to infer types for 100% of the codebase',
+            'Type coverage: 100%',
             $this->project_analyzer->getCodebase()->analyzer->getTypeInferenceSummary(
                 $this->project_analyzer->getCodebase(),
             ),
@@ -444,13 +440,11 @@ final class Bat
         $output = (string) ob_get_clean();
 
         $this->assertStringContainsString('Target PHP version: 8.1 (set by tests)', $output);
-        $this->assertStringContainsString('Scanning files...', $output);
-        $this->assertStringContainsString('Analyzing files...', $output);
 
         $this->assertSame(0, IssueBuffer::getErrorCount());
 
         $this->assertSame(
-            'Psalm was able to infer types for 100% of the codebase',
+            'Type coverage: 100%',
             $this->project_analyzer->getCodebase()->analyzer->getTypeInferenceSummary(
                 $this->project_analyzer->getCodebase(),
             ),
@@ -485,13 +479,11 @@ final class Bat
         $output = (string) ob_get_clean();
 
         $this->assertStringContainsString('Target PHP version: 8.1 (set by tests)', $output);
-        $this->assertStringContainsString('Scanning files...', $output);
-        $this->assertStringContainsString('Analyzing files...', $output);
 
         $this->assertSame(0, IssueBuffer::getErrorCount());
 
         $this->assertSame(
-            'Psalm was able to infer types for 100% of the codebase',
+            'Type coverage: 100%',
             $this->project_analyzer->getCodebase()->analyzer->getTypeInferenceSummary(
                 $this->project_analyzer->getCodebase(),
             ),

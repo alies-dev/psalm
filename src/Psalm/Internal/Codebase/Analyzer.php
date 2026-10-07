@@ -42,6 +42,7 @@ use function array_values;
 use function count;
 use function explode;
 use function implode;
+use function intdiv;
 use function ksort;
 use function number_format;
 use function pathinfo;
@@ -251,7 +252,7 @@ final class Analyzer
 
         MutationLevelResolver::resolve($project_analyzer);
 
-        $this->progress->finish();
+        $this->progress->startPhase(Phase::FINISHING);
 
         if ($consolidate_analyzed_data) {
             $project_analyzer->consolidateAnalyzedData();
@@ -293,6 +294,8 @@ final class Analyzer
 
             $project_analyzer->migrateCode();
         }
+
+        $this->progress->finish();
     }
 
     private function doAnalysis(ProjectAnalyzer $project_analyzer, int $pool_size): void
@@ -1113,12 +1116,12 @@ final class Analyzer
             $lines[] = 'No files analyzed';
         }
 
-        if (!$total) {
-            $lines[] = 'Psalm was unable to infer types in the codebase';
-        } else {
-            $percentage = $nonmixed_count === $total ? '100' : number_format(100 * $nonmixed_count / $total, 4);
-            $lines[] = 'Psalm was able to infer types for ' . $percentage . '%'
-                . ' of the codebase';
+        if ($total) {
+            // Round down, so 99.999% doesn't show as 100%
+            $percentage = $nonmixed_count === $total
+                ? '100'
+                : number_format((float) intdiv(10_000 * $nonmixed_count, $total) / 100.0, 2);
+            $lines[] = 'Type coverage: ' . $percentage . '%';
         }
 
         return implode("\n", $lines);

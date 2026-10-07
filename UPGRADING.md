@@ -97,6 +97,8 @@
 
 - [BC] Method finish() of class Psalm\Progress\Progress changed from concrete to abstract
 
+- [BC] Property `Psalm\Progress\LongProgress::$prevPhase` was renamed to `$phase`, and method `LongProgress::reportPhaseDuration()` was removed: override `phaseStarted()`, `reportTask()` and `phaseEnded()` instead. `Psalm\Progress\Phase` has a new `FINISHING` case, started after the analysis while results are consolidated and caches are updated.
+
 - [BC] The return type of Psalm\Type::getListAtomic() changed from Psalm\Type\Atomic\TKeyedArray to the non-covariant Psalm\Type\Atomic\TKeyedArray|Psalm\Type\Atomic\TArray
 
 - [BC] The return type of Psalm\Type::getListAtomic() changed from Psalm\Type\Atomic\TKeyedArray to Psalm\Type\Atomic\TKeyedArray|Psalm\Type\Atomic\TArray

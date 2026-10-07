@@ -578,7 +578,7 @@ final class IssueBuffer
 
         $error_count = 0;
         $info_count = 0;
-
+        $baselined_count = 0;
 
         $issues_data = [];
 
@@ -624,12 +624,14 @@ final class IssueBuffer
 
                             if ($position !== false) {
                                 $issue_data->severity = IssueData::SEVERITY_INFO;
+                                ++$baselined_count;
                                 array_splice($issue_baseline[$file][$type]['s'], $position, 1);
                                 $issue_baseline[$file][$type]['o']--;
                             }
                         } else {
                             $issue_baseline[$file][$type]['s'] = [];
                             $issue_data->severity = IssueData::SEVERITY_INFO;
+                            ++$baselined_count;
                             $issue_baseline[$file][$type]['o']--;
                         }
                     }
@@ -777,57 +779,48 @@ final class IssueBuffer
             $project_analyzer->stdout_report_options->format,
             [Report::TYPE_CONSOLE, Report::TYPE_PHP_STORM, Report::TYPE_GITHUB_ACTIONS],
         )) {
-            echo str_repeat('-', 30) . "\n";
+            $use_color = $project_analyzer->stdout_report_options->use_color;
+            $highlight = static fn(string $text): string => $use_color ? "\e[30;48;5;195m{$text}\e[0m" : $text;
+
+            echo "\n";
 
             if ($error_count) {
-                echo($project_analyzer->stdout_report_options->use_color
-                    ? "\e[0;31m" . $error_count . " errors\e[0m"
-                    : $error_count . ' errors'
-                ) . ' found' . "\n";
+                $errors = number_format($error_count) . ($error_count === 1 ? ' error' : ' errors') . ' found';
+                echo ($use_color ? "\e[0;31m{$errors}\e[0m" : $errors) . "\n";
             } else {
                 self::printSuccessMessage($project_analyzer);
+            }
+
+            if ($baselined_count) {
+                echo number_format($baselined_count) . ' known '
+                    . ($baselined_count === 1 ? 'issue is' : 'issues are') . ' suppressed by the baseline' . "\n";
             }
 
             $show_info = $project_analyzer->stdout_report_options->show_info;
             $show_suggestions = $project_analyzer->stdout_report_options->show_suggestions;
 
-            if ($info_count && ($show_info || $show_suggestions)) {
-                echo str_repeat('-', 30) . "\n";
-
-                echo $info_count . ' other issues found.' . "\n";
-
-                if (!$show_info) {
-                    echo 'You can display them with ' .
-                        ($project_analyzer->stdout_report_options->use_color
-                            ? "\e[30;48;5;195m--show-info=true\e[0m"
-                            : '--show-info=true') . "\n";
-                }
+            $other_count = $info_count - $baselined_count;
+            if ($other_count > 0 && ($show_info || $show_suggestions)) {
+                echo number_format($other_count) . ' other ' . ($other_count === 1 ? 'issue' : 'issues') . ' found'
+                    . ($show_info ? '' : ', show with ' . $highlight('--show-info=true')) . "\n";
             }
 
             if (self::$fixable_issue_counts && $show_suggestions && !$codebase->taint_flow_graph) {
-                echo str_repeat('-', 30) . "\n";
-
                 $total_count = array_sum(self::$fixable_issue_counts);
-                $command = '--alter --issues=' . implode(',', array_keys(self::$fixable_issue_counts));
-                $command .= ' --dry-run';
+                $command = '--alter --issues=' . implode(',', array_keys(self::$fixable_issue_counts)) . ' --dry-run';
 
-                echo 'Psalm can automatically fix ' . $total_count
-                    . ($show_info ? ' issues' : ' of these issues') . ".\n"
-                    . 'Run Psalm again with ' . "\n"
-                    . ($project_analyzer->stdout_report_options->use_color
-                        ? "\e[30;48;5;195m" . $command . "\e[0m"
-                        : $command) . "\n"
-                    . 'to see what it can fix.' . "\n";
+                echo 'Psalm can fix ' . number_format($total_count) . ($show_info ? '' : ' of these')
+                    . ($total_count === 1 ? ' issue' : ' issues') . ', preview with ' . $highlight($command) . "\n";
             }
 
-            echo str_repeat('-', 30) . "\n" . "\n";
-
             if ($start_time) {
-                echo 'Checks took ' . number_format(microtime(true) - $start_time, 2) . ' seconds';
-                echo ' and used ' . number_format(memory_get_peak_usage() / (1_024 * 1_024), 3) . 'MB of memory' . "\n";
+                echo "\n" . 'Checks took ' . number_format(microtime(true) - $start_time, 1) . 's'
+                    . ', peak memory ' . self::formatMemory(memory_get_peak_usage()) . "\n";
 
-                $analysis_summary = $codebase->analyzer->getTypeInferenceSummary($codebase);
-                echo $analysis_summary . "\n";
+                $type_inference_summary = $codebase->analyzer->getTypeInferenceSummary($codebase);
+                if ($type_inference_summary !== '') {
+                    echo $type_inference_summary . "\n";
+                }
 
                 if ($add_stats) {
                     echo '-----------------' . "\n";
@@ -891,39 +884,21 @@ final class IssueBuffer
             throw new UnexpectedValueException('Cannot print success message without stdout report options');
         }
 
-        // this message will be printed
-        $message = "No errors found!";
+        $message = 'No errors found!';
 
-        // color block will contain this amount of characters
-        $blockSize = 30;
+        echo ($project_analyzer->stdout_report_options->use_color ? "\e[0;32m{$message}\e[0m" : $message) . "\n";
+    }
 
-        // message with prepended and appended whitespace to be same as $blockSize
-        $messageWithPadding = str_repeat(' ', 7) . $message . str_repeat(' ', 7);
-
-        // top side of the color block
-        $paddingTop = str_repeat(' ', $blockSize);
-
-        // bottom side of the color block
-        $paddingBottom = str_repeat(' ', $blockSize);
-
-        // background color, 42 = green
-        $background = "42";
-
-        // foreground/text color, 30 = black
-        $foreground = "30";
-
-        // text style, 1 = bold
-        $style = "2";
-
-        if ($project_analyzer->stdout_report_options->use_color) {
-            echo "\e[{$background};{$style}m{$paddingTop}\e[0m" . "\n";
-            echo "\e[{$background};{$foreground};{$style}m{$messageWithPadding}\e[0m" . "\n";
-            echo "\e[{$background};{$style}m{$paddingBottom}\e[0m" . "\n";
-        } else {
-            echo "\n";
-            echo "$messageWithPadding\n";
-            echo "\n";
+    /**
+     * @psalm-pure
+     */
+    private static function formatMemory(int $bytes): string
+    {
+        if ($bytes >= 1_024 ** 3) {
+            return number_format($bytes / 1_024 ** 3, 1) . ' GB';
         }
+
+        return number_format($bytes / 1_024 ** 2) . ' MB';
     }
 
     /**

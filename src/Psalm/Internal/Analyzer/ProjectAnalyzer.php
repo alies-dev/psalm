@@ -387,10 +387,7 @@ final class ProjectAnalyzer
         return isset($list[$file_path]);
     }
 
-    /**
-     * @psalm-mutation-free
-     */
-    private function generatePHPVersionMessage(): string
+    private function reportPhpVersion(): void
     {
         $codebase = $this->codebase;
 
@@ -423,18 +420,16 @@ final class ProjectAnalyzer
             .$source
         ;
 
-        $enabled_extensions_names = array_keys(array_filter($codebase->config->php_extensions));
-        if (count($enabled_extensions_names) > 0) {
-            $message .= ' Enabled extensions: ' . implode(', ', $enabled_extensions_names);
-        }
-
         if (count($unsupported_php_extensions) > 0) {
             $message .= ' (unsupported extensions: ' . implode(', ', $unsupported_php_extensions) . ')';
         }
 
-        $message .= '.'.PHP_EOL.PHP_EOL;
+        $this->progress->write($message . '.' . PHP_EOL . PHP_EOL);
 
-        return $message;
+        $enabled_extensions_names = array_keys(array_filter($codebase->config->php_extensions));
+        if (count($enabled_extensions_names) > 0) {
+            $this->progress->debug('Enabled extensions: ' . implode(', ', $enabled_extensions_names) . PHP_EOL);
+        }
     }
 
     public function check(string $base_dir, bool $is_diff = false): void
@@ -442,7 +437,7 @@ final class ProjectAnalyzer
         if (!$base_dir) {
             throw new InvalidArgumentException('Cannot work with empty base_dir');
         }
-        $this->progress->write($this->generatePHPVersionMessage());
+        $this->reportPhpVersion();
         $this->progress->startPhase(Phase::SCAN, $this->scanThreads);
 
         $this->initProjectFiles();
@@ -863,7 +858,7 @@ final class ProjectAnalyzer
 
     public function checkDir(string $dir_name): void
     {
-        $this->progress->write($this->generatePHPVersionMessage());
+        $this->reportPhpVersion();
         $this->progress->startPhase(Phase::SCAN, $this->scanThreads);
 
         if (!$this->project_files_initialized) {
@@ -973,7 +968,7 @@ final class ProjectAnalyzer
 
     public function checkFile(string $file_path): void
     {
-        $this->progress->write($this->generatePHPVersionMessage());
+        $this->reportPhpVersion();
         $this->progress->startPhase(Phase::SCAN, $this->scanThreads);
 
         $this->progress->debug('Checking ' . $file_path . PHP_EOL);
@@ -1016,7 +1011,7 @@ final class ProjectAnalyzer
      */
     public function checkPaths(array $paths_to_check): void
     {
-        $this->progress->write($this->generatePHPVersionMessage());
+        $this->reportPhpVersion();
         $this->progress->startPhase(Phase::SCAN, $this->scanThreads);
 
         if (!$this->project_files_initialized) {
