@@ -100,6 +100,8 @@ class DefaultProgress extends LongProgress
 
     private int $spinner_frame = 0;
 
+    private ?float $first_task_at = null;
+
     private int $max_threads = 1;
 
     /**
@@ -149,6 +151,7 @@ class DefaultProgress extends LongProgress
     protected function phaseStarted(): void
     {
         $this->run_started ??= microtime(true);
+        $this->first_task_at = null;
         $this->max_threads = max($this->max_threads, $this->threads);
         $this->last_refresh = hrtime(true);
         $this->drawStatus();
@@ -158,6 +161,10 @@ class DefaultProgress extends LongProgress
     #[Override]
     protected function reportTask(int $level): void
     {
+        if ($this->progress === 1) {
+            $this->first_task_at = microtime(true);
+        }
+
         $now = hrtime(true);
         if ($now - $this->last_refresh < self::REFRESH_INTERVAL_NANOSECONDS) {
             return;
@@ -213,6 +220,7 @@ class DefaultProgress extends LongProgress
             Phase::ALTERING => 'Fixes',
             Phase::TAINT_GRAPH_RESOLUTION => 'Taint graph',
             Phase::MERGING_THREAD_RESULTS => 'Merge',
+            Phase::LOADING_CACHE => 'Cache',
             Phase::FINISHING => 'Finishing',
             Phase::JIT_COMPILATION, Phase::PRELOADING => 'Preload',
         };
@@ -275,6 +283,7 @@ class DefaultProgress extends LongProgress
 
         return $mark . match ($phase) {
             Phase::TAINT_GRAPH_RESOLUTION => 'Resolved taint graph',
+            Phase::LOADING_CACHE => 'Loaded cached results',
             Phase::FINISHING => 'Finished up',
             default => 'Merged thread results',
         } . ' in ' . $took . $suffix;
@@ -392,21 +401,26 @@ class DefaultProgress extends LongProgress
     }
 
     /**
-     * e.g. ", ~12s left", once there's enough progress to extrapolate from
+     * e.g. ", ~12s left", once there's enough progress to extrapolate from.
+     * The rate is measured from the first completed task, so setup time (e.g. forking workers) doesn't skew it.
      */
     private function getEstimate(): string
     {
-        $elapsed = microtime(true) - $this->started;
-        if (!$this->fixed_size
+        if ($this->first_task_at === null
+            || !$this->fixed_size
             || $this->number_of_tasks === null
-            || $this->progress < 1
-            || $elapsed < 2.0
+            || $this->progress < 2
             || $this->progress >= $this->number_of_tasks
         ) {
             return '';
         }
 
-        $left = $elapsed / (float) $this->progress * (float) ($this->number_of_tasks - $this->progress);
+        $elapsed = microtime(true) - $this->first_task_at;
+        if ($elapsed < 2.0) {
+            return '';
+        }
+
+        $left = $elapsed / (float) ($this->progress - 1) * (float) ($this->number_of_tasks - $this->progress);
 
         return ', ~' . (int) ceil($left) . 's left';
     }

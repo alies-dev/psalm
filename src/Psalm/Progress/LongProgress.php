@@ -7,6 +7,7 @@ namespace Psalm\Progress;
 use LogicException;
 use Override;
 
+use function in_array;
 use function intdiv;
 use function microtime;
 use function number_format;
@@ -207,6 +208,7 @@ class LongProgress extends Progress
             Phase::TAINT_GRAPH_RESOLUTION => 'Resolving taint graph',
             Phase::JIT_COMPILATION, Phase::PRELOADING => 'Preloading',
             Phase::MERGING_THREAD_RESULTS => 'Merging thread results',
+            Phase::LOADING_CACHE => 'Loading cached results',
             Phase::FINISHING => 'Finishing',
             null => '',
         };
@@ -285,13 +287,17 @@ class LongProgress extends Progress
     }
 
     /**
-     * Merging and finishing are usually quick; they're only worth reporting when they aren't.
+     * Some phases are usually quick; they're only worth reporting when they aren't.
      *
      * @psalm-pure
      */
     protected static function isWorthReporting(Phase $phase, float $duration): bool
     {
-        return ($phase !== Phase::MERGING_THREAD_RESULTS && $phase !== Phase::FINISHING) || $duration >= 1.0;
+        return $duration >= 1.0 || !in_array(
+            $phase,
+            [Phase::MERGING_THREAD_RESULTS, Phase::LOADING_CACHE, Phase::FINISHING],
+            true,
+        );
     }
 
     private function endPhase(): void
@@ -327,6 +333,7 @@ class LongProgress extends Progress
             Phase::TAINT_GRAPH_RESOLUTION => "Resolved taint graph in $took",
             Phase::JIT_COMPILATION, Phase::PRELOADING => "Preloaded in $took",
             Phase::MERGING_THREAD_RESULTS => "Merged thread results in $took",
+            Phase::LOADING_CACHE => "Loaded cached results in $took",
             Phase::FINISHING => "Finished up in $took",
         } . $this->getThreadsSuffix();
     }

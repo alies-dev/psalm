@@ -39,6 +39,7 @@ final class DebugProgress extends Progress
             Phase::JIT_COMPILATION => "\nJIT compilation in progress$threads...\n",
             Phase::PRELOADING => "\nPreloading in progress$threads...\n",
             Phase::MERGING_THREAD_RESULTS => "\nMerging thread results$threads...\n",
+            Phase::LOADING_CACHE => "\nLoading cached results$threads...\n",
             Phase::FINISHING => "\nFinishing$threads...\n",
         });
     }

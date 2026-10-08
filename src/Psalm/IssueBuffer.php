@@ -72,7 +72,6 @@ use function preg_match;
 use function round;
 use function sha1;
 use function sprintf;
-use function str_repeat;
 use function str_replace;
 use function str_starts_with;
 use function strlen;
@@ -782,7 +781,10 @@ final class IssueBuffer
             $use_color = $project_analyzer->stdout_report_options->use_color;
             $highlight = static fn(string $text): string => $use_color ? "\e[30;48;5;195m{$text}\e[0m" : $text;
 
-            echo "\n";
+            // the report already ends with a blank line when there are issues
+            if (!self::$issues_data) {
+                echo "\n";
+            }
 
             if ($error_count) {
                 $errors = number_format($error_count) . ($error_count === 1 ? ' error' : ' errors') . ' found';

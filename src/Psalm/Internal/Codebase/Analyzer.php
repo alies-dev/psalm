@@ -229,6 +229,7 @@ final class Analyzer
         bool $alter_code,
         bool $consolidate_analyzed_data = false,
     ): void {
+        $this->progress->startPhase(Phase::LOADING_CACHE);
         $this->loadCachedResults($project_analyzer);
 
         $codebase = $project_analyzer->getCodebase();
@@ -242,6 +243,7 @@ final class Analyzer
             $this->file_provider->fileExists(...),
         );
 
+        $this->progress->startPhase(Phase::ANALYSIS, $pool_size);
         $this->doAnalysis($project_analyzer, $pool_size);
 
         $scanned_files = $codebase->scanner->getScannedFiles();
