@@ -41,12 +41,15 @@ use Psalm\Report\TableReport;
 use Psalm\Report\TextReport;
 use Psalm\Report\XmlReport;
 use RuntimeException;
+use Symfony\Component\Filesystem\Path;
 use UnexpectedValueException;
 
 use function array_keys;
+use function array_map;
 use function array_merge;
 use function array_pop;
 use function array_search;
+use function array_slice;
 use function array_splice;
 use function array_sum;
 use function array_values;
@@ -62,6 +65,7 @@ use function in_array;
 use function is_dir;
 use function is_int;
 use function ksort;
+use function max;
 use function memory_get_peak_usage;
 use function microtime;
 use function mkdir;
@@ -72,10 +76,13 @@ use function preg_match;
 use function round;
 use function sha1;
 use function sprintf;
+use function str_pad;
+use function str_repeat;
 use function str_replace;
 use function str_starts_with;
 use function strlen;
 use function trim;
+use function uksort;
 use function usort;
 
 use const DEBUG_BACKTRACE_IGNORE_ARGS;
@@ -83,12 +90,19 @@ use const PHP_EOL;
 use const PSALM_VERSION;
 use const STDERR;
 use const STDOUT;
+use const STR_PAD_LEFT;
 
 /**
  * @api
  */
 final class IssueBuffer
 {
+    /** The error types are broken down in the summary above this many errors */
+    private const ERROR_BREAKDOWN_THRESHOLD = 10;
+
+    /** How many error types the breakdown shows */
+    private const ERROR_BREAKDOWN_TYPES = 5;
+
     /**
      * @var array<string, list<IssueData>>
      */
@@ -655,7 +669,7 @@ final class IssueBuffer
                                     $issue['o'] === 1 ? 'entry' : 'entries',
                                 ),
                                 $file_path,
-                                '',
+                                Path::join($codebase->config->base_dir, $file_path),
                                 '',
                                 '',
                                 0,
@@ -675,6 +689,9 @@ final class IssueBuffer
 
         if ($codebase->config->find_unused_issue_handler_suppression) {
             if ($is_full && !$codebase->diff_run) {
+                $config_path = $codebase->config->source_filename ?? '';
+                $config_name = $config_path === '' ? '' : $codebase->config->shortenFileName($config_path);
+
                 foreach ($codebase->config->getIssueHandlers() as $type => $handler) {
                     foreach ($handler->getFilters() as $filter) {
                         if ($filter->suppressions > 0 || $filter->getErrorLevel() != Config::REPORT_SUPPRESS) {
@@ -682,28 +699,27 @@ final class IssueBuffer
                         }
                         $issues_data['config'][] = new IssueData(
                             IssueData::SEVERITY_ERROR,
-                            0,
-                            0,
+                            $filter->line,
+                            $filter->line,
                             UnusedIssueHandlerSuppression::getIssueType(),
                             sprintf(
                                 'Suppressed issue type "%s" for %s was not thrown.',
                                 $type,
-                                str_replace(
-                                    $codebase->config->base_dir,
-                                    '',
-                                    implode(', ', [...$filter->getFiles(), ...$filter->getDirectories()]),
-                                ),
+                                implode(', ', array_map(
+                                    $codebase->config->shortenFileName(...),
+                                    [...$filter->getFiles(), ...$filter->getDirectories()],
+                                )),
                             ),
-                            $codebase->config->source_filename ?? '',
+                            $config_name,
+                            $config_path,
                             '',
                             '',
-                            '',
                             0,
                             0,
                             0,
                             0,
-                            0,
-                            0,
+                            $filter->line > 0 ? 1 : 0,
+                            $filter->line > 0 ? 1 : 0,
                             UnusedIssueHandlerSuppression::SHORTCODE,
                             UnusedIssueHandlerSuppression::ERROR_LEVEL,
                         );
@@ -723,10 +739,15 @@ final class IssueBuffer
             ),
         );
 
-        foreach ($issues_data as $file_issues) {
+        /** @var array<string, int> $error_counts_by_type */
+        $error_counts_by_type = [];
+        $files_with_errors = [];
+        foreach ($issues_data as $file_path => $file_issues) {
             foreach ($file_issues as $issue_data) {
                 if ($issue_data->severity === Config::REPORT_ERROR) {
                     ++$error_count;
+                    $error_counts_by_type[$issue_data->type] = ($error_counts_by_type[$issue_data->type] ?? 0) + 1;
+                    $files_with_errors[$file_path] = true;
                 } else {
                     ++$info_count;
                 }
@@ -786,33 +807,40 @@ final class IssueBuffer
                 echo "\n";
             }
 
-            if ($error_count) {
-                $errors = number_format($error_count) . ($error_count === 1 ? ' error' : ' errors') . ' found';
-                echo ($use_color ? "\e[0;31m{$errors}\e[0m" : $errors) . "\n";
-            } else {
-                self::printSuccessMessage($project_analyzer);
-            }
-
-            if ($baselined_count) {
-                echo number_format($baselined_count) . ' known '
-                    . ($baselined_count === 1 ? 'issue is' : 'issues are') . ' suppressed by the baseline' . "\n";
-            }
-
             $show_info = $project_analyzer->stdout_report_options->show_info;
             $show_suggestions = $project_analyzer->stdout_report_options->show_suggestions;
 
-            $other_count = $info_count - $baselined_count;
-            if ($other_count > 0 && ($show_info || $show_suggestions)) {
-                echo number_format($other_count) . ' other ' . ($other_count === 1 ? 'issue' : 'issues') . ' found'
-                    . ($show_info ? '' : ', show with ' . $highlight('--show-info=true')) . "\n";
+            // e.g. "396 errors in 112 files · 27 info hidden · 121 baselined"
+            if ($error_count) {
+                $file_count = count($files_with_errors);
+                $summary = number_format($error_count) . ($error_count === 1 ? ' error' : ' errors')
+                    . ' in ' . number_format($file_count) . ($file_count === 1 ? ' file' : ' files');
+                $summary = $use_color ? "\e[0;31m{$summary}\e[0m" : $summary;
+            } else {
+                $summary = $use_color ? "\e[0;32mNo errors found!\e[0m" : 'No errors found!';
             }
 
-            if (self::$fixable_issue_counts && $show_suggestions && !$codebase->taint_flow_graph) {
-                $total_count = array_sum(self::$fixable_issue_counts);
-                $command = '--alter --issues=' . implode(',', array_keys(self::$fixable_issue_counts)) . ' --dry-run';
+            $other_count = $info_count - $baselined_count;
+            if ($other_count > 0 && ($show_info || $show_suggestions)) {
+                $summary .= ' · ' . number_format($other_count) . ' info' . ($show_info ? '' : ' hidden');
+            }
 
-                echo 'Psalm can fix ' . number_format($total_count) . ($show_info ? '' : ' of these')
-                    . ($total_count === 1 ? ' issue' : ' issues') . ', preview with ' . $highlight($command) . "\n";
+            if ($baselined_count) {
+                $summary .= ' · ' . number_format($baselined_count) . ' baselined';
+            }
+
+            echo $summary . "\n";
+
+            if ($error_count > self::ERROR_BREAKDOWN_THRESHOLD) {
+                echo self::getErrorBreakdown($error_counts_by_type, self::$fixable_issue_counts);
+            }
+
+            if (self::$fixable_issue_counts && $show_suggestions) {
+                $total_count = array_sum(self::$fixable_issue_counts);
+                $command = 'psalm --alter --issues=' . implode(',', array_keys(self::$fixable_issue_counts))
+                    . ' --dry-run';
+
+                echo 'Fix ' . number_format($total_count) . ' automatically: ' . $highlight($command) . "\n";
             }
 
             if ($start_time) {
@@ -909,6 +937,48 @@ final class IssueBuffer
         }
 
         return number_format($bytes / 1_024 ** 2) . ' MB';
+    }
+
+    /**
+     * The most frequent error types, e.g. "  312  MissingOverrideAttribute   fixable"
+     *
+     * @param array<string, int> $error_counts_by_type
+     * @param array<string, int> $fixable_issue_counts
+     * @psalm-pure
+     */
+    private static function getErrorBreakdown(array $error_counts_by_type, array $fixable_issue_counts): string
+    {
+        uksort(
+            $error_counts_by_type,
+            static fn(string $a, string $b): int
+                => [$error_counts_by_type[$b], $a] <=> [$error_counts_by_type[$a], $b],
+        );
+
+        $shown = array_slice($error_counts_by_type, 0, self::ERROR_BREAKDOWN_TYPES, true);
+        if ($shown === []) {
+            return '';
+        }
+
+        $count_width = strlen(number_format(max($shown)));
+        $type_width = max(array_map(strlen(...), array_keys($shown)));
+
+        $breakdown = '';
+        foreach ($shown as $type => $count) {
+            $line = '  ' . str_pad(number_format($count), $count_width, ' ', STR_PAD_LEFT) . '  ' . $type;
+            if (isset($fixable_issue_counts[$type])) {
+                $line = str_pad($line, 4 + $count_width + $type_width) . '   fixable';
+            }
+
+            $breakdown .= $line . "\n";
+        }
+
+        $hidden_types = count($error_counts_by_type) - count($shown);
+        if ($hidden_types > 0) {
+            $breakdown .= str_repeat(' ', 4 + $count_width) . '+' . $hidden_types
+                . ($hidden_types === 1 ? ' more type' : ' more types') . "\n";
+        }
+
+        return $breakdown;
     }
 
     /**
