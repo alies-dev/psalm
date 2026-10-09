@@ -68,6 +68,7 @@ use function ksort;
 use function max;
 use function memory_get_peak_usage;
 use function microtime;
+use function min;
 use function mkdir;
 use function number_format;
 use function ob_get_clean;
@@ -835,12 +836,20 @@ final class IssueBuffer
                 echo self::getErrorBreakdown($error_counts_by_type, self::$fixable_issue_counts);
             }
 
-            if (self::$fixable_issue_counts && $show_suggestions) {
-                $total_count = array_sum(self::$fixable_issue_counts);
-                $command = 'psalm --alter --issues=' . implode(',', array_keys(self::$fixable_issue_counts))
-                    . ' --dry-run';
+            // Fixability is only counted by type: only suggest fixing the types of the errors reported,
+            // not those of info issues or baselined ones
+            $fixable_error_counts = [];
+            foreach (self::$fixable_issue_counts as $type => $count) {
+                if (isset($error_counts_by_type[$type])) {
+                    $fixable_error_counts[$type] = min($count, $error_counts_by_type[$type]);
+                }
+            }
 
-                echo 'Fix ' . number_format($total_count) . ' automatically: ' . $highlight($command) . "\n";
+            if ($fixable_error_counts && $show_suggestions) {
+                $command = 'psalm --alter --issues=' . implode(',', array_keys($fixable_error_counts)) . ' --dry-run';
+
+                echo 'Fix ' . number_format(array_sum($fixable_error_counts)) . ' automatically: '
+                    . $highlight($command) . "\n";
             }
 
             if ($start_time) {
