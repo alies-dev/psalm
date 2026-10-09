@@ -811,7 +811,7 @@ final class IssueBuffer
             $show_info = $project_analyzer->stdout_report_options->show_info;
             $show_suggestions = $project_analyzer->stdout_report_options->show_suggestions;
 
-            // e.g. "396 errors in 112 files · 27 info hidden · 121 baselined"
+            // e.g. "396 errors in 112 files · 121 baselined · 27 info hidden"
             if ($error_count) {
                 $file_count = count($files_with_errors);
                 $summary = number_format($error_count) . ($error_count === 1 ? ' error' : ' errors')
@@ -821,13 +821,14 @@ final class IssueBuffer
                 $summary = $use_color ? "\e[0;32mNo errors found!\e[0m" : 'No errors found!';
             }
 
+            // the baseline only holds errors: they come right after the reported ones
+            if ($baselined_count) {
+                $summary .= ' · ' . number_format($baselined_count) . ' baselined';
+            }
+
             $other_count = $info_count - $baselined_count;
             if ($other_count > 0 && ($show_info || $show_suggestions)) {
                 $summary .= ' · ' . number_format($other_count) . ' info' . ($show_info ? '' : ' hidden');
-            }
-
-            if ($baselined_count) {
-                $summary .= ' · ' . number_format($baselined_count) . ' baselined';
             }
 
             echo $summary . "\n";
