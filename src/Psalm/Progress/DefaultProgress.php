@@ -16,13 +16,17 @@ use function pcntl_alarm;
 use function pcntl_async_signals;
 use function pcntl_signal;
 use function pcntl_signal_get_handler;
+use function sapi_windows_vt100_support;
 use function sprintf;
 use function str_ends_with;
 use function str_repeat;
+use function stripos;
 use function strlen;
 
+use const PHP_OS;
 use const SIGALRM;
 use const SIG_DFL;
+use const STDERR;
 
 /**
  * Interactive progress: one status line redrawn in place while a phase runs,
@@ -51,6 +55,8 @@ class DefaultProgress extends LongProgress
     private int $status_width = 0;
 
     private bool $drawing_status = false;
+
+    private ?bool $supports_ansi = null;
 
     /** Non-zero while output is being written, so that the ticker doesn't interleave with it */
     private int $busy = 0;
@@ -178,7 +184,7 @@ class DefaultProgress extends LongProgress
             $line .= $status;
 
             $this->drawing_status = true;
-            $this->write("\r" . $line . str_repeat(' ', max(0, $this->status_width - $width)));
+            $this->write("\r" . $line . $this->eraseRestOfLine($this->status_width - $width));
             $this->drawing_status = false;
 
             $this->status_width = $width;
@@ -199,11 +205,25 @@ class DefaultProgress extends LongProgress
             $this->status_width = 0;
 
             $this->drawing_status = true;
-            $this->write("\r" . str_repeat(' ', $width) . "\r");
+            $this->write("\r" . $this->eraseRestOfLine($width) . "\r");
             $this->drawing_status = false;
         } finally {
             --$this->busy;
         }
+    }
+
+    /**
+     * Erases the rest of the line, so that copying the terminal output doesn't copy trailing spaces.
+     * Writes $width spaces instead on Windows terminals without ANSI support.
+     *
+     * @psalm-capabilities read-props|write-this-props|write-refs
+     */
+    private function eraseRestOfLine(int $width): string
+    {
+        $this->supports_ansi ??= stripos(PHP_OS, 'WIN') !== 0
+            || (function_exists('sapi_windows_vt100_support') && sapi_windows_vt100_support(STDERR, true));
+
+        return $this->supports_ansi ? "\e[K" : str_repeat(' ', max(0, $width));
     }
 
     /**
