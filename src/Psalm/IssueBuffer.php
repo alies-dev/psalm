@@ -853,12 +853,20 @@ final class IssueBuffer
                 }
             }
 
+            $skipped_checks = [];
+            if ($project_analyzer->unused_code_skipped) {
+                $skipped_checks[] = 'unused code';
+            }
+
             if ($codebase->config->find_unused_issue_handler_suppression && (!$is_full || $codebase->diff_run)) {
+                $skipped_checks[] = 'unused <issueHandlers> suppressions';
+            }
+
+            if ($skipped_checks) {
                 fwrite(
                     STDERR,
-                    PHP_EOL . 'To whom it may concern: Psalm cannot detect unused issue handler suppressions when'
-                    . PHP_EOL . 'analyzing individual files and folders or running in diff mode. Run on the full'
-                    . PHP_EOL . 'project with diff mode off to enable unused issue handler detection.' . PHP_EOL,
+                    PHP_EOL . 'Note: ' . implode(' and ', $skipped_checks)
+                    . ' are only reported on a full run.' . PHP_EOL,
                 );
             }
         }
