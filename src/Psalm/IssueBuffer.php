@@ -844,13 +844,16 @@ final class IssueBuffer
             }
 
             if ($start_time) {
-                echo "\n" . 'Checks took ' . number_format(microtime(true) - $start_time, 1) . 's'
-                    . ', peak memory ' . self::formatMemory(memory_get_peak_usage()) . "\n";
+                // e.g. "72.8s · 11.9 GB peak · type coverage 99.87%"
+                $stats = number_format(microtime(true) - $start_time, 1) . 's'
+                    . ' · ' . self::formatMemory(memory_get_peak_usage()) . ' peak';
 
                 $type_inference_summary = $codebase->analyzer->getTypeInferenceSummary($codebase);
                 if ($type_inference_summary !== '') {
-                    echo $type_inference_summary . "\n";
+                    $stats .= ' · ' . $type_inference_summary;
                 }
+
+                echo "\n" . $stats . "\n";
 
                 if ($add_stats) {
                     echo '-----------------' . "\n";

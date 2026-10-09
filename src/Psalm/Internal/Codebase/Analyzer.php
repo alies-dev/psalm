@@ -1097,6 +1097,8 @@ final class Analyzer
     }
 
     /**
+     * e.g. "type coverage 99.87%", for the summary line
+     *
      * @psalm-capabilities read-props|write-this-props|write-props|write-refs
      */
     public function getTypeInferenceSummary(Codebase $codebase): string
@@ -1117,10 +1119,10 @@ final class Analyzer
 
         $total_files = count($all_deep_scanned_files);
 
-        $lines = [];
+        $parts = [];
 
         if (!$total_files) {
-            $lines[] = 'No files analyzed';
+            $parts[] = 'no files analyzed';
         }
 
         if ($total) {
@@ -1128,10 +1130,10 @@ final class Analyzer
             $percentage = $nonmixed_count === $total
                 ? '100'
                 : number_format((float) intdiv(10_000 * $nonmixed_count, $total) / 100.0, 2);
-            $lines[] = 'Type coverage: ' . $percentage . '%';
+            $parts[] = 'type coverage ' . $percentage . '%';
         }
 
-        return implode("\n", $lines);
+        return implode(' · ', $parts);
     }
 
     public function getNonMixedStats(): string
