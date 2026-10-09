@@ -86,7 +86,8 @@ use const PHP_EOL;
  *     file_storage:array<lowercase-string, FileStorage>,
  *     taint_data: ?TaintFlowGraph,
  *     global_constants: array<string, Union>,
- *     global_functions: array<lowercase-string, FunctionStorage>
+ *     global_functions: array<lowercase-string, FunctionStorage>,
+ *     progress_output: string
  * }
  */
 
@@ -384,6 +385,10 @@ final class Scanner
 
             foreach ($forked_pool_data as $pool_data) {
                 $pool_data = $pool_data->await();
+
+                if ($pool_data['progress_output'] !== '') {
+                    $this->progress->write($pool_data['progress_output']);
+                }
 
                 IssueBuffer::addIssues($pool_data['issues']);
 

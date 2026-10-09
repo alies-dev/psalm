@@ -7,6 +7,7 @@ namespace Psalm\Progress;
 use LogicException;
 use Override;
 
+use function implode;
 use function in_array;
 use function intdiv;
 use function microtime;
@@ -56,6 +57,9 @@ class LongProgress extends Progress
 
     /** Whether the grid left the cursor in the middle of a line */
     private bool $mid_line = false;
+
+    /** @var list<string>|null Output of a forked worker, kept for the main process */
+    private ?array $worker_output = null;
 
     /**
      * @psalm-mutation-free
@@ -130,6 +134,59 @@ class LongProgress extends Progress
     public function finish(): void
     {
         $this->endPhase();
+    }
+
+    /**
+     * In a forked worker, output is kept for the main process (see takeWorkerOutput()):
+     * the worker would otherwise write over the status line the main process draws.
+     */
+    #[Override]
+    public function write(string $message): void
+    {
+        if ($this->worker_output !== null) {
+            $this->worker_output[] = $message;
+            return;
+        }
+
+        parent::write($message);
+    }
+
+    /**
+     * @psalm-external-mutation-free
+     */
+    #[Override]
+    public function startBufferingWorkerOutput(): void
+    {
+        $this->worker_output ??= [];
+    }
+
+    /**
+     * @psalm-external-mutation-free
+     */
+    #[Override]
+    public function takeWorkerOutput(): string
+    {
+        if ($this->worker_output === null) {
+            return '';
+        }
+
+        $output = implode('', $this->worker_output);
+        $this->worker_output = [];
+
+        return $output;
+    }
+
+    /**
+     * @psalm-mutation-free
+     */
+    protected function isBufferingWorkerOutput(): bool
+    {
+        return $this->worker_output !== null;
+    }
+
+    protected function getPhaseDuration(): float
+    {
+        return microtime(true) - $this->started;
     }
 
     protected function phaseStarted(): void
@@ -318,7 +375,7 @@ class LongProgress extends Progress
      */
     private function getSummary(Phase $phase): ?string
     {
-        $duration = microtime(true) - $this->started;
+        $duration = $this->getPhaseDuration();
         if (!self::isWorthReporting($phase, $duration)) {
             return null;
         }

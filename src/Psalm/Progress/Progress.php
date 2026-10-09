@@ -39,14 +39,42 @@ abstract class Progress
 
     abstract public function alterFileDone(string $file_name): void;
 
+    /**
+     * Writes a message to the user. Psalm and plugins should write to the terminal through this method
+     * (or warning()) rather than to STDERR directly, so the message doesn't get mixed with the progress output.
+     */
     public function write(string $message): void
     {
         fwrite(STDERR, $message);
     }
 
+    /**
+     * Warns the user about something not related to a location in the code (e.g. a missing extension, a plugin
+     * misconfiguration). Problems in the analyzed code should be reported as issues instead.
+     */
     public function warning(string $message): void
     {
         $this->write('Warning: ' . $message . PHP_EOL);
+    }
+
+    /**
+     * Called in a forked worker: from then on, the progress may keep what is written instead of writing it, for
+     * the main process to write it (see takeWorkerOutput())
+     *
+     * @internal
+     */
+    public function startBufferingWorkerOutput(): void
+    {
+    }
+
+    /**
+     * Returns what was kept since startBufferingWorkerOutput() was called, and forgets it
+     *
+     * @internal
+     */
+    public function takeWorkerOutput(): string
+    {
+        return '';
     }
 
     final protected static function doesTerminalSupportUtf8(): bool

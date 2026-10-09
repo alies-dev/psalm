@@ -86,6 +86,7 @@ use const PHP_INT_MAX;
  *      function_docblock_manipulators: array<string, array<int, FunctionDocblockManipulator>>,
  *      mutable_classes: array<string, int>,
  *      issue_handlers: array{type: string, index: int, count: int}[],
+ *      progress_output: string,
  * }
  */
 
@@ -332,6 +333,10 @@ final class Analyzer
 
             foreach (Future::iterate($forked_pool_data) as $pool_data) {
                 $pool_data = $pool_data->await();
+
+                if ($pool_data['progress_output'] !== '') {
+                    $this->progress->write($pool_data['progress_output']);
+                }
 
                 IssueBuffer::addIssues($pool_data['issues']);
                 IssueBuffer::addFixableIssues($pool_data['fixable_issue_counts']);
