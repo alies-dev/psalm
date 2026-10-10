@@ -422,7 +422,7 @@ final class ProjectAnalyzer
             $message .= ' · unsupported extensions: ' . implode(', ', $unsupported_php_extensions);
         }
 
-        $this->progress->write(PHP_EOL . $message . PHP_EOL . PHP_EOL);
+        $this->progress->write($message . PHP_EOL . PHP_EOL);
 
         $enabled_extensions_names = array_keys(array_filter($codebase->config->php_extensions));
         if (count($enabled_extensions_names) > 0) {

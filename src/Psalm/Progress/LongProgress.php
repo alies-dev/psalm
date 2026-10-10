@@ -252,7 +252,7 @@ class LongProgress extends Progress
     }
 
     /**
-     * What the current phase is doing, e.g. "Analyzing files (16 threads)"
+     * What the current phase is doing, e.g. "Analyzing files · 16 threads"
      *
      * @psalm-mutation-free
      */
@@ -274,14 +274,14 @@ class LongProgress extends Progress
     }
 
     /**
-     * How far the current phase got, e.g. "4,320 / 8,629 files (50%), 12s"
+     * How far the current phase got, e.g. "4,320 / 8,629 files · 50% · 12s"
      */
     protected function getStatus(): string
     {
         $elapsed = (int) (microtime(true) - $this->started) . 's';
 
         if ($this->indeterminate) {
-            return ($this->progress > 0 ? 'pass ' . $this->progress . ', ' : '') . $elapsed;
+            return ($this->progress > 0 ? 'pass ' . $this->progress . ' · ' : '') . $elapsed;
         }
 
         if ($this->number_of_tasks === null || $this->number_of_tasks === 0) {
@@ -292,10 +292,10 @@ class LongProgress extends Progress
             . ($this->phase === Phase::MERGING_THREAD_RESULTS ? ' threads' : ' files');
 
         if ($this->fixed_size) {
-            $status .= ' (' . intdiv($this->progress * 100, $this->number_of_tasks) . '%)';
+            $status .= ' · ' . intdiv($this->progress * 100, $this->number_of_tasks) . '%';
         }
 
-        return $status . ', ' . $elapsed;
+        return $status . ' · ' . $elapsed;
     }
 
     /**
@@ -381,12 +381,12 @@ class LongProgress extends Progress
         }
 
         $took = number_format($duration, 1) . 's';
-        $tasks = number_format($this->progress);
+        $tasks = number_format($this->progress) . ($this->progress === 1 ? ' file' : ' files');
 
         return match ($phase) {
-            Phase::SCAN => "Scanned $tasks files in $took",
-            Phase::ANALYSIS => "Analyzed $tasks files in $took",
-            Phase::ALTERING => "Processed $tasks files in $took",
+            Phase::SCAN => "Scanned $tasks in $took",
+            Phase::ANALYSIS => "Analyzed $tasks in $took",
+            Phase::ALTERING => "Processed $tasks in $took",
             Phase::TAINT_GRAPH_RESOLUTION => "Resolved taint graph in $took",
             Phase::JIT_COMPILATION, Phase::PRELOADING => "Preloaded in $took",
             Phase::MERGING_THREAD_RESULTS => "Merged thread results in $took",
@@ -400,7 +400,7 @@ class LongProgress extends Progress
      */
     private function getThreadsSuffix(): string
     {
-        return $this->threads > 1 ? " ({$this->threads} threads)" : '';
+        return $this->threads > 1 ? " · {$this->threads} threads" : '';
     }
 
     private function writeTick(string $tick): void

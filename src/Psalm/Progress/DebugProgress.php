@@ -30,17 +30,17 @@ final class DebugProgress extends Progress
     #[Override]
     public function startPhase(Phase $phase, int $threads = 1): void
     {
-        $threads = $threads === 1 ? '' : " ($threads threads)";
+        $threads = $threads === 1 ? '' : " · $threads threads";
         $this->write(match ($phase) {
-            Phase::SCAN => "\nScanning files$threads...\n\n",
-            Phase::ANALYSIS => "\nAnalyzing files$threads...\n",
-            Phase::ALTERING => "\nUpdating files$threads...\n",
-            Phase::TAINT_GRAPH_RESOLUTION => "\nResolving taint graph$threads...\n",
-            Phase::JIT_COMPILATION => "\nJIT compilation in progress$threads...\n",
-            Phase::PRELOADING => "\nPreloading in progress$threads...\n",
-            Phase::MERGING_THREAD_RESULTS => "\nMerging thread results$threads...\n",
-            Phase::LOADING_CACHE => "\nLoading cached results$threads...\n",
-            Phase::FINISHING => "\nFinishing$threads...\n",
+            Phase::SCAN => "Scanning files$threads...\n",
+            Phase::ANALYSIS => "Analyzing files$threads...\n",
+            Phase::ALTERING => "Updating files$threads...\n",
+            Phase::TAINT_GRAPH_RESOLUTION => "Resolving taint graph$threads...\n",
+            Phase::JIT_COMPILATION => "JIT compilation$threads...\n",
+            Phase::PRELOADING => "Preloading$threads...\n",
+            Phase::MERGING_THREAD_RESULTS => "Merging thread results$threads...\n",
+            Phase::LOADING_CACHE => "Loading cached results$threads...\n",
+            Phase::FINISHING => "Finishing$threads...\n",
         });
     }
     

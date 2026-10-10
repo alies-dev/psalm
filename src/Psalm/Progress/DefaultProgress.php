@@ -11,6 +11,7 @@ use function hrtime;
 use function is_callable;
 use function is_int;
 use function max;
+use function mb_strlen;
 use function number_format;
 use function pcntl_alarm;
 use function pcntl_async_signals;
@@ -21,7 +22,6 @@ use function sprintf;
 use function str_ends_with;
 use function str_repeat;
 use function stripos;
-use function strlen;
 
 use const PHP_OS;
 use const SIGALRM;
@@ -101,6 +101,29 @@ class DefaultProgress extends LongProgress
     }
 
     #[Override]
+    public function writeReport(string $message): void
+    {
+        if ($this->isBufferingWorkerOutput()) {
+            parent::writeReport($message);
+            return;
+        }
+
+        ++$this->busy;
+        try {
+            $status_was_drawn = $this->status_width > 0;
+            $this->clearStatus();
+
+            parent::writeReport($message);
+
+            if ($status_was_drawn && str_ends_with($message, "\n")) {
+                $this->drawStatus();
+            }
+        } finally {
+            --$this->busy;
+        }
+    }
+
+    #[Override]
     public function finish(): void
     {
         parent::finish();
@@ -152,7 +175,7 @@ class DefaultProgress extends LongProgress
         };
 
         $tasks = $phase === Phase::SCAN || $phase === Phase::ANALYSIS || $phase === Phase::ALTERING
-            ? number_format($this->progress) . ' files'
+            ? number_format($this->progress) . ($this->progress === 1 ? ' file' : ' files')
             : '';
 
         $this->writeLine(sprintf(
@@ -173,7 +196,7 @@ class DefaultProgress extends LongProgress
             $status = $this->getStatus();
 
             $line = $label . ' ';
-            $width = strlen($label) + 1 + strlen($status);
+            $width = mb_strlen($label) + 1 + mb_strlen($status);
 
             if ($this->fixed_size && $this->number_of_tasks > 0) {
                 $line .= self::renderInnerProgressBar(self::BAR_WIDTH, $this->progress / $this->number_of_tasks)

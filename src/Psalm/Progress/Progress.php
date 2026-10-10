@@ -14,6 +14,7 @@ use const E_ERROR;
 use const PHP_EOL;
 use const PHP_OS;
 use const STDERR;
+use const STDOUT;
 
 /**
  * @api
@@ -55,6 +56,15 @@ abstract class Progress
     public function warning(string $message): void
     {
         $this->write('Warning: ' . $message . PHP_EOL);
+    }
+
+    /**
+     * Writes output that is part of the result rather than a message (e.g. the --alter --dry-run diff) to STDOUT,
+     * so that it doesn't get mixed with the progress output either.
+     */
+    public function writeReport(string $message): void
+    {
+        fwrite(STDOUT, $message);
     }
 
     /**

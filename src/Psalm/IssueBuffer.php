@@ -74,7 +74,6 @@ use function number_format;
 use function ob_get_clean;
 use function ob_start;
 use function preg_match;
-use function round;
 use function sha1;
 use function sprintf;
 use function str_pad;
@@ -87,9 +86,7 @@ use function uksort;
 use function usort;
 
 use const DEBUG_BACKTRACE_IGNORE_ARGS;
-use const PHP_EOL;
 use const PSALM_VERSION;
-use const STDERR;
 use const STDOUT;
 use const STR_PAD_LEFT;
 
@@ -305,7 +302,7 @@ final class IssueBuffer
             ob_start();
             debug_print_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
             $trace = ob_get_clean();
-            fwrite(STDERR, "\nEmitting {$e->getShortLocation()} $issue_type {$e->message}\n$trace\n");
+            $project_analyzer->progress->write("Emitting {$e->getShortLocation()} $issue_type {$e->message}\n$trace\n");
         }
 
         // Make issue type for trace variable specific ("Trace" => "Trace~$var").
@@ -818,7 +815,7 @@ final class IssueBuffer
                     . ' in ' . number_format($file_count) . ($file_count === 1 ? ' file' : ' files');
                 $summary = $use_color ? "\e[0;31m{$summary}\e[0m" : $summary;
             } else {
-                $summary = $use_color ? "\e[0;32mNo errors found!\e[0m" : 'No errors found!';
+                $summary = self::formatSuccessMessage($use_color);
             }
 
             // the baseline only holds errors: they come right after the reported ones
@@ -866,31 +863,23 @@ final class IssueBuffer
                 echo "\n" . $stats . "\n";
 
                 if ($add_stats) {
-                    echo '-----------------' . "\n";
-                    echo $codebase->analyzer->getNonMixedStats();
-                    echo "\n";
+                    echo "\nType coverage by file:\n" . $codebase->analyzer->getNonMixedStats();
                 }
 
-                if ($project_analyzer->debug_performance) {
-                    echo '-----------------' . "\n";
-                    echo 'Slow-to-analyze functions' . "\n";
-                    echo '-----------------' . "\n\n";
+                $function_timings = $project_analyzer->debug_performance
+                    ? $codebase->analyzer->getFunctionTimings()
+                    : [];
 
-                    $function_timings = $codebase->analyzer->getFunctionTimings();
+                if ($function_timings) {
+                    echo "\nSlowest functions to analyze:\n";
 
                     arsort($function_timings);
 
-                    $i = 0;
-
-                    foreach ($function_timings as $function_id => $time) {
-                        if (++$i > 10) {
-                            break;
-                        }
-
-                        echo $function_id . ': ' . round(1_000 * $time, 2) . 'ms per node' . "\n";
+                    // e.g. "   1.23 ms/node  Foo::bar"
+                    foreach (array_slice($function_timings, 0, 10, true) as $function_id => $time) {
+                        echo '  ' . str_pad(number_format(1_000 * $time, 2), 6, ' ', STR_PAD_LEFT) . ' ms/node  '
+                            . $function_id . "\n";
                     }
-
-                    echo "\n";
                 }
             }
 
@@ -904,11 +893,7 @@ final class IssueBuffer
             }
 
             if ($skipped_checks) {
-                fwrite(
-                    STDERR,
-                    PHP_EOL . 'Note: ' . implode(' and ', $skipped_checks)
-                    . ' are only reported on a full run.' . PHP_EOL,
-                );
+                echo "\nNote: " . implode(' and ', $skipped_checks) . ' are only reported on a full run.' . "\n";
             }
         }
 
@@ -935,9 +920,15 @@ final class IssueBuffer
             throw new UnexpectedValueException('Cannot print success message without stdout report options');
         }
 
-        $message = 'No errors found!';
+        echo self::formatSuccessMessage($project_analyzer->stdout_report_options->use_color) . "\n";
+    }
 
-        echo ($project_analyzer->stdout_report_options->use_color ? "\e[0;32m{$message}\e[0m" : $message) . "\n";
+    /**
+     * @psalm-pure
+     */
+    private static function formatSuccessMessage(bool $use_color): string
+    {
+        return $use_color ? "\e[0;32mNo errors found!\e[0m" : 'No errors found!';
     }
 
     /**

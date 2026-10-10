@@ -48,6 +48,7 @@ use function number_format;
 use function pathinfo;
 use function preg_replace;
 use function str_ends_with;
+use function str_pad;
 use function str_starts_with;
 use function strlen;
 use function strpos;
@@ -57,6 +58,7 @@ use function usort;
 
 use const PATHINFO_EXTENSION;
 use const PHP_INT_MAX;
+use const STR_PAD_LEFT;
 
 /**
  * @psalm-type  TaggedCodeType = array<int, array{0: int, 1: non-empty-string}>
@@ -290,9 +292,11 @@ final class Analyzer
             $project_analyzer->prepareMigration();
 
             $files_to_update = $this->files_to_update ?? $this->files_to_analyze;
+            $this->progress->expand(count($files_to_update));
 
             foreach ($files_to_update as $file_path) {
                 $this->updateFile($file_path, $project_analyzer->dry_run);
+                $this->progress->taskDone(0);
             }
 
             $project_analyzer->migrateCode();
@@ -1126,11 +1130,7 @@ final class Analyzer
         }
 
         if ($total) {
-            // Round down, so 99.999% doesn't show as 100%
-            $percentage = $nonmixed_count === $total
-                ? '100'
-                : number_format((float) intdiv(10_000 * $nonmixed_count, $total) / 100.0, 2);
-            $parts[] = 'type coverage ' . $percentage . '%';
+            $parts[] = 'type coverage ' . self::formatCoverage($nonmixed_count, $total);
         }
 
         return implode(' · ', $parts);
@@ -1159,14 +1159,31 @@ final class Analyzer
                 [$path_mixed_count, $path_nonmixed_count] = $this->mixed_counts[$file_path];
 
                 if ($path_mixed_count + $path_nonmixed_count) {
-                    $stats .= number_format(100 * $path_nonmixed_count / ($path_mixed_count + $path_nonmixed_count), 3)
-                        . '% ' . $this->config->shortenFileName($file_path)
-                        . ' (' . $path_mixed_count . ' mixed)' . "\n";
+                    // e.g. "  99.87%  src/A.php · 3 mixed"
+                    $stats .= '  ' . str_pad(
+                        self::formatCoverage($path_nonmixed_count, $path_mixed_count + $path_nonmixed_count),
+                        7,
+                        ' ',
+                        STR_PAD_LEFT,
+                    ) . '  ' . $this->config->shortenFileName($file_path)
+                        . ' · ' . number_format($path_mixed_count) . ' mixed' . "\n";
                 }
             }
         }
 
         return $stats;
+    }
+
+    /**
+     * Rounds down, so 99.999% doesn't show as 100%
+     *
+     * @psalm-pure
+     */
+    private static function formatCoverage(int $nonmixed_count, int $total): string
+    {
+        return ($nonmixed_count === $total
+            ? '100'
+            : number_format((float) intdiv(10_000 * $nonmixed_count, $total) / 100.0, 2)) . '%';
     }
 
     /**
@@ -1234,8 +1251,6 @@ final class Analyzer
         }
 
         if ($dry_run) {
-            echo $file_path . ':' . "\n";
-
             $differ = new Differ(
                 new StrictUnifiedDiffOutputBuilder([
                     'fromFile' => $file_path,
@@ -1243,7 +1258,10 @@ final class Analyzer
                 ]),
             );
 
-            echo $differ->diff($this->file_provider->getContents($file_path), $existing_contents);
+            $this->progress->writeReport(
+                $file_path . ':' . "\n"
+                . $differ->diff($this->file_provider->getContents($file_path), $existing_contents),
+            );
 
             return;
         }
