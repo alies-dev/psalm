@@ -28,6 +28,7 @@ use function is_array;
 use function is_string;
 use function json_encode;
 use function parse_url;
+use function preg_replace;
 use function sprintf;
 use function strip_tags;
 use function strlen;
@@ -60,7 +61,7 @@ final class Shepherd implements AfterAnalysisInterface
         $progress = $event->getCodebase()->progress;
 
         if (!function_exists('curl_init')) {
-            $progress->warning('ext-curl is missing, results not sent to Shepherd');
+            $progress->warning('Results not sent to Shepherd: ext-curl is missing');
 
             return;
         }
@@ -162,7 +163,7 @@ final class Shepherd implements AfterAnalysisInterface
         /** @var array{http_code: int, ssl_verify_result: int} $curl_info */
         $curl_info = curl_getinfo($ch);
 
-        // The endpoint may hold a secret (e.g. a token in its path): only its host is shown, except with --debug
+        // The endpoint may hold a secret (e.g. a token in its query): only its host is shown
         $shepherd_host = (string) parse_url($endpoint, PHP_URL_HOST);
 
         $response_status_code = $curl_info['http_code'];
@@ -175,17 +176,34 @@ final class Shepherd implements AfterAnalysisInterface
             $problem = 'SSL error: ' . self::getCurlSslErrorMessage($curl_info['ssl_verify_result']);
         } elseif ($response_status_code === 0) {
             $problem = curl_error($ch) ?: 'no response';
+        } elseif ($response_status_code >= 300 && $response_status_code < 400) {
+            $problem = "HTTP $response_status_code redirect";
         } else {
             $problem = "HTTP $response_status_code";
         }
 
-        $progress->warning("Results not sent to Shepherd ($shepherd_host): $problem · details with --debug");
-        $progress->debug(sprintf(
+        $progress->warning("Results not sent to Shepherd ($shepherd_host): $problem. Run with --debug for details");
+        $progress->debug(self::redact(sprintf(
             "Shepherd endpoint: %s\nShepherd response: %s\ncURL info:\n%s\n",
             $endpoint,
             is_string($curl_result) ? strip_tags($curl_result) : 'n/a',
             var_export($curl_info, true),
-        ));
+        )));
+    }
+
+    /**
+     * Masks credentials and query values in URLs (the endpoint, the URL it redirected to, the request line),
+     * as debug output often ends up in CI logs
+     *
+     * @psalm-pure
+     */
+    private static function redact(string $text): string
+    {
+        return (string) preg_replace(
+            ['#(://)[^/@\s\']+@#', '#([?&][^=&\s\'\#]+)=[^&\s\'\#]*#'],
+            ['$1***@', '$1=***'],
+            $text,
+        );
     }
 
     /**

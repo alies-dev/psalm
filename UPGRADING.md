@@ -99,6 +99,10 @@
 
 - [BC] Property `Psalm\Progress\LongProgress::$prevPhase` was renamed to `$phase`, and method `LongProgress::reportPhaseDuration()` was removed: override `phaseStarted()`, `reportTask()` and `phaseEnded()` instead. `Psalm\Progress\Phase` has a new `FINISHING` case, started after the analysis while results are consolidated and caches are updated.
 
+- [BC] `Psalm\Config::loadFromXMLFile()` throws a `Psalm\Exception\ConfigException` instead of an `InvalidArgumentException` when the file can't be read or is empty, so the CLI reports it as a config error rather than a crash.
+
+- `Psalm\Progress\Progress` has a new `writeReport()` method, writing to STDOUT the output that is part of the result (e.g. the `--alter --dry-run` diff) without mixing it with the progress output. `LongProgress::finish()` writes a blank line after the progress lines, so the report or summary that follows is set apart.
+
 - [BC] The return type of Psalm\Type::getListAtomic() changed from Psalm\Type\Atomic\TKeyedArray to the non-covariant Psalm\Type\Atomic\TKeyedArray|Psalm\Type\Atomic\TArray
 
 - [BC] The return type of Psalm\Type::getListAtomic() changed from Psalm\Type\Atomic\TKeyedArray to Psalm\Type\Atomic\TKeyedArray|Psalm\Type\Atomic\TArray

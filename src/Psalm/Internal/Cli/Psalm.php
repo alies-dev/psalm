@@ -627,7 +627,8 @@ final class Psalm
                 exit(1);
             }
 
-            echo 'Created psalm.xml · level ' . $init_level . ' · run psalm to analyze the project' . PHP_EOL;
+            echo 'Created psalm.xml with errorLevel ' . $init_level . ' (1 is the strictest, 8 the most lenient).'
+                . ' Run Psalm again to analyze the project' . PHP_EOL;
             exit(0);
         }
     }
@@ -809,7 +810,10 @@ final class Psalm
         $baselineFile = $config->error_baseline;
 
         if (empty($baselineFile)) {
-            fwrite(STDERR, 'Cannot update baseline, because no baseline file is configured.' . PHP_EOL);
+            fwrite(
+                STDERR,
+                'No baseline file is configured: create one with --set-baseline=psalm-baseline.xml' . PHP_EOL,
+            );
             exit(1);
         }
 
@@ -830,10 +834,10 @@ final class Psalm
 
             $total_fixed_issues = $total_issues_current_baseline - $total_issues_updated_baseline;
 
-            if ($total_fixed_issues > 0) {
-                fwrite(STDERR, 'Baseline updated · ' . number_format($total_fixed_issues)
-                    . ($total_fixed_issues === 1 ? ' fixed issue' : ' fixed issues') . ' removed' . PHP_EOL);
-            }
+            fwrite(STDERR, $total_fixed_issues > 0
+                ? 'Baseline updated: ' . number_format($total_fixed_issues)
+                    . ($total_fixed_issues === 1 ? ' fixed issue' : ' fixed issues') . ' removed' . PHP_EOL
+                : 'Baseline unchanged: no fixed issues to remove' . PHP_EOL);
         } catch (ConfigException $exception) {
             fwrite(STDERR, 'Could not update baseline file: ' . $exception->getMessage() . PHP_EOL);
             exit(1);
@@ -912,8 +916,8 @@ final class Psalm
             exit(1);
         }
 
-        echo "\n" . 'Created psalm.xml · level ' . $init_level . ' (detected from the issues found)'
-            . ' · run psalm to analyze the project' . "\n";
+        echo 'Created psalm.xml with errorLevel ' . $init_level . ', picked from the issues found'
+            . ' (1 is the strictest, 8 the most lenient). Run Psalm again to analyze the project' . "\n";
         exit(0);
     }
 
@@ -1036,9 +1040,9 @@ final class Psalm
             $ini_handler->disableExtension('grpc');
 
             $progress->warning(
-                'ext-grpc disabled, as it breaks forked workers'
-                . ' (set grpc.enable_fork_support=1 and grpc.poll_strategy=epoll1 in php.ini to keep it)'
-                . ' · https://github.com/grpc/grpc/issues/20250#issuecomment-531321945',
+                'ext-grpc disabled, as it breaks forked workers. To keep it, set grpc.enable_fork_support=1'
+                . ' and grpc.poll_strategy=epoll1 in php.ini'
+                . ' (https://github.com/grpc/grpc/issues/20250#issuecomment-531321945)',
             );
         }
 

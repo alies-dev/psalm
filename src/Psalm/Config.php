@@ -683,6 +683,8 @@ final class Config
 
     /**
      * Creates a new config object from the file
+     *
+     * @throws ConfigException if the file can't be read, is empty or isn't a valid config
      */
     public static function loadFromXMLFile(string $file_path, string $current_dir): Config
     {
@@ -691,11 +693,13 @@ final class Config
         $base_dir = dirname($file_path);
 
         if ($file_contents === false) {
-            throw new InvalidArgumentException('Cannot open ' . $file_path);
+            throw new ConfigException('Cannot read the config file ' . $file_path);
         }
 
         if ($file_contents === '') {
-            throw new InvalidArgumentException('Invalid empty file ' . $file_path);
+            throw new ConfigException(
+                'The config file ' . $file_path . ' is empty: delete it and run psalm --init to create a new one',
+            );
         }
 
         try {
