@@ -11,18 +11,19 @@ use Psalm\Internal\Analyzer\IssueData;
 use Psalm\Internal\VersionUtils;
 use Psalm\Plugin\EventHandler\AfterAnalysisInterface;
 use Psalm\Plugin\EventHandler\Event\AfterAnalysisEvent;
+use Psalm\Progress\Progress;
 
 use function array_filter;
 use function array_key_exists;
 use function array_merge;
 use function array_values;
 use function assert;
+use function curl_error;
 use function curl_exec;
 use function curl_getinfo;
 use function curl_init;
 use function curl_setopt;
 use function function_exists;
-use function fwrite;
 use function is_array;
 use function is_string;
 use function json_encode;
@@ -43,7 +44,6 @@ use const CURLOPT_TIMEOUT;
 use const JSON_THROW_ON_ERROR;
 use const PHP_EOL;
 use const PHP_URL_HOST;
-use const STDERR;
 
 /**
  * @api
@@ -57,8 +57,10 @@ final class Shepherd implements AfterAnalysisInterface
     public static function afterAnalysis(
         AfterAnalysisEvent $event,
     ): void {
+        $progress = $event->getCodebase()->progress;
+
         if (!function_exists('curl_init')) {
-            fwrite(STDERR, "No curl found, cannot send data to shepherd server.\n");
+            $progress->warning('ext-curl is missing, results not sent to Shepherd');
 
             return;
         }
@@ -71,7 +73,7 @@ final class Shepherd implements AfterAnalysisInterface
 
         $config = $event->getCodebase()->config;
 
-        self::sendPayload($config->shepherd_endpoint, $rawPayload);
+        self::sendPayload($config->shepherd_endpoint, $rawPayload, $progress);
     }
 
     /**
@@ -128,7 +130,7 @@ final class Shepherd implements AfterAnalysisInterface
         ];
     }
 
-    private static function sendPayload(string $endpoint, array $rawPayload): void
+    private static function sendPayload(string $endpoint, array $rawPayload, Progress $progress): void
     {
         $payload = json_encode($rawPayload, JSON_THROW_ON_ERROR);
 
@@ -160,29 +162,30 @@ final class Shepherd implements AfterAnalysisInterface
         /** @var array{http_code: int, ssl_verify_result: int} $curl_info */
         $curl_info = curl_getinfo($ch);
 
+        // The endpoint may hold a secret (e.g. a token in its path): only its host is shown, except with --debug
+        $shepherd_host = (string) parse_url($endpoint, PHP_URL_HOST);
+
         $response_status_code = $curl_info['http_code'];
         if ($response_status_code >= 200 && $response_status_code < 300) {
-            $shepherd_host = parse_url($endpoint, PHP_URL_HOST);
-
-            fwrite(STDERR, "🐑 results sent to $shepherd_host 🐑" . PHP_EOL);
+            $progress->write("Results sent to Shepherd ($shepherd_host)" . PHP_EOL);
             return;
         }
 
-        $is_ssl_error = $curl_info['ssl_verify_result'] > 1;
-        if ($is_ssl_error) {
-            fwrite(STDERR, self::getCurlSslErrorMessage($curl_info['ssl_verify_result']) . PHP_EOL);
-            return;
+        if ($curl_info['ssl_verify_result'] > 1) {
+            $problem = 'SSL error: ' . self::getCurlSslErrorMessage($curl_info['ssl_verify_result']);
+        } elseif ($response_status_code === 0) {
+            $problem = curl_error($ch) ?: 'no response';
+        } else {
+            $problem = "HTTP $response_status_code";
         }
 
-        $output = "Shepherd error: $endpoint endpoint responded with $response_status_code HTTP status code.\n";
-        $response_content = is_string($curl_result) ? strip_tags($curl_result) : 'n/a';
-        $output .= "Shepherd response: $response_content\n";
-        if ($response_status_code === 0) {
-            $output .= "Please check shepherd endpoint — it should be a valid URL.\n";
-        }
-
-        $output .= sprintf("cURL Debug info:\n%s\n", var_export($curl_info, true));
-        fwrite(STDERR, $output);
+        $progress->warning("Results not sent to Shepherd ($shepherd_host): $problem · details with --debug");
+        $progress->debug(sprintf(
+            "Shepherd endpoint: %s\nShepherd response: %s\ncURL info:\n%s\n",
+            $endpoint,
+            is_string($curl_result) ? strip_tags($curl_result) : 'n/a',
+            var_export($curl_info, true),
+        ));
     }
 
     /**
