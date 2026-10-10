@@ -10,6 +10,7 @@ use function fwrite;
 use function getenv;
 use function is_string;
 use function preg_match;
+use function rtrim;
 use function sapi_windows_cp_is_utf8;
 use function stripos;
 
@@ -32,7 +33,19 @@ abstract class Progress
     abstract public function debug(string $message): void;
 
 
+    /**
+     * @param int $threads How many processes may work on the phase. What a phase shows is what really ran:
+     *                     see setThreads()
+     */
     abstract public function startPhase(Phase $phase, int $threads = 1): void;
+
+    /**
+     * Tells how many processes work on the current phase, once it is known that it forks (a phase that
+     * doesn't fork has no thread count to show). Called again when a later pass of the phase forks more.
+     */
+    public function setThreads(int $threads): void
+    {
+    }
 
     abstract public function expand(int $number_of_tasks): void;
 
@@ -49,7 +62,7 @@ abstract class Progress
      */
     public function write(string $message): void
     {
-        fwrite(STDERR, $message);
+        self::writeTo(STDERR, $message);
     }
 
     /**
@@ -67,7 +80,21 @@ abstract class Progress
      */
     public function writeReport(string $message): void
     {
-        fwrite(STDOUT, $message);
+        self::writeTo(STDOUT, $message);
+    }
+
+    /**
+     * Writes the output a forked worker kept (see takeWorkerOutput()), set apart from the rows around it
+     *
+     * @internal
+     */
+    public function relayWorkerOutput(string $output): void
+    {
+        if ($output === '') {
+            return;
+        }
+
+        $this->write(PHP_EOL . rtrim($output, "\r\n") . PHP_EOL . PHP_EOL);
     }
 
     /**
@@ -117,5 +144,25 @@ abstract class Progress
         }
 
         return true;
+    }
+
+    /**
+     * Whether the terminal ignores escape sequences (TERM=dumb, as in Emacs' shell buffer): neither colors nor
+     * cursor control can be used
+     */
+    final protected static function isDumbTerminal(): bool
+    {
+        return getenv('TERM') === 'dumb';
+    }
+
+    /**
+     * A reader that went away (e.g. `psalm | head`) isn't an error: the output is dropped, as echo does,
+     * rather than failing with a "Broken pipe" warning that the error handler turns into an exception.
+     *
+     * @param resource $stream
+     */
+    private static function writeTo($stream, string $message): void
+    {
+        @fwrite($stream, $message);
     }
 }

@@ -358,6 +358,7 @@ final class Scanner
 
         $this->progress->expand(count($files_to_scan));
         if ($pool_size > 1) {
+            $this->progress->setThreads($pool_size);
             $this->progress->debug('Forking process for scanning' . PHP_EOL);
 
             // Run scanning one file at a time, splitting the set of
@@ -383,12 +384,13 @@ final class Scanner
             // Wait for all tasks to complete and collect the results.
             $forked_pool_data = $pool->runAll(new ShutdownScannerTask);
 
+            // relayed in one block, set apart from the rows around it
+            $worker_output = '';
+
             foreach ($forked_pool_data as $pool_data) {
                 $pool_data = $pool_data->await();
 
-                if ($pool_data['progress_output'] !== '') {
-                    $this->progress->write($pool_data['progress_output']);
-                }
+                $worker_output .= $pool_data['progress_output'];
 
                 IssueBuffer::addIssues($pool_data['issues']);
 
@@ -420,6 +422,8 @@ final class Scanner
                 $this->codebase->addGlobalConstantTypes($pool_data['global_constants']);
                 $this->codebase->functions->addGlobalFunctions($pool_data['global_functions']);
             }
+
+            $this->progress->relayWorkerOutput($worker_output);
         } else {
             foreach ($files_to_scan as $file_path => $_) {
                 $this->scanAPath($file_path);

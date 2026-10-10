@@ -5,20 +5,28 @@ declare(strict_types=1);
 namespace Psalm\Progress;
 
 use Override;
+use Psalm\Internal\ErrorHandler;
 
+use function ctype_digit;
+use function exec;
 use function function_exists;
+use function getenv;
 use function hrtime;
 use function is_callable;
 use function is_int;
+use function is_string;
 use function max;
 use function mb_strlen;
+use function mb_substr;
 use function pcntl_alarm;
 use function pcntl_async_signals;
 use function pcntl_signal;
 use function pcntl_signal_get_handler;
+use function preg_match;
 use function sapi_windows_vt100_support;
 use function str_ends_with;
 use function str_repeat;
+use function stream_isatty;
 use function stripos;
 
 use const PHP_OS;
@@ -55,6 +63,8 @@ class DefaultProgress extends LongProgress
     private bool $drawing_status = false;
 
     private ?bool $supports_ansi = null;
+
+    private ?int $columns = null;
 
     /** Non-zero while output is being written, so that the ticker doesn't interleave with it */
     private int $busy = 0;
@@ -124,6 +134,7 @@ class DefaultProgress extends LongProgress
     #[Override]
     public function finish(): void
     {
+        ErrorHandler::setBeforeFatalError(null);
         parent::finish();
         $this->disarmTicker();
     }
@@ -144,6 +155,7 @@ class DefaultProgress extends LongProgress
         $this->last_refresh = hrtime(true);
         $this->drawStatus();
         $this->armTicker();
+        ErrorHandler::setBeforeFatalError($this->prepareForFatalError(...));
     }
 
     #[Override]
@@ -170,19 +182,8 @@ class DefaultProgress extends LongProgress
     {
         ++$this->busy;
         try {
-            $label = $this->getLabel();
-            $status = $this->getStatus();
-
-            $line = $label . ' ';
-            $width = mb_strlen($label) + 1 + mb_strlen($status);
-
-            if ($this->fixed_size && $this->number_of_tasks > 0) {
-                $line .= self::renderInnerProgressBar(self::BAR_WIDTH, $this->progress / $this->number_of_tasks)
-                    . ' ';
-                $width += self::BAR_WIDTH + 1;
-            }
-
-            $line .= $status;
+            $line = $this->composeStatusLine();
+            $width = mb_strlen($line);
 
             $this->drawing_status = true;
             $this->write("\r" . $line . $this->eraseRestOfLine($this->status_width - $width));
@@ -192,6 +193,69 @@ class DefaultProgress extends LongProgress
         } finally {
             --$this->busy;
         }
+    }
+
+    /**
+     * The status line, e.g. "Analyzing files · 16 threads ████████░░░░░░░░░░░░ 4,320 / 8,629 files · 50% · 12s".
+     *
+     * A line wider than the terminal wraps, and the redraw then leaves the wrapped rows behind. It's kept one column
+     * short of the width (a line that fills it makes some terminals wrap early), by dropping the bar, then the
+     * thread count, and finally truncating.
+     */
+    private function composeStatusLine(): string
+    {
+        $max_width = max(1, $this->getColumns() - 1);
+        $status = $this->getStatus();
+        $label = $this->getLabel();
+
+        $bar = $this->fixed_size && $this->number_of_tasks > 0
+            ? self::renderInnerProgressBar(self::BAR_WIDTH, $this->progress / $this->number_of_tasks)
+            : null;
+
+        $candidates = [
+            $bar !== null ? $label . ' ' . $bar . ' ' . $status : $label . self::separator() . $status,
+            $label . self::separator() . $status,
+            $this->getLabel(false) . self::separator() . $status,
+        ];
+
+        foreach ($candidates as $line) {
+            if (mb_strlen($line) <= $max_width) {
+                return $line;
+            }
+        }
+
+        return mb_substr($candidates[2], 0, $max_width);
+    }
+
+    /**
+     * The width of the terminal, read once: COLUMNS, else asked of the terminal, else 80
+     */
+    private function getColumns(): int
+    {
+        return $this->columns ??= self::detectColumns();
+    }
+
+    private static function detectColumns(): int
+    {
+        $columns = getenv('COLUMNS');
+        if (is_string($columns) && ctype_digit($columns) && (int) $columns > 0) {
+            return (int) $columns;
+        }
+
+        if (function_exists('exec') && stripos(PHP_OS, 'WIN') !== 0 && stream_isatty(STDERR)) {
+            // both commands ask the terminal on their stdin: hand them the one STDERR is
+            foreach (['stty size <&2 2>/dev/null', 'tput cols <&2 2>/dev/null'] as $command) {
+                // "40 120" for stty (rows, columns), "120" for tput
+                preg_match('/(\d+)\s*$/', (string) exec($command), $matches);
+                $detected = (int) ($matches[1] ?? 0);
+
+                if ($detected > 0) {
+                    return $detected;
+                }
+            }
+        }
+
+        return 80;
     }
 
     private function clearStatus(): void
@@ -214,15 +278,25 @@ class DefaultProgress extends LongProgress
     }
 
     /**
+     * An uncaught exception is about to be written to STDERR: it would land on the status line
+     * (e.g. "Loading cached results 0sUncaught ..."), and the ticker would draw the line again below it.
+     */
+    private function prepareForFatalError(): void
+    {
+        $this->disarmTicker();
+        $this->clearStatus();
+    }
+
+    /**
      * Erases the rest of the line, so that copying the terminal output doesn't copy trailing spaces.
-     * Writes $width spaces instead on Windows terminals without ANSI support.
-     *
-     * @psalm-capabilities read-props|write-this-props|write-refs
+     * Writes $width spaces instead where escape sequences aren't understood (TERM=dumb, Windows terminals without
+     * ANSI support).
      */
     private function eraseRestOfLine(int $width): string
     {
-        $this->supports_ansi ??= stripos(PHP_OS, 'WIN') !== 0
-            || (function_exists('sapi_windows_vt100_support') && sapi_windows_vt100_support(STDERR, true));
+        $this->supports_ansi ??= stripos(PHP_OS, 'WIN') === 0
+            ? function_exists('sapi_windows_vt100_support') && sapi_windows_vt100_support(STDERR, true)
+            : !self::isDumbTerminal();
 
         return $this->supports_ansi ? "\e[K" : str_repeat(' ', max(0, $width));
     }
@@ -303,13 +377,14 @@ class DefaultProgress extends LongProgress
         $rest = max($length - $current, 0);
 
         if (!self::doesTerminalSupportUtf8()) {
-            // Show a progress bar of "XXXX>------" in Windows when utf-8 is unsupported.
+            // Show a progress bar of "XXXX>......" in Windows when utf-8 is unsupported.
+            // (not "-": it would look like the " - " that separates the facts on the line)
             $progress_bar = str_repeat('X', $current);
             $delta = $current_float - (float) $current;
             if ($delta > 0.5) {
-                $progress_bar .= '>' . str_repeat('-', $rest - 1);
+                $progress_bar .= '>' . str_repeat('.', $rest - 1);
             } else {
-                $progress_bar .= str_repeat('-', $rest);
+                $progress_bar .= str_repeat('.', $rest);
             }
 
             return $progress_bar;

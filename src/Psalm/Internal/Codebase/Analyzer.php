@@ -179,8 +179,12 @@ final class Analyzer
      */
     public array $mutable_classes = [];
 
-    /** Files --alter changed, or would change with --dry-run */
-    private int $altered_file_count = 0;
+    /**
+     * Files --alter changed, or would change with --dry-run
+     *
+     * @var list<string>
+     */
+    private array $altered_files = [];
 
     /**
      * @psalm-mutation-free
@@ -198,7 +202,16 @@ final class Analyzer
      */
     public function getAlteredFileCount(): int
     {
-        return $this->altered_file_count;
+        return count($this->altered_files);
+    }
+
+    /**
+     * @return list<string> The files --alter changed, or would change with --dry-run, in the order they were visited
+     * @psalm-mutation-free
+     */
+    public function getAlteredFiles(): array
+    {
+        return $this->altered_files;
     }
 
     /**
@@ -243,7 +256,11 @@ final class Analyzer
         bool $alter_code,
         bool $consolidate_analyzed_data = false,
     ): void {
-        $this->progress->startPhase(Phase::LOADING_CACHE);
+        // Without a persistent cache there is nothing to load, so the phase would only flash on the status line
+        if ($project_analyzer->getCodebase()->file_reference_provider->cache?->persistent) {
+            $this->progress->startPhase(Phase::LOADING_CACHE);
+        }
+
         $this->loadCachedResults($project_analyzer);
 
         $codebase = $project_analyzer->getCodebase();
@@ -257,7 +274,7 @@ final class Analyzer
             $this->file_provider->fileExists(...),
         );
 
-        $this->progress->startPhase(Phase::ANALYSIS, $pool_size);
+        $this->progress->startPhase(Phase::ANALYSIS);
         $this->doAnalysis($project_analyzer, $pool_size);
 
         $scanned_files = $codebase->scanner->getScannedFiles();
@@ -266,9 +283,10 @@ final class Analyzer
             $codebase->taint_flow_graph->connectSinksAndSources($codebase->progress);
         }
 
-        MutationLevelResolver::resolve($project_analyzer);
-
+        // the time and issues of the whole-codebase resolution are not those of analyzing files or of the taint graph
         $this->progress->startPhase(Phase::FINISHING);
+
+        MutationLevelResolver::resolve($project_analyzer);
 
         if ($consolidate_analyzed_data) {
             $project_analyzer->consolidateAnalyzedData();
@@ -335,6 +353,7 @@ final class Analyzer
                 $project_analyzer->progress,
             );
 
+            $this->progress->setThreads($pool_size);
             $this->progress->debug('Forking analysis' . "\n");
 
             // Wait for all tasks to complete and collect the results.
@@ -346,12 +365,13 @@ final class Analyzer
             $this->progress->startPhase(Phase::MERGING_THREAD_RESULTS);
             $this->progress->expand(count($forked_pool_data));
 
+            // relayed in one block, set apart from the rows around it
+            $worker_output = '';
+
             foreach (Future::iterate($forked_pool_data) as $pool_data) {
                 $pool_data = $pool_data->await();
 
-                if ($pool_data['progress_output'] !== '') {
-                    $this->progress->write($pool_data['progress_output']);
-                }
+                $worker_output .= $pool_data['progress_output'];
 
                 IssueBuffer::addIssues($pool_data['issues']);
                 IssueBuffer::addFixableIssues($pool_data['fixable_issue_counts']);
@@ -427,6 +447,8 @@ final class Analyzer
 
                 $this->progress->taskDone(0);
             }
+
+            $this->progress->relayWorkerOutput($worker_output);
         } else {
             foreach ($this->files_to_analyze as $file_path => $_) {
                 $task_done_closure(self::analysisWorker($this->config, $this->progress, $file_path));
@@ -1264,7 +1286,7 @@ final class Analyzer
             return;
         }
 
-        ++$this->altered_file_count;
+        $this->altered_files[] = $file_path;
 
         if ($dry_run) {
             $differ = new Differ(

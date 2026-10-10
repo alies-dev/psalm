@@ -10,13 +10,16 @@ use Override;
 use function implode;
 use function in_array;
 use function intdiv;
+use function max;
 use function microtime;
 use function number_format;
 use function sprintf;
 use function str_repeat;
+use function stream_isatty;
 use function strlen;
 
 use const PHP_EOL;
+use const STDERR;
 
 /**
  * Line-based progress output.
@@ -55,11 +58,16 @@ class LongProgress extends Progress
 
     private float $last_status = 0.0;
 
+    private ?bool $color_enabled = null;
+
     /** Whether the grid left the cursor in the middle of a line */
     private bool $mid_line = false;
 
     /** Whether lines were written since the last finish(): the output that follows is then set apart */
     private bool $wrote_lines = false;
+
+    /** Whether the last lines written were a blank one: finish() doesn't add another */
+    private bool $ends_with_blank_line = false;
 
     /** @var list<string>|null Output of a forked worker, kept for the main process */
     private ?array $worker_output = null;
@@ -93,7 +101,8 @@ class LongProgress extends Progress
         $this->endPhase();
 
         $this->phase = $phase;
-        $this->threads = $threads;
+        // shown only if the phase forks: see setThreads()
+        $this->threads = 1;
         $this->progress = 0;
         $this->number_of_tasks = 0;
         $this->started = $this->last_status = microtime(true);
@@ -123,6 +132,15 @@ class LongProgress extends Progress
         $this->number_of_tasks += $number_of_tasks;
     }
 
+    /**
+     * @psalm-external-mutation-free
+     */
+    #[Override]
+    public function setThreads(int $threads): void
+    {
+        $this->threads = max($this->threads, $threads);
+    }
+
     #[Override]
     public function taskDone(int $level): void
     {
@@ -142,9 +160,22 @@ class LongProgress extends Progress
     {
         $this->endPhase();
 
-        if ($this->wrote_lines) {
-            $this->wrote_lines = false;
+        if ($this->wrote_lines && !$this->ends_with_blank_line) {
             $this->write(PHP_EOL);
+        }
+
+        $this->wrote_lines = false;
+        $this->ends_with_blank_line = false;
+    }
+
+    #[Override]
+    public function relayWorkerOutput(string $output): void
+    {
+        parent::relayWorkerOutput($output);
+
+        if ($output !== '') {
+            $this->wrote_lines = true;
+            $this->ends_with_blank_line = true;
         }
     }
 
@@ -225,7 +256,7 @@ class LongProgress extends Progress
         if ($this->indeterminate) {
             $this->writeTick(self::doesTerminalSupportUtf8() ? '░' : '_');
             if (($this->progress % self::NUMBER_OF_COLUMNS) === 0) {
-                $this->writeLine('');
+                $this->endGridLine('');
             }
 
             return;
@@ -256,7 +287,7 @@ class LongProgress extends Progress
             }
         }
 
-        $this->writeLine($this->getOverview());
+        $this->endGridLine($this->getOverview());
     }
 
     protected function phaseEnded(Phase $phase): void
@@ -278,7 +309,8 @@ class LongProgress extends Progress
             return null;
         }
 
-        $tasks = $phase === Phase::SCAN || $phase === Phase::ANALYSIS || $phase === Phase::ALTERING
+        // the number of files altered is in the summary: the phase visits every file, and most are left as they were
+        $tasks = $phase === Phase::SCAN || $phase === Phase::ANALYSIS
             ? number_format($this->progress) . ($this->progress === 1 ? ' file' : ' files')
             : '';
 
@@ -291,7 +323,7 @@ class LongProgress extends Progress
             self::doesTerminalSupportUtf8() ? '✓' : '*',
             self::getPhaseName($phase),
             $tasks,
-            $this->use_color ? "\e[2m{$timing}\e[22m" : $timing,
+            $this->shouldUseColor() ? "\e[2m{$timing}\e[22m" : $timing,
         );
     }
 
@@ -315,7 +347,7 @@ class LongProgress extends Progress
     /**
      * What the current phase is doing, e.g. "Analyzing files · 16 threads"
      */
-    protected function getLabel(): string
+    protected function getLabel(bool $with_threads = true): string
     {
         $label = match ($this->phase) {
             Phase::SCAN => 'Scanning files',
@@ -329,7 +361,7 @@ class LongProgress extends Progress
             null => '',
         };
 
-        return $label . $this->getThreadsSuffix();
+        return $with_threads ? $label . $this->getThreadsSuffix() : $label;
     }
 
     /**
@@ -392,6 +424,18 @@ class LongProgress extends Progress
 
         $this->write($line . PHP_EOL);
         $this->wrote_lines = true;
+        $this->ends_with_blank_line = false;
+    }
+
+    /**
+     * Ends the line the grid left open with $suffix, rather than starting a new line for it as writeLine() does.
+     */
+    private function endGridLine(string $suffix): void
+    {
+        $this->mid_line = false;
+        $this->write($suffix . PHP_EOL);
+        $this->wrote_lines = true;
+        $this->ends_with_blank_line = false;
     }
 
     /**
@@ -413,7 +457,7 @@ class LongProgress extends Progress
     {
         return $duration >= 1.0 || !in_array(
             $phase,
-            [Phase::MERGING_THREAD_RESULTS, Phase::LOADING_CACHE, Phase::FINISHING],
+            [Phase::TAINT_GRAPH_RESOLUTION, Phase::MERGING_THREAD_RESULTS, Phase::LOADING_CACHE, Phase::FINISHING],
             true,
         );
     }
@@ -434,6 +478,14 @@ class LongProgress extends Progress
     private function getThreadsSuffix(): string
     {
         return $this->threads > 1 ? self::separator() . "{$this->threads} threads" : '';
+    }
+
+    /**
+     * Colors only go to a terminal that shows them: not into a log file or a pipe, nor to TERM=dumb
+     */
+    protected function shouldUseColor(): bool
+    {
+        return $this->color_enabled ??= $this->use_color && stream_isatty(STDERR) && !self::isDumbTerminal();
     }
 
     private function writeTick(string $tick): void
