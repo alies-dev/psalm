@@ -7,6 +7,9 @@ namespace Psalm\Progress;
 use function error_reporting;
 use function function_exists;
 use function fwrite;
+use function getenv;
+use function is_string;
+use function preg_match;
 use function sapi_windows_cp_is_utf8;
 use function stripos;
 
@@ -87,11 +90,29 @@ abstract class Progress
         return '';
     }
 
+    /**
+     * Separates the facts on one line (e.g. "33 errors in 3 files · 3 info hidden")
+     */
+    final public static function separator(): string
+    {
+        return self::doesTerminalSupportUtf8() ? ' · ' : ' - ';
+    }
+
+    /**
+     * Whether non-ASCII characters (✓, ·, the progress bar) can be printed: not with a Windows code page other than
+     * UTF-8, nor with a locale that isn't UTF-8 (e.g. LANG=C, where they'd show as "?" or mojibake in logs)
+     */
     final protected static function doesTerminalSupportUtf8(): bool
     {
         if (stripos(PHP_OS, 'WIN') === 0) {
-            if (!function_exists('sapi_windows_cp_is_utf8') || !sapi_windows_cp_is_utf8()) {
-                return false;
+            return function_exists('sapi_windows_cp_is_utf8') && sapi_windows_cp_is_utf8();
+        }
+
+        // the first locale variable set wins, as for setlocale(); an unset locale is assumed to be UTF-8
+        foreach (['LC_ALL', 'LC_CTYPE', 'LANG'] as $variable) {
+            $locale = getenv($variable);
+            if (is_string($locale) && $locale !== '') {
+                return preg_match('/utf-?8/i', $locale) === 1;
             }
         }
 

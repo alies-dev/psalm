@@ -101,7 +101,9 @@
 
 - [BC] `Psalm\Config::loadFromXMLFile()` throws a `Psalm\Exception\ConfigException` instead of an `InvalidArgumentException` when the file can't be read or is empty, so the CLI reports it as a config error rather than a crash.
 
-- `Psalm\Progress\Progress` has a new `writeReport()` method, writing to STDOUT the output that is part of the result (e.g. the `--alter --dry-run` diff) without mixing it with the progress output. `LongProgress::finish()` writes a blank line after the progress lines, so the report or summary that follows is set apart.
+- `Psalm\Progress\Progress` has a new `writeReport()` method, writing to STDOUT the output that is part of the result (e.g. the `--alter --dry-run` diff) without mixing it with the progress output, and a new static `separator()` (` · `, or ` - ` without UTF-8). `doesTerminalSupportUtf8()` now also checks the locale (`LC_ALL`, `LC_CTYPE`, `LANG`). `LongProgress::finish()` writes a blank line after the progress lines, so the report or summary that follows is set apart.
+
+- [BC] In quiet mode (CI, or a stderr that isn't a terminal), `Psalm\Progress\LongProgress` prints the same row per phase as the interactive table (`LongProgress::formatRow()`), with a status line every 30 seconds, instead of a start line and a summary sentence per phase. It no longer prints a line per altered file. With an output format other than `console`, `phpstorm` and `github`, the summary is written to STDERR.
 
 - [BC] The return type of Psalm\Type::getListAtomic() changed from Psalm\Type\Atomic\TKeyedArray to the non-covariant Psalm\Type\Atomic\TKeyedArray|Psalm\Type\Atomic\TArray
 

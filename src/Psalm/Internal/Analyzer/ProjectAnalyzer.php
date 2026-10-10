@@ -413,13 +413,15 @@ final class ProjectAnalyzer
         // A commit is recognizable by its first 7 characters
         $psalm_version = (string) preg_replace('/@([0-9a-f]{7})[0-9a-f]{33}$/', '@$1', PSALM_VERSION);
 
+        $separator = Progress::separator();
         $message = 'Psalm ' . $psalm_version
-            . ' · PHP ' . PHP_VERSION
-            . ' · target PHP ' . $codebase->getMajorAnalysisPhpVersion() . '.'
-            . $codebase->getMinorAnalysisPhpVersion() . ' (' . $source . ')';
+            . $separator . 'PHP ' . PHP_VERSION
+            . $separator . 'target PHP ' . $codebase->getMajorAnalysisPhpVersion() . '.'
+            . $codebase->getMinorAnalysisPhpVersion() . ' (' . $source . ')'
+            . $separator . 'errorLevel ' . $codebase->config->level;
 
         if (count($unsupported_php_extensions) > 0) {
-            $message .= ' · unsupported extensions: ' . implode(', ', $unsupported_php_extensions);
+            $message .= $separator . 'unsupported extensions: ' . implode(', ', $unsupported_php_extensions);
         }
 
         $this->progress->write($message . PHP_EOL . PHP_EOL);

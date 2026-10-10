@@ -12,13 +12,11 @@ use function is_callable;
 use function is_int;
 use function max;
 use function mb_strlen;
-use function number_format;
 use function pcntl_alarm;
 use function pcntl_async_signals;
 use function pcntl_signal;
 use function pcntl_signal_get_handler;
 use function sapi_windows_vt100_support;
-use function sprintf;
 use function str_ends_with;
 use function str_repeat;
 use function stripos;
@@ -130,6 +128,16 @@ class DefaultProgress extends LongProgress
         $this->disarmTicker();
     }
 
+    /**
+     * The Alter row and the summary say how many files changed: a line per file would push the table off screen
+     *
+     * @psalm-mutation-free
+     */
+    #[Override]
+    public function alterFileDone(string $file_name): void
+    {
+    }
+
     #[Override]
     protected function phaseStarted(): void
     {
@@ -150,42 +158,12 @@ class DefaultProgress extends LongProgress
         $this->drawStatus();
     }
 
-    /**
-     * e.g. "✓ Analysis      8,629 files   21.3s  16 threads"
-     */
     #[Override]
     protected function phaseEnded(Phase $phase): void
     {
         $this->clearStatus();
 
-        $duration = $this->getPhaseDuration();
-        if (!self::isWorthReporting($phase, $duration)) {
-            return;
-        }
-
-        $name = match ($phase) {
-            Phase::SCAN => 'Scan',
-            Phase::ANALYSIS => 'Analysis',
-            Phase::ALTERING => 'Alter',
-            Phase::TAINT_GRAPH_RESOLUTION => 'Taint graph',
-            Phase::MERGING_THREAD_RESULTS => 'Merge',
-            Phase::LOADING_CACHE => 'Cache',
-            Phase::FINISHING => 'Finishing',
-            Phase::JIT_COMPILATION, Phase::PRELOADING => 'Preload',
-        };
-
-        $tasks = $phase === Phase::SCAN || $phase === Phase::ANALYSIS || $phase === Phase::ALTERING
-            ? number_format($this->progress) . ($this->progress === 1 ? ' file' : ' files')
-            : '';
-
-        $this->writeLine(sprintf(
-            '%s %-12s %14s %8s%s',
-            self::doesTerminalSupportUtf8() ? '✓' : '*',
-            $name,
-            $tasks,
-            number_format($duration, 1) . 's',
-            $this->threads > 1 ? "  {$this->threads} threads" : '',
-        ));
+        parent::phaseEnded($phase);
     }
 
     private function drawStatus(): void

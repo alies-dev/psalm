@@ -1113,8 +1113,6 @@ final class Analyzer
 
     /**
      * e.g. "type coverage 99.87%", for the summary line
-     *
-     * @psalm-capabilities read-props|write-this-props|write-props|write-refs
      */
     public function getTypeInferenceSummary(Codebase $codebase): string
     {
@@ -1144,7 +1142,7 @@ final class Analyzer
             $parts[] = 'type coverage ' . self::formatCoverage($nonmixed_count, $total);
         }
 
-        return implode(' · ', $parts);
+        return implode(Progress::separator(), $parts);
     }
 
     public function getNonMixedStats(): string
@@ -1177,7 +1175,7 @@ final class Analyzer
                         ' ',
                         STR_PAD_LEFT,
                     ) . '  ' . $this->config->shortenFileName($file_path)
-                        . ' · ' . number_format($path_mixed_count) . ' mixed' . "\n";
+                        . Progress::separator() . number_format($path_mixed_count) . ' mixed' . "\n";
                 }
             }
         }

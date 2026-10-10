@@ -21,6 +21,7 @@ use Psalm\Issue\UnusedIssueHandlerSuppression;
 use Psalm\Issue\UnusedPsalmSuppress;
 use Psalm\Plugin\EventHandler\Event\AfterAnalysisEvent;
 use Psalm\Plugin\EventHandler\Event\BeforeAddIssueEvent;
+use Psalm\Progress\Progress;
 use Psalm\Report\ByIssueLevelAndTypeReport;
 use Psalm\Report\CheckstyleReport;
 use Psalm\Report\CodeClimateReport;
@@ -76,6 +77,7 @@ use function ob_start;
 use function preg_match;
 use function sha1;
 use function sprintf;
+use function str_ends_with;
 use function str_pad;
 use function str_repeat;
 use function str_replace;
@@ -721,14 +723,12 @@ final class IssueBuffer
         }
 
         // The report is written to the terminal, not into a web page, so it goes to STDOUT rather than through echo.
-        fwrite(
-            STDOUT,
-            self::getOutput(
-                $issues_data,
-                $project_analyzer->stdout_report_options,
-                $codebase->analyzer->getTotalTypeCoverage($codebase),
-            ),
+        $report = self::getOutput(
+            $issues_data,
+            $project_analyzer->stdout_report_options,
+            $codebase->analyzer->getTotalTypeCoverage($codebase),
         );
+        fwrite(STDOUT, $report);
 
         /** @var array<string, int> $error_counts_by_type */
         $error_counts_by_type = [];
@@ -786,120 +786,132 @@ final class IssueBuffer
             );
         }
 
-        if (in_array(
+        // The summary follows the console report on STDOUT, as it always did. A report in another format is read
+        // by tools: the summary goes to STDERR then, through the progress, so that STDOUT stays unchanged.
+        $summary_on_stdout = in_array(
             $project_analyzer->stdout_report_options->format,
             [Report::TYPE_CONSOLE, Report::TYPE_PHP_STORM, Report::TYPE_GITHUB_ACTIONS],
-        )) {
-            $use_color = $project_analyzer->stdout_report_options->use_color;
-            $highlight = static fn(string $text): string => $use_color ? "\e[30;48;5;195m{$text}\e[0m" : $text;
+        );
 
-            $show_info = $project_analyzer->stdout_report_options->show_info;
-            $show_suggestions = $project_analyzer->stdout_report_options->show_suggestions;
+        // set apart from the report, which may not even end its last line (e.g. JSON)
+        $output = $summary_on_stdout || $report === '' ? '' : (str_ends_with($report, "\n") ? "\n" : "\n\n");
 
-            if ($codebase->alter_code) {
-                // issues aren't reported while altering code: the verdict is what was altered
-                $altered_count = $codebase->analyzer->getAlteredFileCount();
-                $altered_files = number_format($altered_count) . ($altered_count === 1 ? ' file' : ' files');
-                $summary = match (true) {
-                    $altered_count === 0 => 'Nothing to alter',
-                    $project_analyzer->dry_run => "Would alter $altered_files (dry run)."
-                        . ' Run without --dry-run to apply',
-                    default => "Altered $altered_files",
-                };
-            } elseif ($error_count) {
-                // e.g. "396 errors in 112 files · 121 baselined · 27 info hidden"
-                $file_count = count($files_with_errors);
-                $summary = number_format($error_count) . ($error_count === 1 ? ' error' : ' errors')
-                    . ' in ' . number_format($file_count) . ($file_count === 1 ? ' file' : ' files');
-                $summary = $use_color ? "\e[0;31m{$summary}\e[0m" : $summary;
-            } else {
-                $summary = self::formatSuccessMessage($use_color);
+        $use_color = $project_analyzer->stdout_report_options->use_color;
+        $highlight = static fn(string $text): string => $use_color ? "\e[30;48;5;195m{$text}\e[0m" : $text;
+        $separator = Progress::separator();
+
+        $show_info = $project_analyzer->stdout_report_options->show_info;
+        $show_suggestions = $project_analyzer->stdout_report_options->show_suggestions;
+
+        if ($codebase->alter_code) {
+            // issues aren't reported while altering code: the verdict is what was altered
+            $altered_count = $codebase->analyzer->getAlteredFileCount();
+            $altered_files = number_format($altered_count) . ($altered_count === 1 ? ' file' : ' files');
+            $summary = match (true) {
+                $altered_count === 0 => 'Nothing to alter',
+                $project_analyzer->dry_run => "Would alter $altered_files (dry run)."
+                    . ' Run without --dry-run to apply',
+                default => "Altered $altered_files",
+            };
+        } elseif ($error_count) {
+            // e.g. "396 errors in 112 files · 121 baselined · 27 info hidden"
+            $file_count = count($files_with_errors);
+            $summary = number_format($error_count) . ($error_count === 1 ? ' error' : ' errors')
+                . ' in ' . number_format($file_count) . ($file_count === 1 ? ' file' : ' files');
+            $summary = $use_color ? "\e[0;31m{$summary}\e[0m" : $summary;
+        } else {
+            $summary = self::formatSuccessMessage($use_color);
+        }
+
+        if (!$codebase->alter_code) {
+            // the baseline only holds errors: they come right after the reported ones
+            if ($baselined_count) {
+                $summary .= $separator . number_format($baselined_count) . ' baselined';
             }
 
-            if (!$codebase->alter_code) {
-                // the baseline only holds errors: they come right after the reported ones
-                if ($baselined_count) {
-                    $summary .= ' · ' . number_format($baselined_count) . ' baselined';
+            $other_count = $info_count - $baselined_count;
+            if ($other_count > 0 && ($show_info || $show_suggestions)) {
+                $summary .= $separator . number_format($other_count) . ' info' . ($show_info ? '' : ' hidden');
+            }
+        }
+
+        $output .= $summary . "\n";
+
+        $show_breakdown = $error_count > self::ERROR_BREAKDOWN_THRESHOLD;
+        if ($show_breakdown) {
+            $output .= self::getErrorBreakdown($error_counts_by_type, self::$fixable_issue_counts);
+        }
+
+        // Fixability is only counted by type: only suggest fixing the types of the errors reported,
+        // not those of info issues or baselined ones
+        $fixable_error_counts = [];
+        foreach (self::$fixable_issue_counts as $type => $count) {
+            if (isset($error_counts_by_type[$type])) {
+                $fixable_error_counts[$type] = min($count, $error_counts_by_type[$type]);
+            }
+        }
+
+        if ($fixable_error_counts && $show_suggestions) {
+            $command = 'psalm --alter --issues=' . implode(',', array_keys($fixable_error_counts)) . ' --dry-run';
+            $fixable_count = array_sum($fixable_error_counts);
+
+            // a block of its own after the breakdown
+            $output .= ($show_breakdown ? "\n" : '') . 'Preview the fix for ' . number_format($fixable_count)
+                . ($fixable_count === 1 ? ' issue: ' : ' issues: ') . $highlight($command) . "\n";
+        }
+
+        if ($start_time) {
+            // e.g. "72.8s · 11.9 GB peak · type coverage 99.87%"
+            $stats = number_format(microtime(true) - $start_time, 1) . 's'
+                . $separator . self::formatMemory(memory_get_peak_usage()) . ' peak';
+
+            $type_inference_summary = $codebase->analyzer->getTypeInferenceSummary($codebase);
+            // type coverage was measured before --alter changed anything
+            if ($type_inference_summary !== '' && !$codebase->alter_code) {
+                $stats .= $separator . $type_inference_summary;
+            }
+
+            $output .= "\n" . $stats . "\n";
+
+            if ($add_stats) {
+                $output .= "\nType coverage by file:\n" . $codebase->analyzer->getNonMixedStats();
+            }
+
+            $function_timings = $project_analyzer->debug_performance
+                ? $codebase->analyzer->getFunctionTimings()
+                : [];
+
+            if ($function_timings) {
+                $output .= "\nSlowest functions to analyze:\n";
+
+                arsort($function_timings);
+
+                // e.g. "   1.23 ms/node  Foo::bar"
+                foreach (array_slice($function_timings, 0, 10, true) as $function_id => $time) {
+                    $output .= '  ' . str_pad(number_format(1_000 * $time, 2), 6, ' ', STR_PAD_LEFT) . ' ms/node  '
+                        . $function_id . "\n";
                 }
-
-                $other_count = $info_count - $baselined_count;
-                if ($other_count > 0 && ($show_info || $show_suggestions)) {
-                    $summary .= ' · ' . number_format($other_count) . ' info' . ($show_info ? '' : ' hidden');
-                }
             }
+        }
 
-            echo $summary . "\n";
+        $skipped_checks = [];
+        if ($project_analyzer->unused_code_skipped) {
+            $skipped_checks[] = 'unused code';
+        }
 
-            $show_breakdown = $error_count > self::ERROR_BREAKDOWN_THRESHOLD;
-            if ($show_breakdown) {
-                echo self::getErrorBreakdown($error_counts_by_type, self::$fixable_issue_counts);
-            }
+        if ($codebase->config->find_unused_issue_handler_suppression && (!$is_full || $codebase->diff_run)) {
+            $skipped_checks[] = 'unused <issueHandlers> suppressions';
+        }
 
-            // Fixability is only counted by type: only suggest fixing the types of the errors reported,
-            // not those of info issues or baselined ones
-            $fixable_error_counts = [];
-            foreach (self::$fixable_issue_counts as $type => $count) {
-                if (isset($error_counts_by_type[$type])) {
-                    $fixable_error_counts[$type] = min($count, $error_counts_by_type[$type]);
-                }
-            }
+        // --alter reports no issues at all: a full run wouldn't report these either
+        if ($skipped_checks && !$codebase->alter_code) {
+            $output .= "\nNote: " . implode(' and ', $skipped_checks) . ' are only reported on a full run.' . "\n";
+        }
 
-            if ($fixable_error_counts && $show_suggestions) {
-                $command = 'psalm --alter --issues=' . implode(',', array_keys($fixable_error_counts)) . ' --dry-run';
-                $fixable_count = array_sum($fixable_error_counts);
-
-                // a block of its own after the breakdown
-                echo ($show_breakdown ? "\n" : '') . 'Preview the fix for ' . number_format($fixable_count)
-                    . ($fixable_count === 1 ? ' issue: ' : ' issues: ') . $highlight($command) . "\n";
-            }
-
-            if ($start_time) {
-                // e.g. "72.8s · 11.9 GB peak · type coverage 99.87%"
-                $stats = number_format(microtime(true) - $start_time, 1) . 's'
-                    . ' · ' . self::formatMemory(memory_get_peak_usage()) . ' peak';
-
-                $type_inference_summary = $codebase->analyzer->getTypeInferenceSummary($codebase);
-                // type coverage was measured before --alter changed anything
-                if ($type_inference_summary !== '' && !$codebase->alter_code) {
-                    $stats .= ' · ' . $type_inference_summary;
-                }
-
-                echo "\n" . $stats . "\n";
-
-                if ($add_stats) {
-                    echo "\nType coverage by file:\n" . $codebase->analyzer->getNonMixedStats();
-                }
-
-                $function_timings = $project_analyzer->debug_performance
-                    ? $codebase->analyzer->getFunctionTimings()
-                    : [];
-
-                if ($function_timings) {
-                    echo "\nSlowest functions to analyze:\n";
-
-                    arsort($function_timings);
-
-                    // e.g. "   1.23 ms/node  Foo::bar"
-                    foreach (array_slice($function_timings, 0, 10, true) as $function_id => $time) {
-                        echo '  ' . str_pad(number_format(1_000 * $time, 2), 6, ' ', STR_PAD_LEFT) . ' ms/node  '
-                            . $function_id . "\n";
-                    }
-                }
-            }
-
-            $skipped_checks = [];
-            if ($project_analyzer->unused_code_skipped) {
-                $skipped_checks[] = 'unused code';
-            }
-
-            if ($codebase->config->find_unused_issue_handler_suppression && (!$is_full || $codebase->diff_run)) {
-                $skipped_checks[] = 'unused <issueHandlers> suppressions';
-            }
-
-            // --alter reports no issues at all: a full run wouldn't report these either
-            if ($skipped_checks && !$codebase->alter_code) {
-                echo "\nNote: " . implode(' and ', $skipped_checks) . ' are only reported on a full run.' . "\n";
-            }
+        if ($summary_on_stdout) {
+            echo $output;
+        } else {
+            $project_analyzer->progress->write($output);
         }
 
         if ($is_full && $start_time) {
