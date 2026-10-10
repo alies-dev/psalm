@@ -76,6 +76,7 @@ use function json_encode;
 use function max;
 use function microtime;
 use function mkdir;
+use function number_format;
 use function opcache_get_status;
 use function parse_url;
 use function preg_match;
@@ -83,7 +84,6 @@ use function preg_replace;
 use function realpath;
 use function setlocale;
 use function sort;
-use function str_repeat;
 use function str_starts_with;
 use function strlen;
 use function substr;
@@ -627,7 +627,8 @@ final class Psalm
                 exit(1);
             }
 
-            exit('Config file created successfully. Please re-run psalm.' . PHP_EOL);
+            echo 'Created psalm.xml · level ' . $init_level . ' · run psalm to analyze the project' . PHP_EOL;
+            exit(0);
         }
     }
 
@@ -787,7 +788,7 @@ final class Psalm
             $config->include_php_versions_in_error_baseline || isset($options['include-php-versions']),
         );
 
-        fwrite(STDERR, "Baseline saved to $error_baseline.");
+        fwrite(STDERR, "Baseline saved to $error_baseline" . PHP_EOL);
 
         if ($error_baseline !== $config->error_baseline) {
             CliUtils::updateConfigFile(
@@ -796,8 +797,6 @@ final class Psalm
                 $error_baseline,
             );
         }
-
-        fwrite(STDERR, PHP_EOL);
 
         return $issue_baseline;
     }
@@ -832,8 +831,8 @@ final class Psalm
             $total_fixed_issues = $total_issues_current_baseline - $total_issues_updated_baseline;
 
             if ($total_fixed_issues > 0) {
-                echo str_repeat('-', 30) . "\n";
-                echo $total_fixed_issues . ' errors fixed' . "\n";
+                fwrite(STDERR, 'Baseline updated · ' . number_format($total_fixed_issues)
+                    . ($total_fixed_issues === 1 ? ' fixed issue' : ' fixed issues') . ' removed' . PHP_EOL);
             }
         } catch (ConfigException $exception) {
             fwrite(STDERR, 'Could not update baseline file: ' . $exception->getMessage() . PHP_EOL);
@@ -896,8 +895,6 @@ final class Psalm
             );
         }
 
-        echo "\n" . 'Detected level ' . $init_level . ' as a suitable initial default' . "\n";
-
         try {
             $template_contents = Creator::getContents(
                 $current_dir,
@@ -915,7 +912,9 @@ final class Psalm
             exit(1);
         }
 
-        exit('Config file created successfully. Please re-run psalm.' . PHP_EOL);
+        echo "\n" . 'Created psalm.xml · level ' . $init_level . ' (detected from the issues found)'
+            . ' · run psalm to analyze the project' . "\n";
+        exit(0);
     }
 
     private static function initStdoutReportOptions(
@@ -1036,11 +1035,11 @@ final class Psalm
         ) {
             $ini_handler->disableExtension('grpc');
 
-            $progress->warning(PHP_EOL
-                . 'grpc extension has been disabled. '
-                . 'Set grpc.enable_fork_support = 1 and grpc.poll_strategy = epoll1 in php.ini to enable it. '
-                . 'See https://github.com/grpc/grpc/issues/20250#issuecomment-531321945 for more information.'
-                . PHP_EOL . PHP_EOL);
+            $progress->warning(
+                'ext-grpc disabled, as it breaks forked workers'
+                . ' (set grpc.enable_fork_support=1 and grpc.poll_strategy=epoll1 in php.ini to keep it)'
+                . ' · https://github.com/grpc/grpc/issues/20250#issuecomment-531321945',
+            );
         }
 
         $ini_handler->disableExtensions([
@@ -1179,7 +1178,6 @@ final class Psalm
             // based on the errors we find
             $init_source_dir = $args[0] ?? null;
 
-            echo "Calculating best config level based on project files\n";
             Creator::createBareConfig($current_dir, $init_source_dir, $vendor_dir);
             $config = Config::getInstance();
             $config->setComposerClassLoader($autoloaders);
