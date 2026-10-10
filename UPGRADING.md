@@ -103,7 +103,7 @@
 
 - `Psalm\Progress\Progress` has a new `writeReport()` method, writing to STDOUT the output that is part of the result (e.g. the `--alter --dry-run` diff) without mixing it with the progress output, and a new static `separator()` (` · `, or ` - ` without UTF-8). `doesTerminalSupportUtf8()` now also checks the locale (`LC_ALL`, `LC_CTYPE`, `LANG`). `LongProgress::finish()` writes a blank line after the progress lines, so the report or summary that follows is set apart.
 
-- [BC] In quiet mode (CI, or a stderr that isn't a terminal), `Psalm\Progress\LongProgress` prints the same row per phase as the interactive table (`LongProgress::formatRow()`), with a status line every 30 seconds, instead of a start line and a summary sentence per phase. It no longer prints a line per altered file. With an output format other than `console`, `phpstorm` and `github`, the summary is written to STDERR.
+- [BC] In quiet mode (CI, or a stderr that isn't a terminal), `Psalm\Progress\LongProgress` prints the same row per phase as the interactive table (`LongProgress::formatRow()`), with a status line every 30 seconds, instead of a start line and a summary sentence per phase. It no longer prints a line per altered file. With an output format other than `console`, `phpstorm` and `github`, the summary is written to STDERR. A new optional `$use_color` constructor parameter shows the time and threads of each row dim.
 
 - [BC] The return type of Psalm\Type::getListAtomic() changed from Psalm\Type\Atomic\TKeyedArray to the non-covariant Psalm\Type\Atomic\TKeyedArray|Psalm\Type\Atomic\TArray
 

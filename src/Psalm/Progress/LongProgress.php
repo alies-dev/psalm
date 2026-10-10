@@ -71,6 +71,7 @@ class LongProgress extends Progress
         protected bool $print_errors = true,
         protected bool $print_infos = true,
         protected bool $in_ci = false,
+        protected bool $use_color = false,
     ) {
     }
 
@@ -281,13 +282,16 @@ class LongProgress extends Progress
             ? number_format($this->progress) . ($this->progress === 1 ? ' file' : ' files')
             : '';
 
+        // the time and threads are shown dim, so that the eye goes to what was done
+        $timing = sprintf('%8s', number_format($duration, 1) . 's')
+            . ($this->threads > 1 ? "  {$this->threads} threads" : '');
+
         return sprintf(
-            '%s %-12s %14s %8s%s',
+            '%s %-12s %14s %s',
             self::doesTerminalSupportUtf8() ? '✓' : '*',
             self::getPhaseName($phase),
             $tasks,
-            number_format($duration, 1) . 's',
-            $this->threads > 1 ? "  {$this->threads} threads" : '',
+            $this->use_color ? "\e[2m{$timing}\e[22m" : $timing,
         );
     }
 

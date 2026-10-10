@@ -336,7 +336,7 @@ final class Refactor
         } elseif ($no_progress) {
             $progress = new VoidProgress();
         } else {
-            $progress = new DefaultProgress();
+            $progress = new DefaultProgress(use_color: CliUtils::useColor($options));
         }
 
         if (array_key_exists('debug-emitted-issues', $options)) {
@@ -344,9 +344,7 @@ final class Refactor
         }
 
         $report_options = new ReportOptions();
-        $report_options->use_color = !array_key_exists('m', $options)
-            && !CliUtils::noColorRequested()
-            && !CliUtils::runningUnderAiAgent();
+        $report_options->use_color = CliUtils::useColor($options);
 
         $project_analyzer = new ProjectAnalyzer(
             $config,
