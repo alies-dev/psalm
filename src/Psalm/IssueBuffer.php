@@ -58,14 +58,17 @@ use function arsort;
 use function count;
 use function debug_print_backtrace;
 use function dirname;
+use function escapeshellarg;
 use function explode;
 use function file_put_contents;
 use function fstat;
 use function fwrite;
 use function implode;
 use function in_array;
+use function is_array;
 use function is_dir;
 use function is_int;
+use function is_string;
 use function ksort;
 use function max;
 use function memory_get_peak_usage;
@@ -835,7 +838,8 @@ final class IssueBuffer
             }
 
             $other_count = $info_count - $baselined_count;
-            if ($other_count > 0 && ($show_info || $show_suggestions)) {
+            // a count like the baselined one, not a suggestion: shown with --no-suggestions too
+            if ($other_count > 0) {
                 $summary .= $separator . number_format($other_count) . ' info' . ($show_info ? '' : ' hidden');
             }
         }
@@ -857,7 +861,8 @@ final class IssueBuffer
         }
 
         if ($fixable_error_counts && $show_suggestions) {
-            $command = 'psalm --alter --issues=' . implode(',', array_keys($fixable_error_counts)) . ' --dry-run';
+            $command = self::getInvokedCommand()
+                . ' --alter --issues=' . implode(',', array_keys($fixable_error_counts)) . ' --dry-run';
             $fixable_count = array_sum($fixable_error_counts);
 
             // a block of its own after the breakdown
@@ -951,6 +956,47 @@ final class IssueBuffer
     private static function formatSuccessMessage(bool $use_color): string
     {
         return $use_color ? "\e[0;32mNo errors found!\e[0m" : 'No errors found!';
+    }
+
+    /**
+     * How Psalm was started, so that a suggested command can be copied as is: the binary (e.g. vendor/bin/psalm,
+     * or a wrapper of it), and the config when one was given (e.g. "vendor/bin/psalm -c psalm.xml")
+     *
+     * It is only printed to the terminal, not into a web page.
+     *
+     * @psalm-taint-escape html
+     * @psalm-taint-escape has_quotes
+     */
+    private static function getInvokedCommand(): string
+    {
+        $argv = self::$server['argv'] ?? null;
+        if (!is_array($argv) || !isset($argv[0]) || !is_string($argv[0])) {
+            return 'psalm';
+        }
+
+        $words = [$argv[0]];
+        for ($i = 1, $count = count($argv); $i < $count; ++$i) {
+            $arg = $argv[$i];
+            if (!is_string($arg)) {
+                continue;
+            }
+
+            if ($arg === '-c' || $arg === '--config') {
+                ++$i;
+                $words[] = $arg;
+                $words[] = isset($argv[$i]) && is_string($argv[$i]) ? $argv[$i] : '';
+            } elseif (str_starts_with($arg, '-c') || str_starts_with($arg, '--config=')) {
+                $words[] = $arg;
+            }
+        }
+
+        // quoted only when the shell needs it, to keep the command readable
+        return implode(' ', array_map(
+            static fn(string $word): string => preg_match('#^[\w./:=@%+-]+$#', $word) === 1
+                ? $word
+                : escapeshellarg($word),
+            $words,
+        ));
     }
 
     /**
