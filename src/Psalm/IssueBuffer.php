@@ -896,7 +896,8 @@ final class IssueBuffer
                 $skipped_checks[] = 'unused <issueHandlers> suppressions';
             }
 
-            if ($skipped_checks) {
+            // --alter reports no issues at all: a full run wouldn't report these either
+            if ($skipped_checks && !$codebase->alter_code) {
                 echo "\nNote: " . implode(' and ', $skipped_checks) . ' are only reported on a full run.' . "\n";
             }
         }
