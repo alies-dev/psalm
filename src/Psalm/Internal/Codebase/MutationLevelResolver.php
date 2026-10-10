@@ -241,7 +241,6 @@ final class MutationLevelResolver
                     $info['location'],
                 ),
                 $info['suppressed_issues'],
-                true,
             );
 
             if ($fix) {
