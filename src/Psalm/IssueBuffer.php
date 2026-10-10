@@ -60,6 +60,7 @@ use function debug_print_backtrace;
 use function dirname;
 use function explode;
 use function file_put_contents;
+use function fstat;
 use function fwrite;
 use function implode;
 use function in_array;
@@ -89,6 +90,7 @@ use function usort;
 
 use const DEBUG_BACKTRACE_IGNORE_ARGS;
 use const PSALM_VERSION;
+use const STDERR;
 use const STDOUT;
 use const STR_PAD_LEFT;
 
@@ -793,8 +795,11 @@ final class IssueBuffer
             [Report::TYPE_CONSOLE, Report::TYPE_PHP_STORM, Report::TYPE_GITHUB_ACTIONS],
         );
 
-        // set apart from the report, which may not even end its last line (e.g. JSON)
-        $output = $summary_on_stdout || $report === '' ? '' : (str_ends_with($report, "\n") ? "\n" : "\n\n");
+        // set apart from the report, which may not even end its last line (e.g. JSON), when both share a terminal
+        // or a log: with STDOUT redirected elsewhere, the summary already follows the blank line after the progress
+        [$stdout, $stderr] = [fstat(STDOUT), fstat(STDERR)];
+        $output = $summary_on_stdout || $report === '' || !$stdout || !$stderr || $stdout['ino'] !== $stderr['ino']
+            ? '' : (str_ends_with($report, "\n") ? "\n" : "\n\n");
 
         $use_color = $project_analyzer->stdout_report_options->use_color;
         $highlight = static fn(string $text): string => $use_color ? "\e[30;48;5;195m{$text}\e[0m" : $text;

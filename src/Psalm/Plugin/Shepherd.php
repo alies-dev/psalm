@@ -11,6 +11,7 @@ use Psalm\Internal\Analyzer\IssueData;
 use Psalm\Internal\VersionUtils;
 use Psalm\Plugin\EventHandler\AfterAnalysisInterface;
 use Psalm\Plugin\EventHandler\Event\AfterAnalysisEvent;
+use Psalm\Progress\DebugProgress;
 use Psalm\Progress\Progress;
 
 use function array_filter;
@@ -182,7 +183,8 @@ final class Shepherd implements AfterAnalysisInterface
             $problem = "HTTP $response_status_code";
         }
 
-        $progress->warning("Results not sent to Shepherd ($shepherd_host): $problem. Run with --debug for details");
+        $progress->warning("Results not sent to Shepherd ($shepherd_host): $problem"
+            . ($progress instanceof DebugProgress ? '' : '. Run with --debug for details'));
         $progress->debug(self::redact(sprintf(
             "Shepherd endpoint: %s\nShepherd response: %s\ncURL info:\n%s\n",
             $endpoint,
