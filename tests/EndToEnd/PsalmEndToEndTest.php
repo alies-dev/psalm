@@ -116,9 +116,10 @@ final class PsalmEndToEndTest extends TestCase
         $psalmXml = str_replace('<psalm', '<psalm runTaintAnalysis="false"', (string)$psalmXml);
         file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
 
+        // the --alter summary goes to STDERR, so that a --dry-run diff on STDOUT stays a diff
         $this->assertStringContainsString(
             'Altered 1 file',
-            $this->runPsalm(['--alter', '--issues=all'], self::$tmpDir, false, true)['STDOUT'],
+            $this->runPsalm(['--alter', '--issues=all'], self::$tmpDir, false, true)['STDERR'],
         );
 
         $this->assertSame(0, $this->runPsalm([], self::$tmpDir)['CODE']);

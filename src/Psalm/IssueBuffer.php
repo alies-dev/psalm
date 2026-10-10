@@ -22,6 +22,7 @@ use Psalm\Issue\UnusedPsalmSuppress;
 use Psalm\Plugin\EventHandler\Event\AfterAnalysisEvent;
 use Psalm\Plugin\EventHandler\Event\BeforeAddIssueEvent;
 use Psalm\Progress\Progress;
+use Psalm\Progress\VoidProgress;
 use Psalm\Report\ByIssueLevelAndTypeReport;
 use Psalm\Report\CheckstyleReport;
 use Psalm\Report\CodeClimateReport;
@@ -63,6 +64,7 @@ use function explode;
 use function file_put_contents;
 use function fstat;
 use function fwrite;
+use function getenv;
 use function implode;
 use function in_array;
 use function is_array;
@@ -79,13 +81,14 @@ use function number_format;
 use function ob_get_clean;
 use function ob_start;
 use function preg_match;
+use function rtrim;
 use function sha1;
 use function sprintf;
-use function str_ends_with;
 use function str_pad;
 use function str_repeat;
 use function str_replace;
 use function str_starts_with;
+use function stream_isatty;
 use function strlen;
 use function trim;
 use function uksort;
@@ -107,6 +110,9 @@ final class IssueBuffer
 
     /** How many error types the breakdown shows */
     private const ERROR_BREAKDOWN_TYPES = 5;
+
+    /** How many altered files the summary lists */
+    private const ALTERED_FILES_SHOWN = 10;
 
     /**
      * @var array<string, list<IssueData>>
@@ -685,6 +691,7 @@ final class IssueBuffer
             }
         }
 
+        $issue_handler_suppressions_skipped = false;
         if ($codebase->config->find_unused_issue_handler_suppression) {
             if ($is_full && !$codebase->diff_run) {
                 $config_path = $codebase->config->source_filename ?? '';
@@ -724,6 +731,15 @@ final class IssueBuffer
                     }
                 }
             } else {
+                // a note about it is only worth printing when the config does suppress some issues by path
+                foreach ($codebase->config->getIssueHandlers() as $handler) {
+                    foreach ($handler->getFilters() as $filter) {
+                        if ($filter->getErrorLevel() === Config::REPORT_SUPPRESS) {
+                            $issue_handler_suppressions_skipped = true;
+                            break 2;
+                        }
+                    }
+                }
             }
         }
 
@@ -733,6 +749,14 @@ final class IssueBuffer
             $project_analyzer->stdout_report_options,
             $codebase->analyzer->getTotalTypeCoverage($codebase),
         );
+        // reports read by people end with their last issue: the blank line before the summary comes from below
+        if ($report !== '' && in_array(
+            $project_analyzer->stdout_report_options->format,
+            [Report::TYPE_CONSOLE, Report::TYPE_PHP_STORM, Report::TYPE_BY_ISSUE_LEVEL],
+            true,
+        )) {
+            $report = rtrim($report, "\n") . "\n";
+        }
         fwrite(STDOUT, $report);
 
         /** @var array<string, int> $error_counts_by_type */
@@ -792,19 +816,27 @@ final class IssueBuffer
         }
 
         // The summary follows the console report on STDOUT, as it always did. A report in another format is read
-        // by tools: the summary goes to STDERR then, through the progress, so that STDOUT stays unchanged.
-        $summary_on_stdout = in_array(
+        // by tools, and the --alter --dry-run diff may be applied: the summary goes to STDERR then, so that STDOUT
+        // stays unchanged.
+        $summary_on_stdout = !$codebase->alter_code && in_array(
             $project_analyzer->stdout_report_options->format,
             [Report::TYPE_CONSOLE, Report::TYPE_PHP_STORM, Report::TYPE_GITHUB_ACTIONS],
+            true,
         );
 
-        // set apart from the report, which may not even end its last line (e.g. JSON), when both share a terminal
-        // or a log: with STDOUT redirected elsewhere, the summary already follows the blank line after the progress
+        // one blank line after the report, which may not even end its last line (e.g. JSON), when both share a
+        // terminal or a log: with STDOUT redirected elsewhere, the summary already follows the blank line after
+        // the progress
         [$stdout, $stderr] = [fstat(STDOUT), fstat(STDERR)];
-        $output = $summary_on_stdout || $report === '' || !$stdout || !$stderr || $stdout['ino'] !== $stderr['ino']
-            ? '' : (str_ends_with($report, "\n") ? "\n" : "\n\n");
+        $shares_stream = $summary_on_stdout || ($stdout && $stderr && $stdout['ino'] === $stderr['ino']);
+        $output = $report !== '' && $shares_stream
+            ? str_repeat("\n", max(0, 2 - (strlen($report) - strlen(rtrim($report, "\n")))))
+            : '';
 
-        $use_color = $project_analyzer->stdout_report_options->use_color;
+        // on STDERR, colors only on a terminal (not in a log file, nor with TERM=dumb)
+        $use_color = $project_analyzer->stdout_report_options->use_color
+            && ($summary_on_stdout || (stream_isatty(STDERR) && getenv('TERM') !== 'dumb'));
+
         $highlight = static fn(string $text): string => $use_color ? "\e[30;48;5;195m{$text}\e[0m" : $text;
         $separator = Progress::separator();
 
@@ -821,6 +853,17 @@ final class IssueBuffer
                     . ' Run without --dry-run to apply',
                 default => "Altered $altered_files",
             };
+
+            // which files: with --dry-run the diff above shows them
+            if ($altered_count > 0 && !$project_analyzer->dry_run) {
+                foreach (array_slice($codebase->analyzer->getAlteredFiles(), 0, self::ALTERED_FILES_SHOWN) as $path) {
+                    $summary .= "\n  " . $codebase->config->shortenFileName($path);
+                }
+
+                if ($altered_count > self::ALTERED_FILES_SHOWN) {
+                    $summary .= "\n  +" . number_format($altered_count - self::ALTERED_FILES_SHOWN) . ' more';
+                }
+            }
         } elseif ($error_count) {
             // e.g. "396 errors in 112 files · 121 baselined · 27 info hidden"
             $file_count = count($files_with_errors);
@@ -848,7 +891,11 @@ final class IssueBuffer
 
         $show_breakdown = $error_count > self::ERROR_BREAKDOWN_THRESHOLD;
         if ($show_breakdown) {
-            $output .= self::getErrorBreakdown($error_counts_by_type, self::$fixable_issue_counts);
+            // "fixable" is a suggestion too
+            $output .= self::getErrorBreakdown(
+                $error_counts_by_type,
+                $show_suggestions ? self::$fixable_issue_counts : [],
+            );
         }
 
         // Fixability is only counted by type: only suggest fixing the types of the errors reported,
@@ -861,8 +908,11 @@ final class IssueBuffer
         }
 
         if ($fixable_error_counts && $show_suggestions) {
-            $command = self::getInvokedCommand()
-                . ' --alter --issues=' . implode(',', array_keys($fixable_error_counts)) . ' --dry-run';
+            $command = self::getInvokedCommand(
+                '--alter',
+                '--issues=' . implode(',', array_keys($fixable_error_counts)),
+                '--dry-run',
+            );
             $fixable_count = array_sum($fixable_error_counts);
 
             // a block of its own after the breakdown
@@ -883,8 +933,9 @@ final class IssueBuffer
 
             $output .= "\n" . $stats . "\n";
 
-            if ($add_stats) {
-                $output .= "\nType coverage by file:\n" . $codebase->analyzer->getNonMixedStats();
+            $non_mixed_stats = $add_stats ? $codebase->analyzer->getNonMixedStats() : '';
+            if ($non_mixed_stats !== '') {
+                $output .= "\nType coverage by file:\n" . $non_mixed_stats;
             }
 
             $function_timings = $project_analyzer->debug_performance
@@ -909,7 +960,7 @@ final class IssueBuffer
             $skipped_checks[] = 'unused code';
         }
 
-        if ($codebase->config->find_unused_issue_handler_suppression && (!$is_full || $codebase->diff_run)) {
+        if ($issue_handler_suppressions_skipped) {
             $skipped_checks[] = 'unused <issueHandlers> suppressions';
         }
 
@@ -920,6 +971,9 @@ final class IssueBuffer
 
         if ($summary_on_stdout) {
             echo $output;
+        } elseif ($project_analyzer->progress instanceof VoidProgress) {
+            // the summary (and --stats) isn't progress: --no-progress and agents still get it
+            fwrite(STDERR, $output);
         } else {
             $project_analyzer->progress->write($output);
         }
@@ -959,43 +1013,50 @@ final class IssueBuffer
     }
 
     /**
-     * How Psalm was started, so that a suggested command can be copied as is: the binary (e.g. vendor/bin/psalm,
-     * or a wrapper of it), and the config when one was given (e.g. "vendor/bin/psalm -c psalm.xml")
+     * A command running Psalm again with the given options, so that it can be copied as is: the binary Psalm was
+     * started with (e.g. vendor/bin/psalm, or a wrapper of it), and what decides which code is analysed and how: the
+     * config, root and PHP version, and the paths (e.g. "vendor/bin/psalm -c psalm.xml --alter … src/Foo.php")
      *
-     * It is only printed to the terminal, not into a web page.
+     * Options and paths are told apart as CliUtils::getPathsToCheck() does. It is only printed to the terminal, not
+     * into a web page.
      *
      * @psalm-taint-escape html
      * @psalm-taint-escape has_quotes
      */
-    private static function getInvokedCommand(): string
+    private static function getInvokedCommand(string ...$options): string
     {
-        $argv = self::$server['argv'] ?? null;
-        if (!is_array($argv) || !isset($argv[0]) || !is_string($argv[0])) {
-            return 'psalm';
-        }
+        $argv = isset(self::$server['argv']) && is_array(self::$server['argv']) ? self::$server['argv'] : [];
+        $binary = isset($argv[0]) && is_string($argv[0]) ? $argv[0] : 'psalm';
 
-        $words = [$argv[0]];
+        $kept_options = [];
+        // after the options: PHP's getopt() stops at the first path
+        $paths = [];
         for ($i = 1, $count = count($argv); $i < $count; ++$i) {
-            $arg = $argv[$i];
-            if (!is_string($arg)) {
+            $arg = $argv[$i] ?? null;
+            if (!is_string($arg) || $arg === '' || $arg === '-') {
                 continue;
             }
 
-            if ($arg === '-c' || $arg === '--config') {
+            if ($arg[0] !== '-') {
+                $paths[] = $arg;
+            } elseif (in_array($arg, ['-c', '-f', '-r', '--config', '--root'], true)) {
+                // the value is the next argument
                 ++$i;
-                $words[] = $arg;
-                $words[] = isset($argv[$i]) && is_string($argv[$i]) ? $argv[$i] : '';
-            } elseif (str_starts_with($arg, '-c') || str_starts_with($arg, '--config=')) {
-                $words[] = $arg;
+                $kept_options[] = $arg;
+                $kept_options[] = isset($argv[$i]) && is_string($argv[$i]) ? $argv[$i] : '';
+            } elseif (preg_match('/^(-[cfr].|--(config|root|php-version)=)/', $arg) === 1) {
+                $kept_options[] = $arg;
+            } elseif ($arg === '--printer') {
+                ++$i;
             }
         }
 
         // quoted only when the shell needs it, to keep the command readable
         return implode(' ', array_map(
-            static fn(string $word): string => preg_match('#^[\w./:=@%+-]+$#', $word) === 1
+            static fn(string $word): string => preg_match('#^[\w./:=@%+,-]+$#', $word) === 1
                 ? $word
                 : escapeshellarg($word),
-            $words,
+            [$binary, ...$kept_options, ...$options, ...$paths],
         ));
     }
 

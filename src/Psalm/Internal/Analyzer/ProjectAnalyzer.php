@@ -417,8 +417,12 @@ final class ProjectAnalyzer
         $message = 'Psalm ' . $psalm_version
             . $separator . 'PHP ' . PHP_VERSION
             . $separator . 'target PHP ' . $codebase->getMajorAnalysisPhpVersion() . '.'
-            . $codebase->getMinorAnalysisPhpVersion() . ' (' . $source . ')'
-            . $separator . 'errorLevel ' . $codebase->config->level;
+            . $codebase->getMinorAnalysisPhpVersion() . ' (' . $source . ')';
+
+        // a config that isn't from a file (e.g. the probe of --init) has no level of the user's
+        if ($codebase->config->source_filename !== null) {
+            $message .= $separator . 'errorLevel ' . $codebase->config->level;
+        }
 
         if (count($unsupported_php_extensions) > 0) {
             $message .= $separator . 'unsupported extensions: ' . implode(', ', $unsupported_php_extensions);
