@@ -1116,6 +1116,7 @@ final class ClassLikes
                 $storage->location,
             ),
             $storage->suppressed_issues,
+            true,
         );
     }
 

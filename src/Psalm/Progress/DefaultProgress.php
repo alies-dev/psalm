@@ -166,7 +166,7 @@ class DefaultProgress extends LongProgress
         $name = match ($phase) {
             Phase::SCAN => 'Scan',
             Phase::ANALYSIS => 'Analysis',
-            Phase::ALTERING => 'Fixes',
+            Phase::ALTERING => 'Alter',
             Phase::TAINT_GRAPH_RESOLUTION => 'Taint graph',
             Phase::MERGING_THREAD_RESULTS => 'Merge',
             Phase::LOADING_CACHE => 'Cache',

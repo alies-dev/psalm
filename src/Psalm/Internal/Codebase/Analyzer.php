@@ -179,6 +179,9 @@ final class Analyzer
      */
     public array $mutable_classes = [];
 
+    /** Files --alter changed, or would change with --dry-run */
+    private int $altered_file_count = 0;
+
     /**
      * @psalm-mutation-free
      */
@@ -188,6 +191,14 @@ final class Analyzer
         private readonly FileStorageProvider $file_storage_provider,
         private readonly Progress $progress,
     ) {
+    }
+
+    /**
+     * @psalm-mutation-free
+     */
+    public function getAlteredFileCount(): int
+    {
+        return $this->altered_file_count;
     }
 
     /**
@@ -1241,7 +1252,8 @@ final class Analyzer
         );
 
         $last_start = PHP_INT_MAX;
-        $existing_contents = $this->file_provider->getContents($file_path);
+        $original_contents = $this->file_provider->getContents($file_path);
+        $existing_contents = $original_contents;
 
         foreach ($file_manipulations as $manipulation) {
             if ($manipulation->start <= $last_start) {
@@ -1249,6 +1261,12 @@ final class Analyzer
                 $last_start = $manipulation->start;
             }
         }
+
+        if ($existing_contents === $original_contents) {
+            return;
+        }
+
+        ++$this->altered_file_count;
 
         if ($dry_run) {
             $differ = new Differ(
@@ -1259,8 +1277,7 @@ final class Analyzer
             );
 
             $this->progress->writeReport(
-                $file_path . ':' . "\n"
-                . $differ->diff($this->file_provider->getContents($file_path), $existing_contents),
+                $file_path . ':' . "\n" . $differ->diff($original_contents, $existing_contents),
             );
 
             return;

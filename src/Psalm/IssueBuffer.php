@@ -594,13 +594,6 @@ final class IssueBuffer
         $issues_data = [];
 
         if (self::$issues_data) {
-            if (in_array(
-                $project_analyzer->stdout_report_options->format,
-                [Report::TYPE_CONSOLE, Report::TYPE_PHP_STORM],
-            )) {
-                echo "\n";
-            }
-
             ksort(self::$issues_data);
 
             foreach (self::$issues_data as $file_path => $file_issues) {
@@ -800,16 +793,21 @@ final class IssueBuffer
             $use_color = $project_analyzer->stdout_report_options->use_color;
             $highlight = static fn(string $text): string => $use_color ? "\e[30;48;5;195m{$text}\e[0m" : $text;
 
-            // the report already ends with a blank line when there are issues
-            if (!self::$issues_data) {
-                echo "\n";
-            }
-
             $show_info = $project_analyzer->stdout_report_options->show_info;
             $show_suggestions = $project_analyzer->stdout_report_options->show_suggestions;
 
-            // e.g. "396 errors in 112 files · 121 baselined · 27 info hidden"
-            if ($error_count) {
+            if ($codebase->alter_code) {
+                // issues aren't reported while altering code: the verdict is what was altered
+                $altered_count = $codebase->analyzer->getAlteredFileCount();
+                $altered_files = number_format($altered_count) . ($altered_count === 1 ? ' file' : ' files');
+                $summary = match (true) {
+                    $altered_count === 0 => 'Nothing to alter',
+                    $project_analyzer->dry_run => "Would alter $altered_files (dry run)."
+                        . ' Run without --dry-run to apply',
+                    default => "Altered $altered_files",
+                };
+            } elseif ($error_count) {
+                // e.g. "396 errors in 112 files · 121 baselined · 27 info hidden"
                 $file_count = count($files_with_errors);
                 $summary = number_format($error_count) . ($error_count === 1 ? ' error' : ' errors')
                     . ' in ' . number_format($file_count) . ($file_count === 1 ? ' file' : ' files');
@@ -818,19 +816,22 @@ final class IssueBuffer
                 $summary = self::formatSuccessMessage($use_color);
             }
 
-            // the baseline only holds errors: they come right after the reported ones
-            if ($baselined_count) {
-                $summary .= ' · ' . number_format($baselined_count) . ' baselined';
-            }
+            if (!$codebase->alter_code) {
+                // the baseline only holds errors: they come right after the reported ones
+                if ($baselined_count) {
+                    $summary .= ' · ' . number_format($baselined_count) . ' baselined';
+                }
 
-            $other_count = $info_count - $baselined_count;
-            if ($other_count > 0 && ($show_info || $show_suggestions)) {
-                $summary .= ' · ' . number_format($other_count) . ' info' . ($show_info ? '' : ' hidden');
+                $other_count = $info_count - $baselined_count;
+                if ($other_count > 0 && ($show_info || $show_suggestions)) {
+                    $summary .= ' · ' . number_format($other_count) . ' info' . ($show_info ? '' : ' hidden');
+                }
             }
 
             echo $summary . "\n";
 
-            if ($error_count > self::ERROR_BREAKDOWN_THRESHOLD) {
+            $show_breakdown = $error_count > self::ERROR_BREAKDOWN_THRESHOLD;
+            if ($show_breakdown) {
                 echo self::getErrorBreakdown($error_counts_by_type, self::$fixable_issue_counts);
             }
 
@@ -845,9 +846,11 @@ final class IssueBuffer
 
             if ($fixable_error_counts && $show_suggestions) {
                 $command = 'psalm --alter --issues=' . implode(',', array_keys($fixable_error_counts)) . ' --dry-run';
+                $fixable_count = array_sum($fixable_error_counts);
 
-                echo 'Fix ' . number_format(array_sum($fixable_error_counts)) . ' automatically: '
-                    . $highlight($command) . "\n";
+                // a block of its own after the breakdown
+                echo ($show_breakdown ? "\n" : '') . 'Preview the fix for ' . number_format($fixable_count)
+                    . ($fixable_count === 1 ? ' issue: ' : ' issues: ') . $highlight($command) . "\n";
             }
 
             if ($start_time) {
@@ -856,7 +859,8 @@ final class IssueBuffer
                     . ' · ' . self::formatMemory(memory_get_peak_usage()) . ' peak';
 
                 $type_inference_summary = $codebase->analyzer->getTypeInferenceSummary($codebase);
-                if ($type_inference_summary !== '') {
+                // type coverage was measured before --alter changed anything
+                if ($type_inference_summary !== '' && !$codebase->alter_code) {
                     $stats .= ' · ' . $type_inference_summary;
                 }
 
@@ -979,7 +983,7 @@ final class IssueBuffer
         $hidden_types = count($error_counts_by_type) - count($shown);
         if ($hidden_types > 0) {
             $breakdown .= str_repeat(' ', 4 + $count_width) . '+' . $hidden_types
-                . ($hidden_types === 1 ? ' more type' : ' more types') . "\n";
+                . ($hidden_types === 1 ? ' more type' : ' more types') . ' (all of them: --output-format=count)' . "\n";
         }
 
         return $breakdown;

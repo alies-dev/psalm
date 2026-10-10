@@ -58,6 +58,9 @@ class LongProgress extends Progress
     /** Whether the grid left the cursor in the middle of a line */
     private bool $mid_line = false;
 
+    /** Whether lines were written since the last finish(): the output that follows is then set apart */
+    private bool $wrote_lines = false;
+
     /** @var list<string>|null Output of a forked worker, kept for the main process */
     private ?array $worker_output = null;
 
@@ -134,6 +137,11 @@ class LongProgress extends Progress
     public function finish(): void
     {
         $this->endPhase();
+
+        if ($this->wrote_lines) {
+            $this->wrote_lines = false;
+            $this->write(PHP_EOL);
+        }
     }
 
     /**
@@ -261,7 +269,7 @@ class LongProgress extends Progress
         $label = match ($this->phase) {
             Phase::SCAN => 'Scanning files',
             Phase::ANALYSIS => 'Analyzing files',
-            Phase::ALTERING => 'Updating files',
+            Phase::ALTERING => 'Altering files',
             Phase::TAINT_GRAPH_RESOLUTION => 'Resolving taint graph',
             Phase::JIT_COMPILATION, Phase::PRELOADING => 'Preloading',
             Phase::MERGING_THREAD_RESULTS => 'Merging thread results',
@@ -331,6 +339,7 @@ class LongProgress extends Progress
         }
 
         $this->write($line . PHP_EOL);
+        $this->wrote_lines = true;
     }
 
     /**

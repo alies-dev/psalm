@@ -117,7 +117,7 @@ final class PsalmEndToEndTest extends TestCase
         file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
 
         $this->assertStringContainsString(
-            'No errors found!',
+            'Altered 1 file',
             $this->runPsalm(['--alter', '--issues=all'], self::$tmpDir, false, true)['STDOUT'],
         );
 
