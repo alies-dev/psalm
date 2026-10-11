@@ -97,7 +97,7 @@
 
 - [BC] Method finish() of class Psalm\Progress\Progress changed from concrete to abstract
 
-- [BC] Property `Psalm\Progress\LongProgress::$prevPhase` was renamed to `$phase`, and method `LongProgress::reportPhaseDuration()` was removed: override `phaseStarted()`, `reportTask()` and `phaseEnded()` instead. `Psalm\Progress\Phase` has a new `FINISHING` case, started after the analysis while results are consolidated and caches are updated.
+- [BC] Property `Psalm\Progress\LongProgress::$prevPhase` was renamed to `$phase`, and method `LongProgress::reportPhaseDuration()` was removed: override `phaseStarted()`, `reportTask()` and `phaseEnded()` instead. `Psalm\Progress\Phase` has two new cases, so a `match` over it needs them: `LOADING_CACHE`, started while the results of the previous run are loaded from the cache, and `FINISHING`, started after the analysis while results are consolidated and caches are updated.
 
 - [BC] `Psalm\Config::loadFromXMLFile()` throws a `Psalm\Exception\ConfigException` instead of an `InvalidArgumentException` when the file can't be read or is empty, so the CLI reports it as a config error rather than a crash.
 
