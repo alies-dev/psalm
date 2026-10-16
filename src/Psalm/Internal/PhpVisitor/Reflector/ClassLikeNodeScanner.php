@@ -75,6 +75,10 @@ use Psalm\Type\Union;
 use UnexpectedValueException;
 
 use function array_diff_key;
+use function array_fill_keys;
+use function array_intersect_key;
+use function array_key_first;
+use function array_keys;
 use function array_merge;
 use function array_pop;
 use function array_shift;
@@ -222,13 +226,29 @@ final class ClassLikeNodeScanner
                     $storage->stubbed = true;
                     $storage->aliases = $this->aliases;
 
-                    foreach ($storage->dependent_classlikes as $dependent_name_lc => $_) {
+                    // dependent_classlikes is not transitively complete yet, so walk it
+                    $pending = $storage->dependent_classlikes;
+                    $visited = [$fq_classlike_name_lc => true];
+
+                    while ($pending) {
+                        $dependent_name_lc = array_key_first($pending);
+                        unset($pending[$dependent_name_lc]);
+
+                        if (isset($visited[$dependent_name_lc])) {
+                            continue;
+                        }
+
+                        $visited[$dependent_name_lc] = true;
+
                         try {
                             $dependent_storage = $this->codebase->classlike_storage_provider->get($dependent_name_lc);
                         } catch (InvalidArgumentException) {
                             continue;
                         }
+
+                        $pending += $dependent_storage->dependent_classlikes;
                         $dependent_storage->populated = false;
+                        $this->resetInheritedMethodIds($dependent_storage);
                         $this->codebase->classlike_storage_provider->makeNew($dependent_name_lc);
                     }
                 }
@@ -1274,6 +1294,26 @@ final class ClassLikeNodeScanner
         $class_storage->overridden_method_ids['__construct'] = [];
 
         $storage->visibility = ClassLikeAnalyzer::VISIBILITY_PUBLIC;
+    }
+
+    /**
+     * Repopulating a dependent of an overridden class must rebuild its inherited method ids from scratch:
+     * Populator::inheritMethodsFromParent() never replaces an id that is already set, so the ids inherited
+     * before the override would otherwise keep pointing at the declarations the override replaced.
+     */
+    private function resetInheritedMethodIds(ClassLikeStorage $storage): void
+    {
+        $keep = array_fill_keys(array_keys($storage->methods), true);
+
+        if ($storage->is_enum) {
+            // not inherited from a parent: set when the enum is scanned
+            $keep += ['cases' => true, 'from' => true, 'tryfrom' => true];
+        }
+
+        $storage->declaring_method_ids = array_intersect_key($storage->declaring_method_ids, $keep);
+        $storage->appearing_method_ids = array_intersect_key($storage->appearing_method_ids, $keep);
+        $storage->inheritable_method_ids = array_intersect_key($storage->inheritable_method_ids, $keep);
+        $storage->overridden_method_ids = array_fill_keys(array_keys($storage->methods), []);
     }
 
     /**

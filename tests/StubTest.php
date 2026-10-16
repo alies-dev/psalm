@@ -1510,4 +1510,129 @@ final class StubTest extends TestCase
         $this->expectExceptionMessage('TaintedHtml - src/somefile.php');
         $this->analyzeFile($file_path, new Context());
     }
+
+    private function analyzeWithRedeclaringStub(string $stub, string $vendor_code, string $code): void
+    {
+        $this->project_analyzer = $this->getProjectAnalyzerWithConfig(
+            TestConfig::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm
+                    errorLevel="1"
+                >
+                    <projectFiles>
+                        <directory name="src" />
+                    </projectFiles>
+
+                    <stubs>
+                        <file name="tests/fixtures/stubs/' . $stub . '.phpstub" />
+                    </stubs>
+                </psalm>',
+            ),
+        );
+
+        $this->addFile((string) getcwd() . '/vendor/lib/lib.php', $vendor_code);
+
+        $file_path = (string) getcwd() . '/src/somefile.php';
+
+        $this->addFile($file_path, $code);
+
+        $this->analyzeFile($file_path, new Context());
+    }
+
+    /** A stub re-declaring a method that the class inherited from a trait reaches the class's subclasses. */
+    public function testStubRedeclaringTraitMethodAppliesToSubclasses(): void
+    {
+        $this->analyzeWithRedeclaringStub(
+            'stub_redeclares_trait_method',
+            '<?php
+                namespace StubRedeclaresTraitMethod;
+
+                trait T {
+                    /** @param string $x */
+                    public function m($x): void {}
+                }
+
+                class B { use T; }
+                class C extends B {}
+                class E extends C {}
+                class F extends E {}
+                class G extends F {}',
+            '<?php
+                namespace StubRedeclaresTraitMethod;
+
+                (new B())->m(1);
+                (new C())->m(1);
+                (new E())->m(1);
+                (new F())->m(1);
+                (new G())->m(1);
+
+                /** @psalm-suppress ClassMustBeFinal */
+                class D extends B {}
+                (new D())->m(1);',
+        );
+    }
+
+    /** A stub re-declaring a method that the class inherited from its parent reaches the class's subclasses. */
+    public function testStubRedeclaringParentMethodAppliesToSubclasses(): void
+    {
+        $this->analyzeWithRedeclaringStub(
+            'stub_redeclares_parent_method',
+            '<?php
+                namespace StubRedeclaresParentMethod;
+
+                class A {
+                    /** @param string $x */
+                    public function m($x): void {}
+                }
+
+                class B extends A {}
+                class C extends B {}
+                class E extends C {}
+                class F extends E {}
+                class G extends F {}',
+            '<?php
+                namespace StubRedeclaresParentMethod;
+
+                (new B())->m(1);
+                (new C())->m(1);
+                (new E())->m(1);
+                (new F())->m(1);
+                (new G())->m(1);
+
+                /** @psalm-suppress ClassMustBeFinal */
+                class D extends B {}
+                (new D())->m(1);',
+        );
+    }
+
+    /** A subclass that declares its own method keeps it when a stub re-declares the inherited one. */
+    public function testStubRedeclaringInheritedMethodKeepsSubclassOverride(): void
+    {
+        $this->analyzeWithRedeclaringStub(
+            'stub_redeclares_method_in_subclass',
+            '<?php
+                namespace StubRedeclaresMethodInSubclass;
+
+                class A {
+                    /** @param string $x */
+                    public function m($x): void {}
+                }
+
+                class B extends A {}
+
+                class C extends B {
+                    /** @param int|string $x */
+                    public function m($x): void {}
+                }
+
+                class E extends C {}',
+            '<?php
+                namespace StubRedeclaresMethodInSubclass;
+
+                (new B())->m(1);
+                (new C())->m("a");
+                (new E())->m("a");',
+        );
+    }
 }

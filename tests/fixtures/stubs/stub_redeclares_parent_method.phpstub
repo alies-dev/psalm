@@ -1,0 +1,10 @@
+<?php
+namespace StubRedeclaresParentMethod;
+
+class B extends A
+{
+    /** @param int $x */
+    public function m($x): void
+    {
+    }
+}
