@@ -4441,6 +4441,26 @@ final class ClassTemplateTest extends TestCase
                     '$p===' => 'Pivot',
                 ],
             ],
+            'strictlyContainedArgKeepsInputTypeInInvariantTemplateArg' => [
+                'code' => '<?php
+                    /** @template T */
+                    final class Item {
+                        /** @param T $item */
+                        public function __construct(public $item) {}
+                    }
+
+                    /** @param Item<float> $b */
+                    function takesFloat(Item $b): void {}
+
+                    /** @var Item<float|int<0, 1>> $b */
+                    $b = new Item(null);
+                    takesFloat($b);
+                    if (is_int($b->item)) {}
+                    $p = $b->item;',
+                'assertions' => [
+                    '$p===' => 'float|int<0, 1>',
+                ],
+            ],
         ];
     }
 
@@ -5282,6 +5302,24 @@ final class ClassTemplateTest extends TestCase
                     function takesShaped(Item $b): void {}
 
                     /** @param Item<int<0, 1>|Tag&object{pivot: Pivot}> $b */
+                    function fromShape(Item $b): void { takesShaped($b); }',
+                'error_message' => 'InvalidArgument',
+            ],
+            'shapeNestedInDeclaredArgRejectedInInvariantTemplateArg' => [
+                'code' => '<?php
+                    /** @template T */
+                    final class Item {
+                        /** @param T $item */
+                        public function __construct(public $item) {}
+                    }
+
+                    class Tag {}
+                    class Pivot {}
+
+                    /** @param Item<int|array{p: Tag&object{pivot: string}}> $b */
+                    function takesShaped(Item $b): void {}
+
+                    /** @param Item<int<0, 1>|array{p: Tag&object{pivot: Pivot}}> $b */
                     function fromShape(Item $b): void { takesShaped($b); }',
                 'error_message' => 'InvalidArgument',
             ],

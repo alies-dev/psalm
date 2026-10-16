@@ -6,6 +6,7 @@ namespace Psalm\Internal\Type\Comparator;
 
 use Psalm\Codebase;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
+use Psalm\Internal\TypeVisitor\ContainsObjectShapeVisitor;
 use Psalm\Type\Atomic;
 use Psalm\Type\Atomic\TGenericObject;
 use Psalm\Type\Atomic\TInt;
@@ -157,26 +158,54 @@ final class GenericTypeComparator
                         && !$container_param->had_template
                     ) {
                         $lower_bounds_before = count($param_comparison_result->type_variable_lower_bounds);
-
-                        // Int ranges and object shapes are inferred refinements just like literals,
-                        // so they widen the same way, but not toward a declared type that has shapes
-                        // itself (shapes compare shallowly). Only for the same class: through inheritance
-                        // $i does not index the input's own params
-                        $reverse_input_param = $input_param;
-                        if (strtolower($input_type_part->value) === strtolower($container_type_part->value)) {
-                            $reverse_input_param = self::widenRefinements($input_param, $container_param);
-                        }
+                        $result_before_reverse = clone $param_comparison_result;
 
                         // Make sure types are basically the same
                         $reverse_contained = UnionTypeComparator::isContainedBy(
                             $codebase,
                             $container_param,
-                            $reverse_input_param,
+                            $input_param,
                             $container_param->ignore_nullable_issues,
                             $container_param->ignore_falsable_issues,
                             $param_comparison_result,
                             $allow_interface_equality,
                         );
+
+                        $strictly_contained = $reverse_contained && !$param_comparison_result->type_coerced;
+
+                        // Int ranges and object shapes are inferred refinements just like literals, so when the
+                        // strict check fails they widen the same way: except toward a declared type that has
+                        // shapes itself (shapes compare shallowly), and only for the same class, as through
+                        // inheritance $i does not index the input's own params
+                        if (!$strictly_contained
+                            && strtolower($input_type_part->value) === strtolower($container_type_part->value)
+                        ) {
+                            $shape_visitor = new ContainsObjectShapeVisitor();
+                            $shape_visitor->traverseArray($container_param->getAtomicTypes());
+                            $widened_input_param = $shape_visitor->matches()
+                                ? $input_param
+                                : self::widenRefinements($input_param);
+
+                            if ($widened_input_param !== $input_param
+                                && UnionTypeComparator::isContainedBy(
+                                    $codebase,
+                                    $container_param,
+                                    $widened_input_param,
+                                    $container_param->ignore_nullable_issues,
+                                    $container_param->ignore_falsable_issues,
+                                    $result_before_reverse,
+                                    $allow_interface_equality,
+                                )
+                                && !$result_before_reverse->type_coerced
+                            ) {
+                                $param_comparison_result = $result_before_reverse;
+                                $strictly_contained = true;
+
+                                if ($atomic_comparison_result_type_params !== null) {
+                                    $atomic_comparison_result_type_params[$i] = $container_param;
+                                }
+                            }
+                        }
 
                         // lower bounds this reverse check recorded are mirrors
                         // of the container param, not values the variable holds
@@ -187,7 +216,7 @@ final class GenericTypeComparator
                                 ->from_invariant_argument_mirror = true;
                         }
 
-                        if (!$reverse_contained || $param_comparison_result->type_coerced) {
+                        if (!$strictly_contained) {
                             if ($container_param->hasStaticObject()
                                 && $input_param->isStaticObject()
                             ) {
@@ -199,10 +228,6 @@ final class GenericTypeComparator
                                     $atomic_comparison_result->type_coerced = false;
                                 }
                             }
-                        } elseif ($reverse_input_param !== $input_param
-                            && $atomic_comparison_result_type_params !== null
-                        ) {
-                            $atomic_comparison_result_type_params[$i] = $container_param;
                         }
                     }
                 }
@@ -249,19 +274,8 @@ final class GenericTypeComparator
         return false;
     }
 
-    private static function widenRefinements(Union $type, Union $container): Union
+    private static function widenRefinements(Union $type): Union
     {
-        foreach ($container->getAtomicTypes() as $container_atomic) {
-            if ($container_atomic instanceof TNamedObject
-                && array_filter(
-                    $container_atomic->extra_types,
-                    static fn(Atomic $extra): bool => $extra instanceof TObjectWithProperties,
-                )
-            ) {
-                return $type;
-            }
-        }
-
         $types = [];
         $widened = false;
 
