@@ -4374,6 +4374,51 @@ final class ClassTemplateTest extends TestCase
                 'ignored_issues' => [],
                 'php_version' => '8.0',
             ],
+            'refinedIntRangeAcceptedInInvariantTemplateArg' => [
+                'code' => '<?php
+                    /**
+                     * @template TKey of array-key
+                     * @template TValue
+                     */
+                    final class TypedCollection {
+                        /** @param array<TKey, TValue> $items */
+                        public function __construct(public array $items) {}
+                    }
+
+                    /** @param TypedCollection<int, string> $c */
+                    function takesIntKeys(TypedCollection $c): void {}
+
+                    /** @param TypedCollection<int<0, 1>, string> $c */
+                    function fromRange(TypedCollection $c): void { takesIntKeys($c); }
+
+                    /** @param TypedCollection<positive-int, string> $c */
+                    function fromPositive(TypedCollection $c): void { takesIntKeys($c); }
+
+                    /** @return TypedCollection<int, string> */
+                    function build(): TypedCollection {
+                        return new TypedCollection(["a", "b", "c"]);
+                    }',
+            ],
+            'refinedObjectShapeAcceptedInInvariantTemplateArg' => [
+                'code' => '<?php
+                    /**
+                     * @template TKey of array-key
+                     * @template TValue
+                     */
+                    final class TypedCollection {
+                        /** @param array<TKey, TValue> $items */
+                        public function __construct(public array $items) {}
+                    }
+
+                    class Tag {}
+                    class Pivot {}
+
+                    /** @param TypedCollection<int, Tag> $c */
+                    function takesTags(TypedCollection $c): void {}
+
+                    /** @param TypedCollection<int, Tag&object{pivot: Pivot}> $c */
+                    function fromShape(TypedCollection $c): void { takesTags($c); }',
+            ],
         ];
     }
 
@@ -5138,6 +5183,112 @@ final class ClassTemplateTest extends TestCase
                 class C {}
                 PHP,
                 'error_message' => 'InvalidDocblock',
+            ],
+            'unrelatedKeyRejectedInInvariantTemplateArg' => [
+                'code' => '<?php
+                    /**
+                     * @template TKey of array-key
+                     * @template TValue
+                     */
+                    final class TypedCollection {
+                        /** @param array<TKey, TValue> $items */
+                        public function __construct(public array $items) {}
+                    }
+
+                    /** @param TypedCollection<int, string> $c */
+                    function takesIntKeys(TypedCollection $c): void {}
+
+                    /** @param TypedCollection<string, string> $c */
+                    function fromStringKeys(TypedCollection $c): void { takesIntKeys($c); }',
+                'error_message' => 'InvalidArgument',
+            ],
+            'unrelatedObjectRejectedInInvariantTemplateArg' => [
+                'code' => '<?php
+                    /**
+                     * @template TKey of array-key
+                     * @template TValue
+                     */
+                    final class TypedCollection {
+                        /** @param array<TKey, TValue> $items */
+                        public function __construct(public array $items) {}
+                    }
+
+                    class Tag {}
+                    class Pivot {}
+
+                    /** @param TypedCollection<int, Tag> $c */
+                    function takesTags(TypedCollection $c): void {}
+
+                    /** @param TypedCollection<int, Pivot> $c */
+                    function fromPivot(TypedCollection $c): void { takesTags($c); }',
+                'error_message' => 'InvalidArgument',
+            ],
+            'subclassWithShapeRejectedInInvariantTemplateArg' => [
+                'code' => '<?php
+                    /**
+                     * @template TKey of array-key
+                     * @template TValue
+                     */
+                    final class TypedCollection {
+                        /** @param array<TKey, TValue> $items */
+                        public function __construct(public array $items) {}
+                    }
+
+                    class Tag {}
+                    class SubTag extends Tag {}
+                    class Pivot {}
+
+                    /** @param TypedCollection<int, Tag> $c */
+                    function takesTags(TypedCollection $c): void {}
+
+                    /** @param TypedCollection<int, SubTag&object{pivot: Pivot}> $c */
+                    function fromSubTag(TypedCollection $c): void { takesTags($c); }',
+                'error_message' => 'InvalidArgument',
+            ],
+            'nominalIntersectionRejectedInInvariantTemplateArg' => [
+                'code' => '<?php
+                    /**
+                     * @template TKey of array-key
+                     * @template TValue
+                     */
+                    final class TypedCollection {
+                        /** @param array<TKey, TValue> $items */
+                        public function __construct(public array $items) {}
+                    }
+
+                    class Tag {}
+
+                    /** @param TypedCollection<int, Tag> $c */
+                    function takesTags(TypedCollection $c): void {}
+
+                    /** @param TypedCollection<int, Tag&Countable> $c */
+                    function fromCountable(TypedCollection $c): void { takesTags($c); }',
+                'error_message' => 'InvalidArgument',
+            ],
+            'refinedIntRangeViaInheritedTemplateRejectedInInvariantTemplateArg' => [
+                'code' => '<?php
+                    /**
+                     * @template TKey of array-key
+                     * @template TValue
+                     */
+                    class Box {
+                        /** @param array<TKey, TValue> $items */
+                        public function __construct(public array $items) {}
+                    }
+
+                    /**
+                     * @template TKey of array-key
+                     * @template TValue
+                     * @extends Box<TKey, TValue>
+                     */
+                    final class ChildBox extends Box {}
+
+                    /** @param Box<int, string> $b */
+                    function takesIntKeys(Box $b): void {}
+
+                    /** @param ChildBox<int<0, 1>, string> $c */
+                    function fromChild(ChildBox $c): void { takesIntKeys($c); }',
+                'error_message' => 'InvalidArgument',
             ],
         ];
     }

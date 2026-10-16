@@ -8,11 +8,17 @@ use Psalm\Codebase;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
 use Psalm\Type\Atomic;
 use Psalm\Type\Atomic\TGenericObject;
+use Psalm\Type\Atomic\TInt;
+use Psalm\Type\Atomic\TIntRange;
 use Psalm\Type\Atomic\TIterable;
 use Psalm\Type\Atomic\TNamedObject;
+use Psalm\Type\Atomic\TObjectWithProperties;
+use Psalm\Type\Union;
 
+use function array_filter;
 use function array_merge;
 use function count;
+use function strtolower;
 
 /**
  * @internal
@@ -152,11 +158,19 @@ final class GenericTypeComparator
                     ) {
                         $lower_bounds_before = count($param_comparison_result->type_variable_lower_bounds);
 
+                        // Int ranges and object shapes are inferred refinements just like literals,
+                        // so they widen the same way. Only for the same class: through inheritance
+                        // $i does not index the input's own params
+                        $reverse_input_param = $input_param;
+                        if (strtolower($input_type_part->value) === strtolower($container_type_part->value)) {
+                            $reverse_input_param = self::widenRefinements($input_param);
+                        }
+
                         // Make sure types are basically the same
                         $reverse_contained = UnionTypeComparator::isContainedBy(
                             $codebase,
                             $container_param,
-                            $input_param,
+                            $reverse_input_param,
                             $container_param->ignore_nullable_issues,
                             $container_param->ignore_falsable_issues,
                             $param_comparison_result,
@@ -184,6 +198,10 @@ final class GenericTypeComparator
                                     $atomic_comparison_result->type_coerced = false;
                                 }
                             }
+                        } elseif ($reverse_input_param !== $input_param
+                            && $atomic_comparison_result_type_params !== null
+                        ) {
+                            $atomic_comparison_result_type_params[$i] = $container_param;
                         }
                     }
                 }
@@ -228,5 +246,32 @@ final class GenericTypeComparator
         }
 
         return false;
+    }
+
+    private static function widenRefinements(Union $type): Union
+    {
+        $types = [];
+        $widened = false;
+
+        foreach ($type->getAtomicTypes() as $atomic) {
+            if ($atomic instanceof TIntRange) {
+                $atomic = new TInt();
+                $widened = true;
+            } elseif ($atomic instanceof TNamedObject && $atomic->extra_types) {
+                $nominal = array_filter(
+                    $atomic->extra_types,
+                    static fn(Atomic $extra): bool => !$extra instanceof TObjectWithProperties,
+                );
+
+                if (count($nominal) !== count($atomic->extra_types)) {
+                    $atomic = $atomic->setIntersectionTypes($nominal);
+                    $widened = true;
+                }
+            }
+
+            $types[] = $atomic;
+        }
+
+        return $widened ? $type->setTypes($types) : $type;
     }
 }
