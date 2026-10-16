@@ -3731,6 +3731,78 @@ final class ClassTemplateTest extends TestCase
                     foo($container->get());
                 ',
             ],
+            'templateOnDocblockMethodParamsGlobalNamespace' => [
+                'code' => '<?php
+                    /**
+                     * @template TValue
+                     * @method $this plain(TValue $v)
+                     * @method $this through(callable(TValue): mixed $callback)
+                     * @method $this throughClosure(\Closure(TValue): mixed $callback)
+                     */
+                    interface I {}
+
+                    /** @param I<string> $p */
+                    function f(I $p): void {
+                        $p->plain("x");
+                        $p->through(fn (string $s): int => 1);
+                        $p->throughClosure(fn (string $s): int => 1);
+                    }
+                ',
+            ],
+            'templateOnDocblockMethodParamsNamespaced' => [
+                'code' => '<?php
+                    namespace App\Ns;
+
+                    /**
+                     * @template TValue
+                     * @method $this plain(TValue $v)
+                     * @method $this through(callable(TValue): mixed $callback)
+                     * @method $this throughClosure(\Closure(TValue): mixed $callback)
+                     */
+                    interface I {}
+
+                    /** @param I<string> $p */
+                    function f(I $p): void {
+                        $p->plain("x");
+                        $p->through(fn (string $s): int => 1);
+                        $p->throughClosure(fn (string $s): int => 1);
+                    }
+                ',
+            ],
+            'classStringMapParamInDocblockMethodOfNamespacedClass' => [
+                'code' => '<?php
+                    namespace App\Ns;
+
+                    /**
+                     * @template T of \stdClass
+                     * @method void put(class-string-map<T, T> $map)
+                     */
+                    interface I {}
+
+                    /** @param I<\stdClass> $p */
+                    function f(I $p): void {
+                        echo $p::class;
+                    }
+                ',
+            ],
+            'explicitClassNamedLikeTemplateInDocblockMethodParam' => [
+                'code' => '<?php
+                    namespace App\Ns;
+
+                    class TValue {}
+
+                    /**
+                     * @template TValue
+                     * @method $this keep(\App\Ns\TValue $v)
+                     */
+                    interface I {}
+
+                    /** @param I<string> $p */
+                    function f(I $p): void {
+                        $p->keep(new TValue());
+                    }
+                ',
+            ],
             'templateOnDocblockMethodOnInterface' => [
                 'code' => '<?php
                     /**

@@ -26,6 +26,8 @@ use Psalm\Internal\Type\ParseTreeCreator;
 use Psalm\Internal\Type\TypeParser;
 use Psalm\Internal\Type\TypeTokenizer;
 
+use function array_column;
+use function array_fill_keys;
 use function array_key_first;
 use function array_shift;
 use function count;
@@ -417,12 +419,15 @@ final class ClassLikeDocblockParser
                     throw new DocblockParseException('No @method entry specified');
                 }
 
+                // Class templates must stay unqualified so the generated @param re-resolves them as templates.
+                $class_template_names = array_fill_keys(array_column($info->templates, 0), true);
+
                 try {
                     $parse_tree_creator = new ParseTreeCreator(
                         TypeTokenizer::getFullyQualifiedTokens(
                             $method_entry,
                             $aliases,
-                            null,
+                            $class_template_names,
                         ),
                     );
 
