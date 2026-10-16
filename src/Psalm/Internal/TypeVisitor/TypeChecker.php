@@ -28,6 +28,7 @@ use Psalm\StatementsSource;
 use Psalm\Storage\MethodStorage;
 use Psalm\Type\Atomic;
 use Psalm\Type\Atomic\TClassConstant;
+use Psalm\Type\Atomic\TConditional;
 use Psalm\Type\Atomic\TGenericObject;
 use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Type\Atomic\TResource;
@@ -91,12 +92,38 @@ final class TypeChecker extends TypeVisitor
             $this->checkTemplateParam($type);
         } elseif ($type instanceof TResource) {
             $this->checkResource($type);
+        } elseif ($type instanceof TConditional) {
+            $this->checkConditional($type);
+
+            /** @psalm-suppress InaccessibleProperty Doesn't affect anything else */
+            $type->checked = true;
+
+            return self::DONT_TRAVERSE_CHILDREN;
         }
 
         /** @psalm-suppress InaccessibleProperty Doesn't affect anything else */
         $type->checked = true;
 
         return null;
+    }
+
+    private function checkConditional(TConditional $atomic): void
+    {
+        $if_type = $atomic->if_type;
+
+        // Within the `if` branch the template is known to satisfy the condition
+        if ($atomic->conditional_type->isSingle()) {
+            $if_type = TypeExpander::narrowIfTypeToCondition(
+                $this->source->getCodebase(),
+                $atomic,
+                $atomic->as_type,
+                $atomic->conditional_type->getSingleAtomic(),
+            );
+        }
+
+        $this->traverse($atomic->conditional_type);
+        $this->traverse($if_type);
+        $this->traverse($atomic->else_type);
     }
 
     public function hasErrors(): bool
