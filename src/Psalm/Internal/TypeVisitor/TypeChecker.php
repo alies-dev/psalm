@@ -226,6 +226,11 @@ final class TypeChecker extends TypeVisitor
                 && $this->source->getMethodName() !== '__construct'
                 && empty($expected_param_covariants[$i]);
 
+            if ($type_param->isStarProjection()) {
+                // any type within the bound is allowed
+                continue;
+            }
+
             if (isset($expected_type_param_keys[$i])) {
                 $expected_template_name = $expected_type_param_keys[$i];
 
