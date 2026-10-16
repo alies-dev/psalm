@@ -43,6 +43,8 @@ use ReflectionProperty;
 
 use function array_any;
 use function array_filter;
+use function array_key_first;
+use function array_keys;
 use function array_map;
 use function array_merge;
 use function array_values;
@@ -740,26 +742,49 @@ final class TypeExpander
         TGenericObject $return_type,
         array $type_params,
     ): array {
-        $bounds = null;
+        $has_star = false;
+
+        foreach ($type_params as $type_param) {
+            if ($type_param->isStarProjection()) {
+                $has_star = true;
+                break;
+            }
+        }
+
+        if (!$has_star) {
+            return $type_params;
+        }
+
+        $template_types = $codebase->classOrInterfaceExists($return_type->value)
+            ? $codebase->classlike_storage_provider->get(
+                $codebase->classlikes->getUnAliasedName($return_type->value),
+            )->template_types ?? []
+            : [];
+        $template_result = new TemplateResult($template_types, []);
 
         foreach ($type_params as $i => $type_param) {
-            if (!$type_param->isStarProjection()) {
-                continue;
+            $template_name = array_keys($template_types)[$i] ?? null;
+            $defining_class = $template_name !== null ? array_key_first($template_types[$template_name]) : null;
+
+            if ($type_param->isStarProjection()) {
+                // a bound is resolved against the params to its left, so `B of A` becomes the A given;
+                // one that still references templates (or is mixed) cannot be resolved here, so it becomes mixed
+                $bound = $template_name !== null && $defining_class !== null
+                    ? TemplateInferredTypeReplacer::replace(
+                        $template_types[$template_name][$defining_class],
+                        $template_result,
+                        $codebase,
+                    )
+                    : null;
+
+                $type_param = $type_params[$i] = $bound !== null && !$bound->hasMixed() && !$bound->hasTemplate()
+                    ? $bound->setProperties(['had_template' => true])
+                    : $type_param->setTypes(['mixed' => new TMixed()]);
             }
 
-            $bounds ??= $codebase->classOrInterfaceExists($return_type->value)
-                ? array_values(array_map(
-                    static fn($type_map) => reset($type_map),
-                    $codebase->classlike_storage_provider->get(
-                        $codebase->classlikes->getUnAliasedName($return_type->value),
-                    )->template_types ?? [],
-                ))
-                : [];
-
-            // a bound referencing other templates cannot be resolved here, so it becomes mixed
-            $type_params[$i] = isset($bounds[$i]) && !$bounds[$i]->hasMixed() && !$bounds[$i]->hasTemplate()
-                ? $bounds[$i]->setProperties(['had_template' => true])
-                : $type_param->setTypes(['mixed' => new TMixed()]);
+            if ($template_name !== null && $defining_class !== null) {
+                $template_result->lower_bounds[$template_name][$defining_class][] = new TemplateBound($type_param);
+            }
         }
 
         return $type_params;

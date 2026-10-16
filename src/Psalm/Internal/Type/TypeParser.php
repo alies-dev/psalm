@@ -602,6 +602,14 @@ final class TypeParser
 
         foreach ($parse_tree->children as $i => $child_tree) {
             if ($child_tree instanceof Value && $child_tree->value === '*') {
+                if (isset(TypeTokenizer::PSALM_RESERVED_WORDS[$generic_type])) {
+                    // only class generics have template bounds to project; keyword generics take plain mixed
+                    $generic_params[] = new Union([new TMixed(false, $from_docblock)], [
+                        'from_docblock' => $from_docblock,
+                    ]);
+                    continue;
+                }
+
                 // TypeExpander swaps the star for the bound of the template at its position
                 $generic_params[] = new Union([new TStarProjection(false, $from_docblock)], [
                     'from_docblock' => $from_docblock,

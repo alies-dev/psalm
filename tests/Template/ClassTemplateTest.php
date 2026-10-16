@@ -4510,6 +4510,36 @@ final class ClassTemplateTest extends TestCase
                     /** @implements IFoo<*> */
                     class Impl implements IFoo {}',
             ],
+            'starProjectionInClassStringMapIsMixed' => [
+                'code' => '<?php
+                    /**
+                     * @param class-string-map<T, *> $map
+                     * @param class-string $key
+                     * @psalm-suppress MixedMethodCall
+                     */
+                    function run(array $map, string $key): void {
+                        $map[$key]->foo();
+                    }',
+            ],
+            'starProjectionOfBoundDependingOnEarlierParam' => [
+                'code' => '<?php
+                    class Base {}
+
+                    /**
+                     * @template A of Base
+                     * @template B of A
+                     */
+                    class Pair {}
+
+                    /** @param Pair<Base, *> $p */
+                    function takesSecondStar(Pair $p): void {}
+
+                    /** @param Pair<*, *> $p */
+                    function takesBothStars(Pair $p): void {}
+
+                    /** @param Pair<Base, Base> $p */
+                    function takesConcrete(Pair $p): void {}',
+            ],
             'starProjectionOfBoundedTemplate' => [
                 'code' => '<?php
                     class Base {}
