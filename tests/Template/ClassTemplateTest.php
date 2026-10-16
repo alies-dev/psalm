@@ -4540,6 +4540,82 @@ final class ClassTemplateTest extends TestCase
                     /** @param Pair<Base, Base> $p */
                     function takesConcrete(Pair $p): void {}',
             ],
+            'starProjectionOnStaticReturn' => [
+                'code' => '<?php
+                    class Base {}
+
+                    /** @template T of Base */
+                    class Box {
+                        /** @return static<*> */
+                        public function any(): static {
+                            throw new \\Exception();
+                        }
+                    }',
+            ],
+            'starProjectionKeepsCallerTemplateInDependentBound' => [
+                'code' => '<?php
+                    class Base {}
+
+                    /**
+                     * @template A of Base
+                     * @template B of A
+                     */
+                    class Pair {}
+
+                    /**
+                     * @template T of Base
+                     * @param Pair<T, *> $p
+                     */
+                    function accept(Pair $p): void {}',
+            ],
+            'starProjectionInExtendsResolvesDependentBound' => [
+                'code' => '<?php
+                    class Base {}
+                    final class Child extends Base {}
+
+                    /**
+                     * @template A of Base
+                     * @template B of A
+                     */
+                    class Pair {
+                        /** @return B */
+                        public function get() {
+                            throw new \\Exception();
+                        }
+                    }
+
+                    /** @extends Pair<Child, *> */
+                    final class Derived extends Pair {}
+
+                    function read(Derived $p): Child {
+                        return $p->get();
+                    }',
+            ],
+            'starProjectionInImplementsResolvesDependentBound' => [
+                'code' => '<?php
+                    class Base {}
+                    final class Child extends Base {}
+
+                    /**
+                     * @template A of Base
+                     * @template B of A
+                     */
+                    interface PairInterface {
+                        /** @return B */
+                        public function get();
+                    }
+
+                    /** @implements PairInterface<Child, *> */
+                    final class Impl implements PairInterface {
+                        public function get() {
+                            throw new \\Exception();
+                        }
+                    }
+
+                    function read(Impl $p): Child {
+                        return $p->get();
+                    }',
+            ],
             'starProjectionOfBoundedTemplate' => [
                 'code' => '<?php
                     class Base {}

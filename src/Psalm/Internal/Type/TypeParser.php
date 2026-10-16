@@ -602,7 +602,10 @@ final class TypeParser
 
         foreach ($parse_tree->children as $i => $child_tree) {
             if ($child_tree instanceof Value && $child_tree->value === '*') {
-                if (isset(TypeTokenizer::PSALM_RESERVED_WORDS[$generic_type])) {
+                if (isset(TypeTokenizer::PSALM_RESERVED_WORDS[$generic_type])
+                    && $generic_type !== 'self'
+                    && $generic_type !== 'static'
+                ) {
                     // only class generics have template bounds to project; keyword generics take plain mixed
                     $generic_params[] = new Union([new TMixed(false, $from_docblock)], [
                         'from_docblock' => $from_docblock,

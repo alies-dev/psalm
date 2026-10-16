@@ -11,6 +11,7 @@ use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Provider\ClassLikeStorageProvider;
 use Psalm\Internal\Provider\FileReferenceProvider;
 use Psalm\Internal\Provider\FileStorageProvider;
+use Psalm\Internal\Type\TypeExpander;
 use Psalm\Issue\CircularReference;
 use Psalm\Issue\UndefinedTrait;
 use Psalm\IssueBuffer;
@@ -715,7 +716,12 @@ final class Populator
             $storage->template_extended_params[$parent_storage->name] = [];
 
             if (isset($storage->template_extended_offsets[$parent_storage->name])) {
-                foreach ($storage->template_extended_offsets[$parent_storage->name] as $i => $type) {
+                $offset_types = TypeExpander::replaceStarProjections(
+                    $parent_storage->template_types,
+                    $storage->template_extended_offsets[$parent_storage->name],
+                );
+
+                foreach ($offset_types as $i => $type) {
                     $parent_template_type_names = array_keys($parent_storage->template_types);
 
                     $mapped_name = $parent_template_type_names[$i] ?? null;
