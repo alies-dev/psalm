@@ -4374,6 +4374,180 @@ final class ClassTemplateTest extends TestCase
                 'ignored_issues' => [],
                 'php_version' => '8.0',
             ],
+            'starProjectionInUnionParamBindsTemplate' => [
+                'code' => '<?php
+                    /** @template TValue */
+                    class Box {
+                        /** @param TValue $value */
+                        public function __construct($value) {}
+                    }
+
+                    /**
+                     * @template TFirst
+                     * @template TSecond
+                     */
+                    class Pair {
+                        /**
+                         * @param TFirst $first
+                         * @param TSecond $second
+                         */
+                        public function __construct($first, $second) {}
+                    }
+
+                    /**
+                     * @template T
+                     * @param Box<T>|Pair<T, *> $subject
+                     * @return list<T>
+                     */
+                    function unwrap($subject): array {
+                        return [];
+                    }
+
+                    /** @return Box<int> */
+                    function getBox(): Box {
+                        return new Box(1);
+                    }
+
+                    /** @return Pair<string, int> */
+                    function getPair(): Pair {
+                        return new Pair("a", 1);
+                    }
+
+                    $fromBox = unwrap(getBox());
+                    $fromPair = unwrap(getPair());',
+                'assertions' => [
+                    '$fromBox===' => 'list<int>',
+                    '$fromPair===' => 'list<string>',
+                ],
+            ],
+            'starProjectionAcceptsAnyArgument' => [
+                'code' => '<?php
+                    /** @template T */
+                    class Foo {}
+
+                    /** @param Foo<*> $foo */
+                    function takesAny(Foo $foo): void {}
+
+                    /**
+                     * @param Foo<int> $ints
+                     * @param Foo<string> $strings
+                     */
+                    function run(Foo $ints, Foo $strings): void {
+                        takesAny($ints);
+                        takesAny($strings);
+                    }',
+            ],
+            'starProjectionKeepsOtherParamsStrict' => [
+                'code' => '<?php
+                    /**
+                     * @template A
+                     * @template B
+                     */
+                    class Foo {}
+
+                    /** @param Foo<int, *> $foo */
+                    function takes(Foo $foo): void {}
+
+                    /**
+                     * @param Foo<int, string> $a
+                     * @param Foo<int, Foo<int, int>> $b
+                     */
+                    function run(Foo $a, Foo $b): void {
+                        takes($a);
+                        takes($b);
+                    }',
+            ],
+            'starProjectionNested' => [
+                'code' => '<?php
+                    /** @template T */
+                    class Foo {}
+
+                    /** @param list<Foo<*>> $foos */
+                    function takesFoos(array $foos): void {}
+
+                    /** @param list<Foo<string>> $foos */
+                    function run(array $foos): void {
+                        takesFoos($foos);
+                    }',
+            ],
+            'starProjectionOfRecursiveBound' => [
+                'code' => '<?php
+                    /** @template T of RecursiveBox<*> */
+                    class RecursiveBox {}
+
+                    /** @param RecursiveBox<*> $box */
+                    function takes(RecursiveBox $box): void {}',
+            ],
+            'starProjectionInUnionOfBoundedBoxes' => [
+                'code' => '<?php
+                    class Base {}
+                    class Child extends Base {}
+
+                    /** @template T of Base */
+                    class Box {}
+
+                    /** @param Box<*>|Box<*> $box */
+                    function acceptsDuplicate(Box $box): void {}
+
+                    /** @param Box<Child> $box */
+                    function run(Box $box): void {
+                        acceptsDuplicate($box);
+                    }',
+            ],
+            'starProjectionInExtendsOfBoundedTemplate' => [
+                'code' => '<?php
+                    class Base {}
+
+                    /** @template T of Base */
+                    class Foo {}
+
+                    /** @template T of Base */
+                    interface IFoo {}
+
+                    /** @extends Foo<*> */
+                    class Child extends Foo {}
+
+                    /** @implements IFoo<*> */
+                    class Impl implements IFoo {}',
+            ],
+            'starProjectionOfBoundedTemplate' => [
+                'code' => '<?php
+                    class Base {}
+                    class Child extends Base {}
+
+                    /** @template T of Base */
+                    class Holder {
+                        /** @var T */
+                        private $item;
+
+                        /** @param T $item */
+                        public function __construct($item) {
+                            $this->item = $item;
+                        }
+
+                        /** @return T */
+                        public function get() {
+                            return $this->item;
+                        }
+                    }
+
+                    /** @param Holder<*> $holder */
+                    function takesAny(Holder $holder): void {}
+
+                    /** @return Holder<Child> */
+                    function getHolder(): Holder {
+                        return new Holder(new Child());
+                    }
+
+                    takesAny(getHolder());
+
+                    /** @var Holder<*> $any */
+                    $any = getHolder();
+                    $read = $any->get();',
+                'assertions' => [
+                    '$read===' => 'Base',
+                ],
+            ],
         ];
     }
 
@@ -5137,6 +5311,74 @@ final class ClassTemplateTest extends TestCase
                  */
                 class C {}
                 PHP,
+                'error_message' => 'InvalidDocblock',
+            ],
+            'starProjectionStillChecksOtherParams' => [
+                'code' => '<?php
+                    /**
+                     * @template A
+                     * @template B
+                     */
+                    class Foo {}
+
+                    /** @param Foo<int, *> $foo */
+                    function takes(Foo $foo): void {}
+
+                    /** @param Foo<string, int> $foo */
+                    function run(Foo $foo): void {
+                        takes($foo);
+                    }',
+                'error_message' => 'InvalidArgument',
+            ],
+            'starProjectionInInvariantSlotRejectsConcreteArgument' => [
+                'code' => '<?php
+                    /** @template T */
+                    class Foo {}
+
+                    /** @template T */
+                    class Bar {}
+
+                    /** @param Bar<Foo<*>> $bar */
+                    function takesBar(Bar $bar): void {}
+
+                    /** @param Bar<Foo<int>> $bar */
+                    function run(Bar $bar): void {
+                        takesBar($bar);
+                    }',
+                'error_message' => 'InvalidArgument',
+            ],
+            'starProjectionReadIsMixed' => [
+                'code' => '<?php
+                    /** @template T */
+                    class Box {
+                        /** @return T */
+                        public function get() {
+                            throw new \\Exception();
+                        }
+                    }
+
+                    /**
+                     * @param Box<*> $box
+                     * @param array<*> $array
+                     * @param list<*> $list
+                     */
+                    function run(Box $box, array $array, array $list): void {
+                        $box->get()->foo();
+                        /** @psalm-suppress MixedAssignment */
+                        $element = $array[0];
+                        $element->foo();
+                        /** @psalm-suppress MixedAssignment */
+                        $item = $list[0];
+                        $item->foo();
+                    }',
+                'error_message' => 'MixedMethodCall',
+            ],
+            'starProjectionOutsideGenericParam' => [
+                'code' => '<?php
+                    /** @return int|* */
+                    function make(): int {
+                        return 1;
+                    }',
                 'error_message' => 'InvalidDocblock',
             ],
         ];

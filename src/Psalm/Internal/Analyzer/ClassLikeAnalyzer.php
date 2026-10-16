@@ -830,7 +830,10 @@ abstract class ClassLikeAnalyzer extends SourceAnalyzer
                         }
                     }
 
-                    if (!$template_type->isMixed()) {
+                    if (!$template_type->isMixed()
+                        && !$storage->template_extended_params[$parent_storage->name][$template_name]
+                            ->isStarProjection()
+                    ) {
                         $template_result = new TemplateResult(
                             $previous_extended ?: [],
                             [],

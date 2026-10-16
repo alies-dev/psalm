@@ -73,6 +73,25 @@ final class TypeParseTest extends TestCase
         $this->assertSame('B<A, static>', (string) Type::parseString('B<A, $this>'));
     }
 
+    public function testStarProjectionAsGenericTypeParam(): void
+    {
+        $this->assertSame('B<mixed>', (string) Type::parseString('B<*>'));
+        $this->assertSame('B<int, mixed>', (string) Type::parseString('B<int, *>'));
+        $this->assertSame('A<B<mixed>>', (string) Type::parseString('A<B<*>>'));
+    }
+
+    public function testStarOutsideGenericTypeParam(): void
+    {
+        $this->expectException(TypeParseTreeException::class);
+        Type::parseString('*');
+    }
+
+    public function testStarInUnionIsNotGenericTypeParam(): void
+    {
+        $this->expectException(TypeParseTreeException::class);
+        Type::parseString('B<*|int>');
+    }
+
     public function testThisInNestedGenericTypeParam(): void
     {
         $this->assertSame('A<B<static>>', (string) Type::parseString('A<B<$this>>'));

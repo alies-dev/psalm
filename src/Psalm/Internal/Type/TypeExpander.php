@@ -27,11 +27,13 @@ use Psalm\Type\Atomic\TKeyOf;
 use Psalm\Type\Atomic\TKeyedArray;
 use Psalm\Type\Atomic\TLiteralClassString;
 use Psalm\Type\Atomic\TLiteralInt;
+use Psalm\Type\Atomic\TMixed;
 use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Type\Atomic\TNever;
 use Psalm\Type\Atomic\TNull;
 use Psalm\Type\Atomic\TObjectWithProperties;
 use Psalm\Type\Atomic\TPropertiesOf;
+use Psalm\Type\Atomic\TStarProjection;
 use Psalm\Type\Atomic\TTemplateParam;
 use Psalm\Type\Atomic\TTypeAlias;
 use Psalm\Type\Atomic\TValueOf;
@@ -132,6 +134,11 @@ final class TypeExpander
     ): array {
         if ($return_type instanceof TEnumCase) {
             return [$return_type];
+        }
+
+        if ($return_type instanceof TStarProjection) {
+            // a star never outlives expansion: reads through it must see plain mixed
+            return [new TMixed(false, $return_type->from_docblock)];
         }
 
         if ($return_type instanceof TNamedObject
@@ -434,6 +441,10 @@ final class TypeExpander
         ) {
             $type_params = $return_type->type_params;
             foreach ($type_params as &$type_param) {
+                if ($return_type instanceof TGenericObject && $type_param->isStarProjection()) {
+                    continue;
+                }
+
                 $type_param = self::expandUnion(
                     $codebase,
                     $type_param,
@@ -449,6 +460,11 @@ final class TypeExpander
                 );
             }
             unset($type_param);
+
+            if ($return_type instanceof TGenericObject) {
+                $type_params = self::replaceStarProjections($codebase, $return_type, $type_params);
+            }
+
             /** @psalm-suppress InvalidArgument Psalm bug */
             $return_type = $return_type->setTypeParams($type_params);
         } elseif ($return_type instanceof TKeyedArray) {
@@ -710,6 +726,43 @@ final class TypeExpander
         }
 
         return $return_type;
+    }
+
+    /**
+     * Swaps star projection params (see TypeParser) for the bound of the template at that position.
+     * The bound is not expanded further, so a bound that holds a star itself (`T of Foo<*>`) cannot recurse.
+     *
+     * @param non-empty-list<Union> $type_params
+     * @return non-empty-list<Union>
+     */
+    private static function replaceStarProjections(
+        Codebase $codebase,
+        TGenericObject $return_type,
+        array $type_params,
+    ): array {
+        $bounds = null;
+
+        foreach ($type_params as $i => $type_param) {
+            if (!$type_param->isStarProjection()) {
+                continue;
+            }
+
+            $bounds ??= $codebase->classOrInterfaceExists($return_type->value)
+                ? array_values(array_map(
+                    static fn($type_map) => reset($type_map),
+                    $codebase->classlike_storage_provider->get(
+                        $codebase->classlikes->getUnAliasedName($return_type->value),
+                    )->template_types ?? [],
+                ))
+                : [];
+
+            // a bound referencing other templates cannot be resolved here, so it becomes mixed
+            $type_params[$i] = isset($bounds[$i]) && !$bounds[$i]->hasMixed() && !$bounds[$i]->hasTemplate()
+                ? $bounds[$i]->setProperties(['had_template' => true])
+                : $type_param->setTypes(['mixed' => new TMixed()]);
+        }
+
+        return $type_params;
     }
 
     /**
