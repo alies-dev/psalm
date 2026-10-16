@@ -4616,6 +4616,41 @@ final class ClassTemplateTest extends TestCase
                         return $p->get();
                     }',
             ],
+            'starProjectionOfBoundUsingSameClassTemplate' => [
+                'code' => '<?php
+                    /**
+                     * @template A
+                     * @template B of list<A>
+                     */
+                    class Pair {
+                        /** @param self<A, *> $p */
+                        public function accept(self $p): void {}
+                    }',
+            ],
+            'starProjectionInExtendsOfConditionalBound' => [
+                'code' => '<?php
+                    class Base {}
+                    class Child extends Base {}
+
+                    /**
+                     * @template A of Base
+                     * @template B of (A is Child ? Child : Base)
+                     */
+                    class ConditionalPair {}
+
+                    /** @extends ConditionalPair<Child, *> */
+                    final class D extends ConditionalPair {}',
+            ],
+            'starProjectionInExtendsOfConstantBound' => [
+                'code' => '<?php
+                    /** @template T of self::VALUE */
+                    class ConstantBox {
+                        public const string VALUE = \'foo\';
+                    }
+
+                    /** @extends ConstantBox<*> */
+                    final class ConstantStar extends ConstantBox {}',
+            ],
             'starProjectionOfBoundedTemplate' => [
                 'code' => '<?php
                     class Base {}

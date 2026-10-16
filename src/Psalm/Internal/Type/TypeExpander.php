@@ -775,23 +775,23 @@ final class TypeExpander
 
             if ($type_param->isStarProjection()) {
                 // a bound is resolved against the params to its left, so `B of A` becomes the A given;
-                // one that still references this class's own templates (or is mixed) cannot be resolved here,
-                // so it becomes mixed; templates of the calling scope are a valid result
-                $bound = $template_name !== null && $defining_class !== null
-                    ? TemplateInferredTypeReplacer::replace(
-                        $template_types[$template_name][$defining_class],
-                        $template_result,
-                        $codebase,
-                    )
+                // one that references a template of this class not supplied by a param to its left (or is
+                // mixed) cannot be resolved here, so it becomes mixed
+                $declared_bound = $template_name !== null && $defining_class !== null
+                    ? $template_types[$template_name][$defining_class]
                     : null;
 
-                $type_param = $type_params[$i] = $bound !== null
-                    && !$bound->hasMixed()
+                $bound = $declared_bound !== null
                     && !array_any(
-                        $bound->getTemplateTypes(),
+                        $declared_bound->getTemplateTypes(),
                         static fn(TTemplateParam $t): bool
-                            => isset($template_types[$t->param_name][$t->defining_class]),
+                            => isset($template_types[$t->param_name][$t->defining_class])
+                                && !isset($template_result->lower_bounds[$t->param_name][$t->defining_class]),
                     )
+                    ? TemplateInferredTypeReplacer::replace($declared_bound, $template_result, $codebase)
+                    : null;
+
+                $type_param = $type_params[$i] = $bound !== null && !$bound->hasMixed()
                     ? $bound->setProperties(['had_template' => true])
                     : $type_param->setTypes(['mixed' => new TMixed()]);
             }
