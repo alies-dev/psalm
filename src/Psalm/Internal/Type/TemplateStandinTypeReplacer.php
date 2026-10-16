@@ -862,6 +862,13 @@ final class TemplateStandinTypeReplacer
                 $generic_param->possibly_undefined = false;
                 $generic_param = $generic_param->setFromDocblock()->freeze();
 
+                $generic_param = TemplateLowerBound::widenInferred(
+                    $generic_param,
+                    $atomic_type,
+                    $template_result,
+                    $codebase,
+                );
+
                 if (isset(
                     $template_result->lower_bounds[$param_name_key][$atomic_type->defining_class],
                 )) {

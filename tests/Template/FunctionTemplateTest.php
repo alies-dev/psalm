@@ -1954,6 +1954,65 @@ final class FunctionTemplateTest extends TestCase
                 'ignored_issues' => [],
                 'php_version' => '8.0',
             ],
+            'superLowerBoundOnFunctionTemplateResolvesToLeastUpperBound' => [
+                'code' => '<?php
+                    class Animal {}
+                    class Dog extends Animal {}
+                    class Puppy extends Dog {}
+
+                    /**
+                     * @template T super Dog
+                     * @param T $x
+                     * @return T
+                     */
+                    function lower(mixed $x): mixed {
+                        return $x;
+                    }
+
+                    $a = lower(new Animal());
+                    $p = lower(new Puppy());
+                    $d = lower(new Dog());',
+                'assertions' => [
+                    '$a' => 'Animal',
+                    '$p' => 'Dog',
+                    '$d' => 'Dog',
+                ],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundWidensToUnionWhenPartiallyOverlapping' => [
+                'code' => '<?php
+                    /**
+                     * @template T super int|float
+                     * @param T $x
+                     * @return T
+                     */
+                    function lower(mixed $x): mixed {
+                        return $x;
+                    }
+
+                    /**
+                     * @template T super int|float
+                     * @param array<T> $xs
+                     * @return T
+                     */
+                    function first(array $xs): mixed {
+                        return $xs[0];
+                    }
+
+                    /** @var int|string $intOrString */
+                    $intOrString = $_GET["x"];
+                    $a = lower($intOrString);
+                    $b = lower(1);
+                    $c = first([1, 2]);',
+                'assertions' => [
+                    '$a' => 'float|int|string',
+                    '$b' => 'float|int',
+                    '$c' => 'float|int',
+                ],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
         ];
     }
 
@@ -1961,6 +2020,26 @@ final class FunctionTemplateTest extends TestCase
     public function providerInvalidCodeParse(): iterable
     {
         return [
+            'superLowerBoundRejectsDisjointFunctionArgument' => [
+                'code' => '<?php
+                    class Animal {}
+                    class Dog extends Animal {}
+
+                    /**
+                     * @template T super Dog
+                     * @param T $x
+                     * @return T
+                     */
+                    function lower(mixed $x): mixed {
+                        return $x;
+                    }
+
+                    lower("x");',
+                'error_message' => 'InvalidArgument - src/somefile.php:14:27 - Argument 1 of lower'
+                    . ' expects a supertype of Dog, but \'x\' provided',
+                'error_levels' => [],
+                'php_version' => '8.0',
+            ],
             'invalidTemplatedType' => [
                 'code' => '<?php
                     namespace FooFoo;

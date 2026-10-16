@@ -28,6 +28,7 @@ use Psalm\Internal\Type\Comparator\CallableTypeComparator;
 use Psalm\Internal\Type\Comparator\TypeComparisonResult;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\TemplateBound;
+use Psalm\Internal\Type\TemplateLowerBound;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
 use Psalm\Internal\Type\TypeExpander;
@@ -64,6 +65,7 @@ use Psalm\Type\Atomic\TKeyedArray;
 use Psalm\Type\Atomic\TLiteralString;
 use Psalm\Type\Atomic\TMixed;
 use Psalm\Type\Atomic\TNamedObject;
+use Psalm\Type\Atomic\TTemplateParam;
 use Psalm\Type\Atomic\TTypeVariable;
 use Psalm\Type\Union;
 use UnexpectedValueException;
@@ -337,6 +339,23 @@ final class ArgumentAnalyzer
             $static_classlike_storage->final ?? false,
             true,
         );
+
+        if ($template_result
+            && $template_result->declared_lower_bounds
+            && !$arg->unpack
+            && !$arg instanceof VirtualArg
+        ) {
+            self::verifyDeclaredLowerBounds(
+                $statements_analyzer,
+                $template_result,
+                $bindable_template_params,
+                $param_type,
+                $arg_value_type,
+                $argument_offset,
+                new CodeLocation($statements_analyzer->getSource(), $arg->value),
+                $cased_method_id,
+            );
+        }
 
         if ($class_generic_params) {
             // here we're replacing the param types and arg types with the bound
@@ -703,6 +722,67 @@ final class ArgumentAnalyzer
         }
 
         return null;
+    }
+
+    /**
+     * A `super` template accepts any argument that overlaps its declared lower bound:
+     * only an argument that can never be a subtype or supertype of the bound is an error.
+     *
+     * @param list<TTemplateParam> $bindable_template_params
+     */
+    private static function verifyDeclaredLowerBounds(
+        StatementsAnalyzer $statements_analyzer,
+        TemplateResult $template_result,
+        array $bindable_template_params,
+        Union $param_type,
+        Union $arg_value_type,
+        int $argument_offset,
+        CodeLocation $arg_location,
+        ?string $cased_method_id,
+    ): void {
+        $codebase = $statements_analyzer->getCodebase();
+
+        // infer the templates from this argument alone, without the declared bounds widening the result
+        $inferred_from_arg = new TemplateResult($template_result->template_types, []);
+
+        TemplateStandinTypeReplacer::fillTemplateResult(
+            $param_type,
+            $inferred_from_arg,
+            $codebase,
+            $statements_analyzer,
+            $arg_value_type,
+            $argument_offset,
+        );
+
+        foreach ($bindable_template_params as $template_type) {
+            $declared_bound = $template_result->declared_lower_bounds
+                [$template_type->param_name]
+                [$template_type->defining_class] ?? null;
+            $inferred_bounds = $inferred_from_arg->lower_bounds
+                [$template_type->param_name]
+                [$template_type->defining_class] ?? null;
+
+            if (!$declared_bound || !$inferred_bounds) {
+                continue;
+            }
+
+            $bound = TemplateLowerBound::resolve($declared_bound, $template_result, $codebase);
+            $inferred = TemplateStandinTypeReplacer::getMostSpecificTypeFromBounds($inferred_bounds, $codebase);
+
+            if ($bound && TemplateLowerBound::isDisjoint($inferred, $bound, $codebase)) {
+                IssueBuffer::maybeAdd(
+                    new InvalidArgument(
+                        'Argument ' . ($argument_offset + 1)
+                            . ($cased_method_id !== null ? ' of ' . $cased_method_id : '')
+                            . ' expects a supertype of ' . $bound->getId() . ', but ' . $inferred->getId()
+                            . ' provided',
+                        $arg_location,
+                        $cased_method_id,
+                    ),
+                    $statements_analyzer->getSuppressedIssues(),
+                );
+            }
+        }
     }
 
     /**

@@ -183,6 +183,7 @@ final class FunctionCallAnalyzer extends CallAnalyzer
         if (!$is_first_class_callable) {
             if (isset($function_call_info->function_storage->template_types)) {
                 $template_result->template_types += $function_call_info->function_storage->template_types ?: [];
+                $template_result->declared_lower_bounds += $function_call_info->function_storage->template_lower_bounds;
             }
 
             ArgumentsAnalyzer::analyze(

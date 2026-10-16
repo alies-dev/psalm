@@ -234,6 +234,7 @@ final class ExistingAtomicMethodCallAnalyzer extends CallAnalyzer
         }
         if ($method_storage && $method_storage->template_types) {
             $template_result->template_types += $method_storage->template_types;
+            $template_result->declared_lower_bounds += $method_storage->template_lower_bounds;
         }
 
         if ($codebase->store_node_types

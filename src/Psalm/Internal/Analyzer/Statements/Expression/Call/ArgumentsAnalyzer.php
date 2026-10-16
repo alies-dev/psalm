@@ -1662,6 +1662,10 @@ final class ArgumentsAnalyzer
             $template_result->template_types = $template_types;
         }
 
+        if ($function_storage->template_lower_bounds) {
+            $template_result->declared_lower_bounds += $function_storage->template_lower_bounds;
+        }
+
         foreach ($args as $argument_offset => $arg) {
             $function_param = null;
 
