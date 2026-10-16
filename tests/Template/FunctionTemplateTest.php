@@ -1954,6 +1954,184 @@ final class FunctionTemplateTest extends TestCase
                 'ignored_issues' => [],
                 'php_version' => '8.0',
             ],
+            'superLowerBoundOnFunctionTemplateResolvesToLeastUpperBound' => [
+                'code' => '<?php
+                    class Animal {}
+                    class Dog extends Animal {}
+                    class Puppy extends Dog {}
+
+                    /**
+                     * @template T super Dog
+                     * @param T $x
+                     * @return T
+                     */
+                    function lower(mixed $x): mixed {
+                        return $x;
+                    }
+
+                    $a = lower(new Animal());
+                    $p = lower(new Puppy());
+                    $d = lower(new Dog());',
+                'assertions' => [
+                    '$a' => 'Animal',
+                    '$p' => 'Dog',
+                    '$d' => 'Dog',
+                ],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundWidensToUnionWhenPartiallyOverlapping' => [
+                'code' => '<?php
+                    /**
+                     * @template T super int|float
+                     * @param T $x
+                     * @return T
+                     */
+                    function lower(mixed $x): mixed {
+                        return $x;
+                    }
+
+                    /**
+                     * @template T super int|float
+                     * @param array<T> $xs
+                     * @return T
+                     */
+                    function first(array $xs): mixed {
+                        return $xs[0];
+                    }
+
+                    /** @var int|string $intOrString */
+                    $intOrString = $_GET["x"];
+                    $a = lower($intOrString);
+                    $b = lower(1);
+                    $c = first([1, 2]);',
+                'assertions' => [
+                    '$a' => 'float|int|string',
+                    '$b' => 'float|int',
+                    '$c' => 'float|int',
+                ],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundWidensBeforeCallbackAndDependentBounds' => [
+                'code' => '<?php
+                    class Dog {}
+                    final class Puppy extends Dog {}
+
+                    /**
+                     * @template T super Dog
+                     * @param T $x
+                     * @param callable(T): void $cb
+                     */
+                    function withDog(mixed $x, callable $cb): void {}
+
+                    /**
+                     * @template T super int
+                     * @param T $x
+                     * @param callable(T): void $cb
+                     */
+                    function withInt(mixed $x, callable $cb): void {}
+
+                    /**
+                     * @template T super int
+                     * @template U super T
+                     * @param T $x
+                     * @param U $y
+                     * @return U
+                     */
+                    function pair(mixed $x, mixed $y): mixed {
+                        throw new Exception();
+                    }
+
+                    withDog(new Puppy(), function (Dog $d): void {});
+                    withInt(1, function (int $d): void {});
+                    $p = pair(1, 2);',
+                'assertions' => [
+                    '$p' => 'int',
+                ],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundAcceptsOverlappingArguments' => [
+                'code' => '<?php
+                    interface HasName {}
+                    interface HasId {}
+
+                    /**
+                     * @template T super int<0, 10>
+                     * @param T $x
+                     */
+                    function range10(mixed $x): void {}
+
+                    /**
+                     * @template T super HasName
+                     * @param T $x
+                     */
+                    function named(mixed $x): void {}
+
+                    /**
+                     * @template T super int|null
+                     * @param T $x
+                     */
+                    function maybeInt(mixed $x): void {}
+
+                    /** @param int<5, 15> $n */
+                    function a(int $n): void {
+                        range10($n);
+                    }
+
+                    function b(HasId $i): void {
+                        named($i);
+                    }
+
+                    function c(?string $s): void {
+                        maybeInt($s);
+                    }',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundIgnoresArgumentsAcceptedByConcreteUnionArms' => [
+                'code' => '<?php
+                    /**
+                     * @template T super int
+                     * @param T|string $x
+                     */
+                    function withString(mixed $x): void {}
+
+                    /**
+                     * @template T super int
+                     * @param T|null $x
+                     */
+                    function withNull(mixed $x): void {}
+
+                    withString("ok");
+                    withNull(null);',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundWidensClassStringInference' => [
+                'code' => '<?php
+                    class Dog {}
+                    final class Puppy extends Dog {}
+
+                    /**
+                     * @template T super Dog
+                     * @param class-string<T> $class
+                     * @return T
+                     */
+                    function make(string $class): object {
+                        throw new Exception();
+                    }
+
+                    $x = make(Puppy::class);',
+                'assertions' => [
+                    '$x' => 'Dog',
+                ],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
         ];
     }
 
@@ -1961,6 +2139,68 @@ final class FunctionTemplateTest extends TestCase
     public function providerInvalidCodeParse(): iterable
     {
         return [
+            'superLowerBoundRejectsUnpackedArgument' => [
+                'code' => '<?php
+                    /**
+                     * @template T super int
+                     * @param T $x
+                     */
+                    function lower(mixed $x): void {}
+
+                    lower(...["x"]);',
+                'error_message' => 'InvalidArgument - src/somefile.php:8:30 - Argument 1 of lower'
+                    . ' expects T super int, but \'x\' provided',
+                'error_levels' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundRejectsCallableParameterOutsideBound' => [
+                'code' => '<?php
+                    /**
+                     * @template T super int
+                     * @param callable(T): void $f
+                     */
+                    function lower(callable $f): void {}
+
+                    lower(function (string $s): void {});',
+                'error_message' => 'InvalidArgument - src/somefile.php:8:27 - Argument 1 of lower'
+                    . ' expects T super int, but string provided',
+                'error_levels' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundValidatesBoundClass' => [
+                'code' => '<?php
+                    /**
+                     * @template T super DoesNotExist
+                     * @param T $x
+                     * @return T
+                     */
+                    function lower(mixed $x): mixed {
+                        return $x;
+                    }',
+                'error_message' => 'UndefinedClass',
+                'error_levels' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundRejectsDisjointFunctionArgument' => [
+                'code' => '<?php
+                    class Animal {}
+                    class Dog extends Animal {}
+
+                    /**
+                     * @template T super Dog
+                     * @param T $x
+                     * @return T
+                     */
+                    function lower(mixed $x): mixed {
+                        return $x;
+                    }
+
+                    lower("x");',
+                'error_message' => 'InvalidArgument - src/somefile.php:14:27 - Argument 1 of lower'
+                    . ' expects T super Dog, but \'x\' provided',
+                'error_levels' => [],
+                'php_version' => '8.0',
+            ],
             'invalidTemplatedType' => [
                 'code' => '<?php
                     namespace FooFoo;

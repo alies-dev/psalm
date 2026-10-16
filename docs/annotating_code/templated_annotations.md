@@ -286,6 +286,56 @@ class Baz extends Foo {
 }
 ```
 
+### Lower bounds with `super`
+
+On a function or method template, `@template T super <type>` declares a lower bound instead of an upper bound.
+`T` has no upper bound and is inferred from the arguments as usual, but it never resolves to a type narrower than the bound:
+it resolves to the bound when the inferred type is a subtype of it, to the inferred type when the bound is a subtype of that,
+and to their union otherwise. An argument is rejected with `InvalidArgument` only when its type cannot overlap with the bound.
+
+The bound may refer to the templates of the declaring class, which are resolved against the object the method is called on:
+
+```php
+<?php
+class Animal {}
+class Dog extends Animal {}
+class Puppy extends Dog {}
+
+/**
+ * @template T super Dog
+ * @param T $x
+ * @return T
+ */
+function lower($x) {
+    return $x;
+}
+
+$a = lower(new Animal()); // typed as Animal
+$b = lower(new Puppy()); // typed as Dog
+$c = lower("x"); // type error: a string can never be a supertype of Dog
+
+/** @template T */
+final class Box {
+    /**
+     * @template TNeedle super T
+     * @param TNeedle $needle
+     */
+    public function contains($needle): bool {
+        // ...
+    }
+}
+
+/** @param Box<Dog> $box */
+function check(Box $box): void {
+    $box->contains(new Animal()); // ok
+    $box->contains("dog"); // type error
+}
+```
+
+The lower bound is not applied inside the function body, so returning a value of the bound type for a `@return T` is still reported.
+
+`super` on a class-level `@template` is not supported and is treated like `as`.
+
 ## Template covariance
 
 Imagine you have code like this:
