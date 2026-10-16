@@ -1845,7 +1845,7 @@
     </ImplicitToStringCast>
     <PossiblyUndefinedIntArrayOffset>
       <code><![CDATA[$method_tree->children[0]]]></code>
-      <code><![CDATA[$method_tree->children[1]]]></code>
+      <code><![CDATA[$return_method_tree->children[1]]]></code>
     </PossiblyUndefinedIntArrayOffset>
     <RiskyTruthyFalsyComparison>
       <code><![CDATA[!strpos($doc_line_parts[1], '(')]]></code>

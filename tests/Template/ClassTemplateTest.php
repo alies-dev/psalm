@@ -3803,6 +3803,28 @@ final class ClassTemplateTest extends TestCase
                     }
                 ',
             ],
+            'importAliasNamedLikeClassTemplateInDocblockMethodReturn' => [
+                'code' => '<?php
+                    namespace Vendor {
+                        class Thing {}
+                    }
+
+                    namespace App\Ns {
+                        use Vendor\Thing as TValue;
+
+                        /**
+                         * @template TValue
+                         * @method get(): TValue
+                         */
+                        interface Box {}
+
+                        /** @param Box<\Vendor\Thing> $box */
+                        function f(Box $box): \Vendor\Thing {
+                            return $box->get();
+                        }
+                    }
+                ',
+            ],
             'templateOnDocblockMethodOnInterface' => [
                 'code' => '<?php
                     /**

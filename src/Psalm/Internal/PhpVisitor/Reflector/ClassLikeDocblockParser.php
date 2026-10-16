@@ -419,19 +419,21 @@ final class ClassLikeDocblockParser
                     throw new DocblockParseException('No @method entry specified');
                 }
 
-                // Class templates must stay unqualified so the generated @param re-resolves them as templates.
+                // Class templates must stay unqualified in params so the generated @param re-resolves them
+                // as templates. The @return is serialized against the file's use aliases, which needs the
+                // fully-qualified tokens.
                 $class_template_names = array_fill_keys(array_column($info->templates, 0), true);
 
                 try {
-                    $parse_tree_creator = new ParseTreeCreator(
-                        TypeTokenizer::getFullyQualifiedTokens(
-                            $method_entry,
-                            $aliases,
-                            $class_template_names,
-                        ),
-                    );
+                    $method_tree = (new ParseTreeCreator(
+                        TypeTokenizer::getFullyQualifiedTokens($method_entry, $aliases, $class_template_names),
+                    ))->create();
 
-                    $method_tree = $parse_tree_creator->create();
+                    $return_method_tree = $class_template_names === []
+                        ? $method_tree
+                        : (new ParseTreeCreator(
+                            TypeTokenizer::getFullyQualifiedTokens($method_entry, $aliases),
+                        ))->create();
                 } catch (TypeParseTreeException $e) {
                     throw new DocblockParseException(
                         $method_entry . ' is not a valid method: '
@@ -447,9 +449,9 @@ final class ClassLikeDocblockParser
                 }
 
                 if ($method_tree instanceof MethodWithReturnTypeTree) {
-                    if (!$has_return) {
+                    if (!$has_return && $return_method_tree instanceof MethodWithReturnTypeTree) {
                         $docblock_lines[] = '@return ' . TypeParser::getTypeFromTree(
-                            $method_tree->children[1],
+                            $return_method_tree->children[1],
                             $codebase,
                         )->toNamespacedString($aliases->namespace, $aliases->uses, null, false);
                     }
