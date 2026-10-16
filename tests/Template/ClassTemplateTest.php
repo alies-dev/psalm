@@ -4461,6 +4461,27 @@ final class ClassTemplateTest extends TestCase
                     '$p===' => 'float|int<0, 1>',
                 ],
             ],
+            'staticExceptionKeepsInputTypeInInvariantTemplateArg' => [
+                'code' => '<?php
+                    /** @template T */
+                    final class Item {
+                        /** @param T $item */
+                        public function __construct(public $item) {}
+                    }
+
+                    final class Pivot {}
+
+                    class Tag {
+                        /** @param Item<Tag&static> $b */
+                        public function takesStatic(Item $b): void {}
+
+                        /** @param Item<Tag&static&object{pivot: Pivot}> $b */
+                        public function run(Item $b): Pivot {
+                            $this->takesStatic($b);
+                            return $b->item->pivot;
+                        }
+                    }',
+            ],
         ];
     }
 

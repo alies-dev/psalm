@@ -158,7 +158,14 @@ final class GenericTypeComparator
                         && !$container_param->had_template
                     ) {
                         $lower_bounds_before = count($param_comparison_result->type_variable_lower_bounds);
-                        $result_before_reverse = clone $param_comparison_result;
+                        $static_exception = $container_param->hasStaticObject() && $input_param->isStaticObject();
+                        $widened_input_param = strtolower($input_type_part->value)
+                            === strtolower($container_type_part->value)
+                                ? self::widenRefinements($input_param)
+                                : $input_param;
+                        $result_before_reverse = $widened_input_param !== $input_param
+                            ? clone $param_comparison_result
+                            : null;
 
                         // Make sure types are basically the same
                         $reverse_contained = UnionTypeComparator::isContainedBy(
@@ -174,19 +181,14 @@ final class GenericTypeComparator
                         $strictly_contained = $reverse_contained && !$param_comparison_result->type_coerced;
 
                         // Int ranges and object shapes are inferred refinements just like literals, so when the
-                        // strict check fails they widen the same way: except toward a declared type that has
-                        // shapes itself (shapes compare shallowly), and only for the same class, as through
-                        // inheritance $i does not index the input's own params
-                        if (!$strictly_contained
-                            && strtolower($input_type_part->value) === strtolower($container_type_part->value)
-                        ) {
+                        // strict check fails they widen the same way: except where the static exception applies
+                        // or toward a declared type that has shapes itself (shapes compare shallowly), and only
+                        // for the same class, as through inheritance $i does not index the input's own params
+                        if (!$strictly_contained && $result_before_reverse !== null && !$static_exception) {
                             $shape_visitor = new ContainsObjectShapeVisitor();
                             $shape_visitor->traverseArray($container_param->getAtomicTypes());
-                            $widened_input_param = $shape_visitor->matches()
-                                ? $input_param
-                                : self::widenRefinements($input_param);
 
-                            if ($widened_input_param !== $input_param
+                            if (!$shape_visitor->matches()
                                 && UnionTypeComparator::isContainedBy(
                                     $codebase,
                                     $container_param,
@@ -217,9 +219,7 @@ final class GenericTypeComparator
                         }
 
                         if (!$strictly_contained) {
-                            if ($container_param->hasStaticObject()
-                                && $input_param->isStaticObject()
-                            ) {
+                            if ($static_exception) {
                                 // do nothing
                             } else {
                                 $all_types_contain = false;
