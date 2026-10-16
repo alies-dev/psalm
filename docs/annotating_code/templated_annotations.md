@@ -332,6 +332,8 @@ function check(Box $box): void {
 }
 ```
 
+The lower bound is not applied inside the function body, so returning a value of the bound type for a `@return T` is still reported.
+
 `super` on a class-level `@template` is not supported and is treated like `as`.
 
 ## Template covariance

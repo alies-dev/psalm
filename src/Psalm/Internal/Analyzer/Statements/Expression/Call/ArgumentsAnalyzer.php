@@ -1654,16 +1654,30 @@ final class ArgumentsAnalyzer
             return null;
         }
 
-        if (!$template_result) {
-            return new TemplateResult($template_types, []);
-        }
+        $is_new_result = !$template_result;
+        $template_result ??= new TemplateResult($template_types, []);
 
         if (!$template_result->template_types) {
             $template_result->template_types = $template_types;
         }
 
-        if ($function_storage->template_lower_bounds) {
-            $template_result->declared_lower_bounds += $function_storage->template_lower_bounds;
+        foreach ($function_storage->template_lower_bounds as $template_name => $bound_map) {
+            foreach ($bound_map as $template_id => $bound) {
+                $template_result->declared_lower_bounds[$template_name][$template_id] ??= TypeExpander::expandUnion(
+                    $codebase,
+                    $bound,
+                    $self_fq_class_name,
+                    $calling_class_storage->name ?? null,
+                    $class_storage->parent_class ?? null,
+                    true,
+                    false,
+                    $calling_class_storage->final ?? false,
+                );
+            }
+        }
+
+        if ($is_new_result) {
+            return $template_result;
         }
 
         foreach ($args as $argument_offset => $arg) {

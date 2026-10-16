@@ -4450,6 +4450,61 @@ final class ClassTemplateTest extends TestCase
                 'ignored_issues' => [],
                 'php_version' => '8.0',
             ],
+            'superLowerBoundExpandsContextualBounds' => [
+                'code' => '<?php
+                    class C {
+                        /**
+                         * @template T super self
+                         * @param T $x
+                         */
+                        public function fromSelf(mixed $x): void {}
+
+                        /**
+                         * @template T super static
+                         * @param T $x
+                         */
+                        public function fromStatic(mixed $x): void {}
+                    }
+
+                    class D extends C {
+                        /**
+                         * @template T super parent
+                         * @param T $x
+                         */
+                        public function fromParent(mixed $x): void {}
+                    }
+
+                    (new C())->fromSelf(new C());
+                    (new C())->fromStatic(new C());
+                    (new D())->fromParent(new C());',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundAcceptsForeignTemplateReceiver' => [
+                'code' => '<?php
+                    class Dog {}
+
+                    /** @template V */
+                    final class Box {
+                        /**
+                         * @template T super V
+                         * @param T $x
+                         */
+                        public function lower(mixed $x): void {}
+                    }
+
+                    /**
+                     * @template U as Dog
+                     * @param Box<U> $box
+                     */
+                    function check(Box $box): void {
+                        $box->lower(new Dog());
+                    }',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
         ];
     }
 
@@ -4457,6 +4512,31 @@ final class ClassTemplateTest extends TestCase
     public function providerInvalidCodeParse(): iterable
     {
         return [
+            'superLowerBoundKeepsForeignTemplateReceiver' => [
+                'code' => '<?php
+                    class Dog {}
+
+                    /** @template V */
+                    final class Box {
+                        /**
+                         * @template T super V
+                         * @param T $x
+                         */
+                        public function lower(mixed $x): void {}
+                    }
+
+                    /**
+                     * @template U as Dog
+                     * @param Box<U> $box
+                     */
+                    function check(Box $box): void {
+                        $box->lower("bad");
+                    }',
+                'error_message' => 'InvalidArgument - src/somefile.php:18:37 - Argument 1 of Box::lower'
+                    . ' expects T super U:fn-check as Dog, but \'bad\' provided',
+                'error_levels' => [],
+                'php_version' => '8.0',
+            ],
             'superLowerBoundRejectsDisjointMethodArgument' => [
                 'code' => '<?php
                     class Animal {}
@@ -4478,7 +4558,7 @@ final class ClassTemplateTest extends TestCase
                         $b->contains("dog");
                     }',
                 'error_message' => 'InvalidArgument - src/somefile.php:18:38 - Argument 1 of Box::contains'
-                    . ' expects a supertype of Dog, but \'dog\' provided',
+                    . ' expects TNeedle super Dog, but \'dog\' provided',
                 'error_levels' => [],
                 'php_version' => '8.0',
             ],
@@ -4503,7 +4583,7 @@ final class ClassTemplateTest extends TestCase
                         $m->get("name");
                     }',
                 'error_message' => 'InvalidArgument - src/somefile.php:18:33 - Argument 1 of Map::get'
-                    . ' expects a supertype of int, but \'name\' provided',
+                    . ' expects TLookupKey super int, but \'name\' provided',
                 'error_levels' => [],
                 'php_version' => '8.0',
             ],
