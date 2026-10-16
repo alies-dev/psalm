@@ -159,11 +159,12 @@ final class GenericTypeComparator
                         $lower_bounds_before = count($param_comparison_result->type_variable_lower_bounds);
 
                         // Int ranges and object shapes are inferred refinements just like literals,
-                        // so they widen the same way. Only for the same class: through inheritance
+                        // so they widen the same way, but not toward a declared type that has shapes
+                        // itself (shapes compare shallowly). Only for the same class: through inheritance
                         // $i does not index the input's own params
                         $reverse_input_param = $input_param;
                         if (strtolower($input_type_part->value) === strtolower($container_type_part->value)) {
-                            $reverse_input_param = self::widenRefinements($input_param);
+                            $reverse_input_param = self::widenRefinements($input_param, $container_param);
                         }
 
                         // Make sure types are basically the same
@@ -248,14 +249,25 @@ final class GenericTypeComparator
         return false;
     }
 
-    private static function widenRefinements(Union $type): Union
+    private static function widenRefinements(Union $type, Union $container): Union
     {
+        foreach ($container->getAtomicTypes() as $container_atomic) {
+            if ($container_atomic instanceof TNamedObject
+                && array_filter(
+                    $container_atomic->extra_types,
+                    static fn(Atomic $extra): bool => $extra instanceof TObjectWithProperties,
+                )
+            ) {
+                return $type;
+            }
+        }
+
         $types = [];
         $widened = false;
 
         foreach ($type->getAtomicTypes() as $atomic) {
             if ($atomic instanceof TIntRange) {
-                $atomic = new TInt();
+                $atomic = new TInt($atomic->from_docblock);
                 $widened = true;
             } elseif ($atomic instanceof TNamedObject && $atomic->extra_types) {
                 $nominal = array_filter(

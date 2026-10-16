@@ -4419,6 +4419,28 @@ final class ClassTemplateTest extends TestCase
                     /** @param TypedCollection<int, Tag&object{pivot: Pivot}> $c */
                     function fromShape(TypedCollection $c): void { takesTags($c); }',
             ],
+            'shapeToShapeContainerKeepsInputTypeInInvariantTemplateArg' => [
+                'code' => '<?php
+                    /** @template T */
+                    final class Item {
+                        /** @param T $item */
+                        public function __construct(public $item) {}
+                    }
+
+                    class Tag {}
+                    class Pivot {}
+
+                    /** @param Item<Tag&object{pivot: string}> $b */
+                    function takesShaped(Item $b): void {}
+
+                    /** @var Item<Tag&object{pivot: Pivot}> $b */
+                    $b = new Item(null);
+                    takesShaped($b);
+                    $p = $b->item->pivot;',
+                'assertions' => [
+                    '$p===' => 'Pivot',
+                ],
+            ],
         ];
     }
 
@@ -5243,6 +5265,24 @@ final class ClassTemplateTest extends TestCase
 
                     /** @param TypedCollection<int, SubTag&object{pivot: Pivot}> $c */
                     function fromSubTag(TypedCollection $c): void { takesTags($c); }',
+                'error_message' => 'InvalidArgument',
+            ],
+            'shapeVsDifferentShapeRejectedInInvariantTemplateArg' => [
+                'code' => '<?php
+                    /** @template T */
+                    final class Item {
+                        /** @param T $item */
+                        public function __construct(public $item) {}
+                    }
+
+                    class Tag {}
+                    class Pivot {}
+
+                    /** @param Item<int|Tag&object{pivot: string}> $b */
+                    function takesShaped(Item $b): void {}
+
+                    /** @param Item<int<0, 1>|Tag&object{pivot: Pivot}> $b */
+                    function fromShape(Item $b): void { takesShaped($b); }',
                 'error_message' => 'InvalidArgument',
             ],
             'nominalIntersectionRejectedInInvariantTemplateArg' => [
