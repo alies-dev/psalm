@@ -2013,6 +2013,45 @@ final class FunctionTemplateTest extends TestCase
                 'ignored_issues' => [],
                 'php_version' => '8.0',
             ],
+            'superLowerBoundWidensBeforeCallbackAndDependentBounds' => [
+                'code' => '<?php
+                    class Dog {}
+                    final class Puppy extends Dog {}
+
+                    /**
+                     * @template T super Dog
+                     * @param T $x
+                     * @param callable(T): void $cb
+                     */
+                    function withDog(mixed $x, callable $cb): void {}
+
+                    /**
+                     * @template T super int
+                     * @param T $x
+                     * @param callable(T): void $cb
+                     */
+                    function withInt(mixed $x, callable $cb): void {}
+
+                    /**
+                     * @template T super int
+                     * @template U super T
+                     * @param T $x
+                     * @param U $y
+                     * @return U
+                     */
+                    function pair(mixed $x, mixed $y): mixed {
+                        throw new Exception();
+                    }
+
+                    withDog(new Puppy(), function (Dog $d): void {});
+                    withInt(1, function (int $d): void {});
+                    $p = pair(1, 2);',
+                'assertions' => [
+                    '$p' => 'int',
+                ],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
             'superLowerBoundAcceptsOverlappingArguments' => [
                 'code' => '<?php
                     interface HasName {}

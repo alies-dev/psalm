@@ -795,13 +795,17 @@ final class ArgumentAnalyzer
             );
         }
 
+        // a bound refers to other templates by their widened value
+        $widened_result = clone $template_result;
+        $widened_result->lower_bounds = TemplateLowerBound::widenInferredBounds($template_result, $codebase);
+
         foreach ($bindable_template_params as $template_type) {
             $declared_bound = $template_result->declared_lower_bounds
                 [$template_type->param_name]
                 [$template_type->defining_class] ?? null;
 
             $bound = $declared_bound
-                ? TemplateLowerBound::resolve($declared_bound, $template_result, $codebase)
+                ? TemplateLowerBound::resolve($declared_bound, $widened_result, $codebase)
                 : null;
 
             if (!$bound) {

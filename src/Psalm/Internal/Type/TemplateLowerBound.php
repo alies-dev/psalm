@@ -7,6 +7,7 @@ namespace Psalm\Internal\Type;
 use Psalm\Codebase;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\TypeVisitor\TypeVariableResolver;
+use Psalm\Storage\FunctionLikeStorage;
 use Psalm\Type;
 use Psalm\Type\Union;
 
@@ -17,6 +18,35 @@ use Psalm\Type\Union;
  */
 final class TemplateLowerBound
 {
+    /**
+     * Registers the declared bounds of the called function-like on the template result,
+     * expanding `self`/`static`/`parent` in the class context of the call.
+     */
+    public static function declare(
+        TemplateResult $template_result,
+        FunctionLikeStorage $storage,
+        Codebase $codebase,
+        ?string $self_class,
+        ?string $static_class,
+        ?string $parent_class,
+        bool $final,
+    ): void {
+        foreach ($storage->template_lower_bounds as $template_name => $bound_map) {
+            foreach ($bound_map as $template_id => $bound) {
+                $template_result->declared_lower_bounds[$template_name][$template_id] ??= TypeExpander::expandUnion(
+                    $codebase,
+                    $bound,
+                    $self_class,
+                    $static_class,
+                    $parent_class,
+                    true,
+                    false,
+                    $final,
+                );
+            }
+        }
+    }
+
     /**
      * Resolves the templates of the declaring class that the bound refers to
      * against the receiver. Returns null when the bound cannot constrain anything:
@@ -57,22 +87,24 @@ final class TemplateLowerBound
      */
     public static function widenInferredBounds(TemplateResult $template_result, Codebase $codebase): array
     {
-        $lower_bounds = $template_result->lower_bounds;
+        // bounds may refer to earlier templates, which must already be widened
+        $working_result = clone $template_result;
+        $working_result->declared_lower_bounds = [];
 
         foreach ($template_result->declared_lower_bounds as $template_name => $bound_map) {
             foreach ($bound_map as $template_id => $declared_bound) {
-                if (!isset($lower_bounds[$template_name][$template_id])) {
+                if (!isset($working_result->lower_bounds[$template_name][$template_id])) {
                     continue;
                 }
 
-                $bound = self::resolve($declared_bound, $template_result, $codebase);
+                $bound = self::resolve($declared_bound, $working_result, $codebase);
 
                 if (!$bound) {
                     continue;
                 }
 
                 $inferred = TemplateStandinTypeReplacer::getMostSpecificTypeFromBounds(
-                    $lower_bounds[$template_name][$template_id],
+                    $working_result->lower_bounds[$template_name][$template_id],
                     $codebase,
                 );
 
@@ -84,10 +116,10 @@ final class TemplateLowerBound
                     $widened = Type::combineUnionTypes($inferred, $bound, $codebase);
                 }
 
-                $lower_bounds[$template_name][$template_id] = [new TemplateBound($widened)];
+                $working_result->lower_bounds[$template_name][$template_id] = [new TemplateBound($widened)];
             }
         }
 
-        return $lower_bounds;
+        return $working_result->lower_bounds;
     }
 }

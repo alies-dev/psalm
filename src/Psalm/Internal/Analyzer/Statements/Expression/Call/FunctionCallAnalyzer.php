@@ -23,6 +23,7 @@ use Psalm\Internal\DataFlow\TaintSink;
 use Psalm\Internal\DataFlow\TaintSource;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Type\Comparator\CallableTypeComparator;
+use Psalm\Internal\Type\TemplateLowerBound;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeCombiner;
 use Psalm\Issue\DeprecatedFunction;
@@ -183,6 +184,15 @@ final class FunctionCallAnalyzer extends CallAnalyzer
         if (!$is_first_class_callable) {
             if (isset($function_call_info->function_storage->template_types)) {
                 $template_result->template_types += $function_call_info->function_storage->template_types ?: [];
+                TemplateLowerBound::declare(
+                    $template_result,
+                    $function_call_info->function_storage,
+                    $codebase,
+                    null,
+                    null,
+                    null,
+                    false,
+                );
             }
 
             ArgumentsAnalyzer::analyze(
