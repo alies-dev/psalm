@@ -1,0 +1,10 @@
+<?php
+namespace StubRedeclaresTraitMethod;
+
+class B
+{
+    /** @param int $x */
+    public function m($x): void
+    {
+    }
+}
