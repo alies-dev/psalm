@@ -1129,6 +1129,64 @@ final class ConditionalReturnTypeTest extends TestCase
                     '$three' => 'float',
                 ],
             ],
+            'conditionalTrueBranchNarrowsTemplateForBoundCheck' => [
+                'code' => '<?php
+                    interface Animal {}
+                    final class Dog implements Animal {}
+
+                    /** @template TModel of Animal */
+                    final class Zoo
+                    {
+                        /**
+                         * @template TVal
+                         * @param callable(): TVal $cb
+                         * @psalm-return (TVal is Animal ? self<TVal> : list<TVal>)
+                         */
+                        public function map(callable $cb)
+                        {
+                            throw new \RuntimeException();
+                        }
+                    }
+
+                    /** @var Zoo<Dog> $z */
+                    $z = new Zoo();
+                    $a = $z->map(static fn(): Dog => new Dog());
+                    $b = $z->map(static fn(): string => "x");',
+                'assertions' => [
+                    '$a' => 'Zoo<Dog>',
+                    '$b' => 'list<string>',
+                ],
+            ],
+            'conditionalTrueBranchNarrowsTemplateForBoundCheckWithNativeReturnType' => [
+                'code' => '<?php
+                    interface Animal {}
+                    final class Dog implements Animal {}
+
+                    /** @template TModel of Animal */
+                    final class Zoo
+                    {
+                        /**
+                         * @template TVal
+                         * @param callable(): TVal $cb
+                         * @psalm-return (TVal is Animal ? self<TVal> : list<TVal>)
+                         */
+                        public function map(callable $cb): mixed
+                        {
+                            throw new \RuntimeException();
+                        }
+                    }
+
+                    /** @var Zoo<Dog> $z */
+                    $z = new Zoo();
+                    $a = $z->map(static fn(): Dog => new Dog());
+                    $b = $z->map(static fn(): string => "x");',
+                'assertions' => [
+                    '$a' => 'Zoo<Dog>',
+                    '$b' => 'list<string>',
+                ],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
         ];
     }
 
@@ -1146,6 +1204,83 @@ final class ConditionalReturnTypeTest extends TestCase
                         return $key === null ? "a" : $key;
                     }',
                 'error_message' => 'InvalidDocblock',
+            ],
+            'conditionalElseBranchStillBoundChecked' => [
+                'code' => '<?php
+                    interface Animal {}
+                    final class Dog implements Animal {}
+
+                    /** @template TModel of Animal */
+                    final class Zoo
+                    {
+                        /**
+                         * @template TVal
+                         * @param callable(): TVal $cb
+                         * @psalm-return (TVal is Animal ? string : self<TVal>)
+                         */
+                        public function map(callable $cb)
+                        {
+                            throw new \RuntimeException();
+                        }
+                    }',
+                'error_message' => 'InvalidTemplateParam',
+            ],
+            'conditionalTrueBranchWithUnrelatedConditionStillBoundChecked' => [
+                'code' => '<?php
+                    interface Animal {}
+                    final class Plant {}
+
+                    /** @template TModel of Animal */
+                    final class Zoo
+                    {
+                        /**
+                         * @template TVal
+                         * @param callable(): TVal $cb
+                         * @psalm-return (TVal is Plant ? self<TVal> : string)
+                         */
+                        public function map(callable $cb)
+                        {
+                            throw new \RuntimeException();
+                        }
+                    }',
+                'error_message' => 'InvalidTemplateParam',
+            ],
+            'conditionalNarrowingKeepsIndexedAccessInIfBranch' => [
+                'code' => '<?php
+                    /**
+                     * @template T
+                     * @template A of array<string, int>
+                     * @template K of key-of<A>
+                     * @param T $x
+                     * @param A $a
+                     * @param K $k
+                     * @return (T is int ? A[K] : null)
+                     */
+                    function f($x, array $a, $k)
+                    {
+                        return "wrong";
+                    }',
+                'error_message' => 'InvalidReturnStatement',
+            ],
+            'conditionalNarrowingKeepsNestedConditionalInIfBranch' => [
+                'code' => '<?php
+                    interface Animal {}
+                    final class Dog implements Animal {}
+                    final class Plant {}
+
+                    /** @template A of Animal */
+                    class Box {}
+
+                    /**
+                     * @template T
+                     * @param T $x
+                     * @return (T is Animal ? (T is Dog ? Box<Plant> : string) : string)
+                     */
+                    function f($x)
+                    {
+                        throw new RuntimeException();
+                    }',
+                'error_message' => 'InvalidTemplateParam',
             ],
         ];
     }
