@@ -112,7 +112,7 @@ trait GenericTrait
                 );
             }
 
-            if ($this->is_static) {
+            if ($this->is_static && $exact) {
                 $extra_types .= '&static';
             }
         }
