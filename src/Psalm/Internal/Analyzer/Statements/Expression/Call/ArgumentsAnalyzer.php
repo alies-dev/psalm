@@ -27,6 +27,7 @@ use Psalm\Internal\Stubs\Generator\StubsGenerator;
 use Psalm\Internal\Type\Comparator\TypeComparisonResult;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
+use Psalm\Internal\Type\TemplateLowerBound;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
 use Psalm\Internal\Type\TypeExpander;
@@ -448,7 +449,10 @@ final class ArgumentsAnalyzer
         }
 
         $new_bounds = $template_result->template_types;
-        foreach ($template_result->lower_bounds as $k => $template_map) {
+        $closure_lower_bounds = $template_result->declared_lower_bounds
+            ? TemplateLowerBound::widenInferredBounds($template_result, $codebase)
+            : $template_result->lower_bounds;
+        foreach ($closure_lower_bounds as $k => $template_map) {
             $new_bounds[$k] = [];
             foreach ($template_map as $kk => $lower_bounds) {
                 $new_bounds[$k][$kk] = TemplateStandinTypeReplacer::getMostSpecificTypeFromBounds(
@@ -1654,12 +1658,25 @@ final class ArgumentsAnalyzer
             return null;
         }
 
-        if (!$template_result) {
-            return new TemplateResult($template_types, []);
-        }
+        $is_new_result = !$template_result;
+        $template_result ??= new TemplateResult($template_types, []);
 
         if (!$template_result->template_types) {
             $template_result->template_types = $template_types;
+        }
+
+        TemplateLowerBound::declare(
+            $template_result,
+            $function_storage,
+            $codebase,
+            $self_fq_class_name,
+            $calling_class_storage->name ?? null,
+            $class_storage->parent_class ?? null,
+            $calling_class_storage->final ?? false,
+        );
+
+        if ($is_new_result) {
+            return $template_result;
         }
 
         foreach ($args as $argument_offset => $arg) {
