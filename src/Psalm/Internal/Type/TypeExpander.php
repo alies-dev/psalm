@@ -27,11 +27,13 @@ use Psalm\Type\Atomic\TKeyOf;
 use Psalm\Type\Atomic\TKeyedArray;
 use Psalm\Type\Atomic\TLiteralClassString;
 use Psalm\Type\Atomic\TLiteralInt;
+use Psalm\Type\Atomic\TMixed;
 use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Type\Atomic\TNever;
 use Psalm\Type\Atomic\TNull;
 use Psalm\Type\Atomic\TObjectWithProperties;
 use Psalm\Type\Atomic\TPropertiesOf;
+use Psalm\Type\Atomic\TStarProjection;
 use Psalm\Type\Atomic\TTemplateParam;
 use Psalm\Type\Atomic\TTypeAlias;
 use Psalm\Type\Atomic\TValueOf;
@@ -41,6 +43,8 @@ use ReflectionProperty;
 
 use function array_any;
 use function array_filter;
+use function array_key_first;
+use function array_keys;
 use function array_map;
 use function array_merge;
 use function array_values;
@@ -132,6 +136,11 @@ final class TypeExpander
     ): array {
         if ($return_type instanceof TEnumCase) {
             return [$return_type];
+        }
+
+        if ($return_type instanceof TStarProjection) {
+            // a star never outlives expansion: reads through it must see plain mixed
+            return [new TMixed(false, $return_type->from_docblock)];
         }
 
         if ($return_type instanceof TNamedObject
@@ -434,6 +443,10 @@ final class TypeExpander
         ) {
             $type_params = $return_type->type_params;
             foreach ($type_params as &$type_param) {
+                if ($return_type instanceof TGenericObject && $type_param->isStarProjection()) {
+                    continue;
+                }
+
                 $type_param = self::expandUnion(
                     $codebase,
                     $type_param,
@@ -449,6 +462,19 @@ final class TypeExpander
                 );
             }
             unset($type_param);
+
+            if ($return_type instanceof TGenericObject) {
+                $type_params = self::replaceStarProjections(
+                    $codebase->classOrInterfaceExists($return_type->value)
+                        ? $codebase->classlike_storage_provider->get(
+                            $codebase->classlikes->getUnAliasedName($return_type->value),
+                        )->template_types ?? []
+                        : [],
+                    $type_params,
+                    $codebase,
+                );
+            }
+
             /** @psalm-suppress InvalidArgument Psalm bug */
             $return_type = $return_type->setTypeParams($type_params);
         } elseif ($return_type instanceof TKeyedArray) {
@@ -710,6 +736,72 @@ final class TypeExpander
         }
 
         return $return_type;
+    }
+
+    /**
+     * Swaps star projection params (see TypeParser) for the bound of the template at that position.
+     * The bound is not expanded further, so a bound that holds a star itself (`T of Foo<*>`) cannot recurse.
+     *
+     * @template TParams of non-empty-array<int, Union>
+     * @param array<string, non-empty-array<string, Union>> $template_types of the generic class
+     * @param TParams $type_params
+     * @return TParams
+     * @psalm-suppress InvalidReturnType, InvalidReturnStatement params are replaced in place, shape is kept
+     * @internal
+     */
+    public static function replaceStarProjections(
+        array $template_types,
+        array $type_params,
+        ?Codebase $codebase = null,
+    ): array {
+        $has_star = false;
+
+        foreach ($type_params as $type_param) {
+            if ($type_param->isStarProjection()) {
+                $has_star = true;
+                break;
+            }
+        }
+
+        if (!$has_star) {
+            return $type_params;
+        }
+
+        $template_result = new TemplateResult($template_types, []);
+
+        foreach ($type_params as $i => $type_param) {
+            $template_name = array_keys($template_types)[$i] ?? null;
+            $defining_class = $template_name !== null ? array_key_first($template_types[$template_name]) : null;
+
+            if ($type_param->isStarProjection()) {
+                // a bound is resolved against the params to its left, so `B of A` becomes the A given;
+                // one that references a template of this class not supplied by a param to its left (or is
+                // mixed) cannot be resolved here, so it becomes mixed
+                $declared_bound = $template_name !== null && $defining_class !== null
+                    ? $template_types[$template_name][$defining_class]
+                    : null;
+
+                $bound = $declared_bound !== null
+                    && !array_any(
+                        $declared_bound->getTemplateTypes(),
+                        static fn(TTemplateParam $t): bool
+                            => isset($template_types[$t->param_name][$t->defining_class])
+                                && !isset($template_result->lower_bounds[$t->param_name][$t->defining_class]),
+                    )
+                    ? TemplateInferredTypeReplacer::replace($declared_bound, $template_result, $codebase)
+                    : null;
+
+                $type_param = $type_params[$i] = $bound !== null && !$bound->hasMixed()
+                    ? $bound->setProperties(['had_template' => true])
+                    : $type_param->setTypes(['mixed' => new TMixed()]);
+            }
+
+            if ($template_name !== null && $defining_class !== null) {
+                $template_result->lower_bounds[$template_name][$defining_class][] = new TemplateBound($type_param);
+            }
+        }
+
+        return $type_params;
     }
 
     /**

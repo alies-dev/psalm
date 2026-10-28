@@ -66,6 +66,7 @@ use Psalm\Type\Atomic\TNull;
 use Psalm\Type\Atomic\TObject;
 use Psalm\Type\Atomic\TObjectWithProperties;
 use Psalm\Type\Atomic\TPropertiesOf;
+use Psalm\Type\Atomic\TStarProjection;
 use Psalm\Type\Atomic\TString;
 use Psalm\Type\Atomic\TTemplateIndexedAccess;
 use Psalm\Type\Atomic\TTemplateKeyOf;
@@ -600,6 +601,26 @@ final class TypeParser
         $generic_params = [];
 
         foreach ($parse_tree->children as $i => $child_tree) {
+            if ($child_tree instanceof Value && $child_tree->value === '*') {
+                if (isset(TypeTokenizer::PSALM_RESERVED_WORDS[$generic_type])
+                    && $generic_type !== 'self'
+                    && $generic_type !== 'static'
+                ) {
+                    // only class generics have template bounds to project; keyword generics take plain mixed
+                    $generic_params[] = new Union([new TMixed(false, $from_docblock)], [
+                        'from_docblock' => $from_docblock,
+                    ]);
+                    continue;
+                }
+
+                // TypeExpander swaps the star for the bound of the template at its position
+                $generic_params[] = new Union([new TStarProjection(false, $from_docblock)], [
+                    'from_docblock' => $from_docblock,
+                    'had_template' => true,
+                ]);
+                continue;
+            }
+
             $tree_type = self::getTypeFromTree(
                 $child_tree,
                 $codebase,

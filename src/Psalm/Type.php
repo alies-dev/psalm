@@ -638,6 +638,9 @@ abstract class Type
 
         if ($type_1->isVanillaMixed() && $type_2->isVanillaMixed()) {
             $combined_type = self::getMixed();
+        } elseif ($type_1->isStarProjection() || $type_2->isStarProjection()) {
+            // a star projection is a supertype of every other type of that generic param
+            $combined_type = ($type_1->isStarProjection() ? $type_1 : $type_2)->getBuilder()->freeze();
         } else {
             $both_failed_reconciliation = false;
 

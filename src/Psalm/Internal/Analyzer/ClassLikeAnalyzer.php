@@ -830,7 +830,11 @@ abstract class ClassLikeAnalyzer extends SourceAnalyzer
                         }
                     }
 
-                    if (!$template_type->isMixed()) {
+                    // a star is within its bound by definition
+                    if (!$template_type->isMixed()
+                        && !($storage->template_extended_offsets[$parent_storage->name][$i] ?? null)
+                            ?->isStarProjection()
+                    ) {
                         $template_result = new TemplateResult(
                             $previous_extended ?: [],
                             [],
