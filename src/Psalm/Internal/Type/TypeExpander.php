@@ -8,6 +8,8 @@ use Psalm\Codebase;
 use Psalm\Exception\CircularReferenceException;
 use Psalm\Exception\UnresolvableConstantException;
 use Psalm\Internal\Analyzer\Statements\Expression\Fetch\AtomicPropertyFetchAnalyzer;
+use Psalm\Internal\Type\Comparator\UnionTypeComparator;
+use Psalm\Internal\TypeVisitor\TemplateBoundNarrower;
 use Psalm\Storage\Assertion\IsType;
 use Psalm\Type;
 use Psalm\Type\Atomic;
@@ -767,9 +769,13 @@ final class TypeExpander
                 }
             }
 
+            $if_type_to_expand = $assertion
+                ? self::narrowIfTypeToCondition($codebase, $return_type, $new_as_type, $assertion->type)
+                : $return_type->if_type;
+
             $if_conditional_return_types = [];
 
-            foreach ($return_type->if_type->getAtomicTypes() as $if_atomic_type) {
+            foreach ($if_type_to_expand->getAtomicTypes() as $if_atomic_type) {
                 $candidate_types = self::expandAtomic(
                     $codebase,
                     $if_atomic_type,
@@ -921,6 +927,34 @@ final class TypeExpander
             ),
         );
         return [$return_type];
+    }
+
+    /**
+     * The `if` branch is only taken where `T is X` holds, so within it T is bounded by X. Narrow the template's
+     * bound (keeping its identity) so that `@template TModel of X` constraints on `Foo<T>` are checked against
+     * the narrowed bound rather than T's declared one.
+     */
+    public static function narrowIfTypeToCondition(
+        Codebase $codebase,
+        TConditional $conditional,
+        Union $as_type,
+        Atomic $condition_atomic_type,
+    ): Union {
+        $narrowed_bound = new Union([$condition_atomic_type]);
+
+        if (!UnionTypeComparator::isContainedBy($codebase, $narrowed_bound, $as_type)) {
+            return $conditional->if_type;
+        }
+
+        $if_type = $conditional->if_type;
+
+        (new TemplateBoundNarrower(
+            $conditional->param_name,
+            $conditional->defining_class,
+            $narrowed_bound,
+        ))->traverse($if_type);
+
+        return $if_type;
     }
 
     /**
