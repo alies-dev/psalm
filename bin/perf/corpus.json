@@ -48,7 +48,7 @@
             "shards": [
                 "cg-1"
             ],
-            "timeout": 1500,
+            "timeout": 900,
             "exercises": "deep class hierarchies, class-string<T> repositories, attributes metadata"
         },
         "psl": {
@@ -58,7 +58,7 @@
             "shards": [
                 "cg-2"
             ],
-            "timeout": 3000,
+            "timeout": 1200,
             "exercises": "heavily templated functional library, 70+ packages, generics, conditional types, assertions"
         },
         "phpunit": {
@@ -68,7 +68,7 @@
             "shards": [
                 "cg-3"
             ],
-            "timeout": 1200,
+            "timeout": 900,
             "exercises": "large final-class codebase, readonly/immutable value objects, modern PHP 8.4 syntax, event system"
         },
         "php-parser": {
@@ -78,7 +78,7 @@
             "shards": [
                 "cg-4"
             ],
-            "timeout": 1200,
+            "timeout": 900,
             "exercises": "large AST node class hierarchy, many untyped closures and arrays, visitor pattern"
         },
         "amphp-amp": {
@@ -88,7 +88,7 @@
             "shards": [
                 "cg-5"
             ],
-            "timeout": 900,
+            "timeout": 300,
             "exercises": "fibers, generics (Future<T>), closures templates, small and fast"
         },
         "webmozarts-assert": {
@@ -98,7 +98,7 @@
             "shards": [
                 "cg-5"
             ],
-            "timeout": 900,
+            "timeout": 300,
             "exercises": "psalm-assert type narrowing, pure/immutable annotations, static-analysis fixture files"
         },
         "laravel": {
