@@ -197,7 +197,7 @@ function renderTable(array $projects, bool $headOnly): string
             $ir = metricOf($p['head'] ?? [], 'ir');
             $mb = metricOf($p['head'] ?? [], 'psalm_mb');
             $cells = [
-                $ir === null ? '–' : fmtIr($ir),
+                $ir === null ? ($p['mode'] === 'cachegrind' ? failureCell($p) : '–') : fmtIr($ir),
                 $mb === null ? '–' : sprintf('%.0f', $mb),
             ];
         } else {

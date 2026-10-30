@@ -101,12 +101,15 @@ function diffIssues(array $base, array $head): array
         $addedByGroup[$groupOf($p)][] = $i;
     }
 
-    // Same message first (a pure severity transition), then whatever is left in the group, in order.
+    // Same message first (a pure severity transition), then whatever is left in the group, in order. Leftovers that
+    // differ in neither message nor severity moved (line_to or columns changed): those stay added + removed.
     $pairs = [];
     foreach ([true, false] as $sameMessageOnly) {
         foreach ($removed as $r => $old) {
             foreach ($addedByGroup[$groupOf($old)] ?? [] as $slot => $a) {
-                if ($sameMessageOnly && $added[$a][KEY_MESSAGE] !== $old[KEY_MESSAGE]) {
+                $sameMessage = $added[$a][KEY_MESSAGE] === $old[KEY_MESSAGE];
+                $sameSeverity = $added[$a][KEY_SEVERITY] === $old[KEY_SEVERITY];
+                if (($sameMessageOnly && !$sameMessage) || ($sameMessage && $sameSeverity)) {
                     continue;
                 }
 

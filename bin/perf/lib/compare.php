@@ -8,12 +8,7 @@ const NEAR_LIMIT_RATIO = 0.8;
 const DRIFT_RATIO = 1.2;
 const OOM_RSS_RATIO = 0.9;
 const DEFAULT_VM_RAM_KB = 16 * 1024 * 1024;
-const STATUSES = ['ok', 'crash', 'timeout', 'setup-failed', 'inconclusive'];
 const METRICS = ['ir', 'psalm_mb', 'wall_t1', 'cpu_t1', 'rss_t1_kb', 'wall_t4', 'rss_t4_kb', 'psalm_mb_t4'];
-const REQUIRED_METRICS = [
-    'cachegrind' => ['ir', 'psalm_mb'],
-    'native' => ['psalm_mb', 'wall_t1'],
-];
 
 function usage(string $message): never
 {
@@ -46,52 +41,6 @@ function loadIssues(string $dir, string $issuesFile): ?array
 }
 
 /**
- * Structural problems of one result file against what expected.json says about it. Empty list = valid.
- *
- * @param array<string, mixed> $r
- * @param array<string, mixed> $exp project entry of expected.json
- * @param array<string, mixed>|null $lock expected.json locks.<rev>
- * @return list<string>
- */
-function resultProblems(array $r, string $project, string $rev, array $exp, ?array $lock): array
-{
-    $problems = [];
-    $check = static function (bool $ok, string $message) use (&$problems): void {
-        if (!$ok) {
-            $problems[] = $message;
-        }
-    };
-
-    $check(($r['project'] ?? null) === $project, 'project name differs');
-    $check(($r['psalm_sha'] ?? null) === ($exp['revs'][$rev]['sha'] ?? ''), 'psalm_sha differs from the expected sha');
-    $check(($r['shard'] ?? null) === ($exp['shard'] ?? null), 'shard differs');
-    $check(($r['mode'] ?? null) === ($exp['mode'] ?? null), 'mode differs');
-    if (isset($r['lock_sha256']) && isset($lock['sha256']) && $lock['sha256'] !== '') {
-        $check($r['lock_sha256'] === $lock['sha256'], 'Psalm lock differs from the expected lock');
-    }
-
-    $status = $r['status'] ?? null;
-    $check(in_array($status, STATUSES, true), 'unknown status');
-    $hasText = static fn(string $key): bool => is_string($r[$key] ?? null) && trim($r[$key]) !== '';
-    if ($status === 'ok') {
-        foreach (REQUIRED_METRICS[$exp['mode'] ?? ''] ?? [] as $metric) {
-            $value = $r['metrics'][$metric] ?? null;
-            $check(is_numeric($value) && $value > 0, "metric {$metric} missing");
-        }
-
-        $fingerprint = $r['env']['fingerprint'] ?? null;
-        $check(is_string($fingerprint) && $fingerprint !== '', 'env fingerprint missing');
-    } elseif ($status === 'crash' || $status === 'timeout') {
-        $check(is_numeric($r['elapsed_analysis'] ?? null), 'elapsed_analysis missing');
-        $check($hasText('log_tail') || $hasText('reason'), 'neither log_tail nor reason');
-    } elseif ($status !== null) {
-        $check($hasText('reason'), 'reason missing');
-    }
-
-    return $problems;
-}
-
-/**
  * @param array<string, mixed> $exp
  * @param array<string, mixed>|null $lock
  * @return array{result: array<string, mixed>|null, problem: string|null, issues: list<array<string, mixed>>|null}
@@ -113,14 +62,13 @@ function loadSide(?string $dir, string $project, string $rev, array $exp, ?array
         return $none('result invalid (not a JSON object)');
     }
 
-    $problems = resultProblems($r, $project, $rev, $exp, $lock);
-    $issues = null;
-    if ($problems === [] && $r['status'] === 'ok') {
-        $issues = loadIssues($dir, (string) ($r['issues_file'] ?? ''));
-        if ($issues === null) {
-            $problems[] = 'issues file missing';
-        }
-    }
+    $problems = ($r['project'] ?? null) === $project ? [] : ['project name differs'];
+    $expectedRev = ['sha' => $exp['revs'][$rev]['sha'] ?? null, 'lock_sha256' => $lock['sha256'] ?? null];
+    $problems = [
+        ...$problems,
+        ...perfResultProblems($r, $expectedRev, $exp, (string) ($exp['mode'] ?? ''), $dir),
+    ];
+    $issues = $problems === [] && $r['status'] === 'ok' ? loadIssues($dir, (string) $r['issues_file']) : null;
 
     if ($problems !== []) {
         return $none('result invalid (' . implode('; ', $problems) . ')');
@@ -149,15 +97,31 @@ function metricOf(array $r, string $metric): float|int|null
 /** @param array<string, mixed> $r */
 function cpuOf(array $r): ?string
 {
-    $cpu = $r['env']['soft']['cpu'] ?? null;
+    $cpu = $r['env']['cpu'] ?? $r['env']['soft']['cpu'] ?? null;
 
     return is_string($cpu) && $cpu !== '' ? $cpu : null;
 }
 
-/** CPU model strings compare case-insensitively with collapsed whitespace. */
-function normalizeCpu(?string $cpu): ?string
+/**
+ * True only when the run recorded that its CPU model is one corpus.json has measured expected_seconds on.
+ *
+ * @param array<string, mixed> $r
+ */
+function cpuMeasured(array $r): bool
 {
-    return $cpu === null ? null : mb_strtolower(trim((string) preg_replace('/\s+/', ' ', $cpu)));
+    return ($r['env']['cpu_measured'] ?? null) === true;
+}
+
+/**
+ * Normalised CPU model for same-CPU comparisons; null when unknown.
+ *
+ * @param array<string, mixed> $r
+ */
+function comparableCpu(array $r): ?string
+{
+    $cpu = cpuOf($r);
+
+    return $cpu === null || strtolower($cpu) === 'unknown' ? null : perfNormalizeCpu($cpu);
 }
 
 /**
@@ -294,6 +258,10 @@ function headFailureOutcome(array $p, array $base, array $head, array $exp): arr
         return finish($p, 'regression', ['head hit the memory limit where base was ok']);
     }
 
+    if (!cpuMeasured($head)) {
+        return finish($p, 'inconclusive', ['head timed out on a CPU model whose speed is not calibrated']);
+    }
+
     $timeout = (float) ($exp['timeout'] ?? 0);
     $predicted = predictedSlowestSeconds($base, $exp);
     if ($predicted === null || $timeout <= 0) {
@@ -301,9 +269,9 @@ function headFailureOutcome(array $p, array $base, array $head, array $exp): arr
     }
 
     if ($exp['mode'] === 'native') {
-        $baseCpu = normalizeCpu(cpuOf($base));
-        if ($p['base_source'] !== 'measured' || $baseCpu === null || $baseCpu !== normalizeCpu(cpuOf($head))) {
-            return finish($p, 'inconclusive', ['head timed out; native base ran on another CPU or was cached']);
+        $baseCpu = comparableCpu($base);
+        if ($baseCpu === null || $baseCpu !== comparableCpu($head)) {
+            return finish($p, 'inconclusive', ['head timed out; native base ran on another or an unknown CPU']);
         }
     }
 
@@ -448,6 +416,11 @@ function evaluateProject(string $name, array $exp, array $ctx): array
             return finish($p, 'inconclusive', ["head {$head['problem']}"]);
         }
 
+        if (in_array($p['status_head'], ['crash', 'timeout'], true)) {
+            // Listed with its reason; a head-only report is a pass unless a result is missing or invalid.
+            return finish($p, 'not_comparable', ["head {$p['status_head']}: " . resultReason($head['result'])]);
+        }
+
         if ($p['status_head'] !== 'ok') {
             return finish($p, 'inconclusive', ["head {$p['status_head']}: " . resultReason($head['result'])]);
         }
@@ -511,7 +484,11 @@ function compareResults(array $p, array $base, array $head, array $exp): array
     $p['env_differs'] = softLibDiff($b, $h);
 
     if ($h['status'] !== 'ok') {
-        if ($baseFp !== null && $headFp !== null && $baseFp !== $headFp) {
+        if (!is_string($headFp) || $headFp === '') {
+            return finish($p, 'inconclusive', ["head {$h['status']}, and its environment is unknown (no fingerprint)"]);
+        }
+
+        if ($baseFp !== $headFp) {
             return finish($p, 'inconclusive', ["head {$h['status']}, and the environment fingerprint differs"]);
         }
 

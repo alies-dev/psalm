@@ -2,13 +2,10 @@
 
 declare(strict_types=1);
 
-const MEMORY_HEADROOM = 1.25;
-/** t1 + four t4 processes must fit into the 12 GB of the runner (J2). */
-const T4_PROCESSES = 5;
-const T4_TOTAL_MB = 12_288;
-const TIMEOUT_FACTOR = 1.5;
 const STEP_SLACK_MINUTES = 2;
 const JOB_SLACK_MINUTES = 8;
+/** An install must finish well inside its timeout: expected_install_seconds x this factor <= the timeout. */
+const INSTALL_MARGIN = 1.2;
 const MODES = ['cachegrind', 'native'];
 const TIERS = ['pr', 'post-merge'];
 const EVENTS = ['pull_request', 'push', 'workflow_dispatch'];
@@ -55,11 +52,39 @@ function projectShard(array $project): string
 }
 
 /**
+ * Problems with the install timeout of a project: a per-project `install_timeout` must be a positive integer and
+ * leave INSTALL_MARGIN of headroom over expected_install_seconds.
+ *
+ * @param array<mixed> $corpus
  * @param array<mixed> $project
+ * @return list<string>
  */
-function projectTimeout(array $project): int
+function installTimeoutProblems(array $corpus, string $name, array $project): array
 {
-    return (int) ceil(TIMEOUT_FACTOR * (float) ($project['expected_seconds'] ?? 0));
+    if (array_key_exists('install_timeout', $project)
+        && (!is_int($project['install_timeout']) || $project['install_timeout'] <= 0)
+    ) {
+        return ["project {$name}: 'install_timeout' must be a positive integer"];
+    }
+
+    $install = $project['expected_install_seconds'] ?? null;
+    if (!is_int($install) && !is_float($install) || !is_int($corpus['install_timeout'] ?? null)) {
+        return [];
+    }
+
+    $timeout = perfInstallTimeout($corpus, $project);
+    if (INSTALL_MARGIN * $install <= $timeout) {
+        return [];
+    }
+
+    return [sprintf(
+        "project %s: expected_install_seconds %s x %s is above the install timeout %d s; "
+        . "raise the project's 'install_timeout'",
+        $name,
+        $install,
+        INSTALL_MARGIN,
+        $timeout,
+    )];
 }
 
 /**
@@ -68,17 +93,6 @@ function projectTimeout(array $project): int
 function limitMb(array $corpus, string $mode): int
 {
     return parseMemoryMb($corpus['memory_limit'][$mode] ?? null) ?? 0;
-}
-
-/**
- * t4 runs only for native projects where t1 plus four t4 processes fit into the runner (J2).
- *
- * @param array<mixed> $project
- */
-function t4Eligible(string $mode, array $project): bool
-{
-    return $mode === 'native'
-        && T4_PROCESSES * MEMORY_HEADROOM * (float) ($project['expected_mb'] ?? INF) <= T4_TOTAL_MB;
 }
 
 /**
@@ -240,6 +254,7 @@ function lintProject(array $corpus, string $name, array $project, string $corpus
         $errors[] = "project {$name}: 'expected_install_seconds' is required and must be >= 0";
     }
 
+    array_push($errors, ...installTimeoutProblems($corpus, $name, $project));
     array_push($errors, ...lintModeFields($name, $project, $mode));
     array_push($errors, ...lintMemory($corpus, $name, $project, $mode));
     array_push($errors, ...lintFiles($name, $project, $corpusDir));
@@ -389,7 +404,7 @@ function lintSummary(array $corpus): array
     foreach (enabledProjects($corpus) as $name => $project) {
         $mode = $corpus['shards'][projectShard($project)]['mode'];
         if ($mode === 'native') {
-            t4Eligible($mode, $project) ? $eligible[] = $name : $skipped[] = $name;
+            perfT4Eligible($corpus, $project) ? $eligible[] = $name : $skipped[] = $name;
         }
     }
 
@@ -408,26 +423,42 @@ function stepMinutes(array $corpus, array $names, int $extraSeconds = 0): int
 {
     $seconds = $extraSeconds;
     foreach ($names as $name) {
-        $seconds += $corpus['install_timeout'] + projectTimeout($corpus['projects'][$name]);
+        $project = $corpus['projects'][$name];
+        $seconds += perfInstallTimeout($corpus, $project) + perfAnalysisTimeout($project);
     }
 
     return (int) ceil($seconds / 60) + STEP_SLACK_MINUTES;
 }
 
 /**
- * Decides per project whether the bundle result can stand in for a base measurement.
+ * Decides per project whether the bundle result can stand in for a base measurement: same environment, same Psalm
+ * lock as the resolved base lock (a changed lock means the base must be measured again), a valid result.
  *
- * @param list<string> $names
+ * @param array<mixed> $corpus
+ * @param array<string, list<string>> $prShards
  * @param array<string, string> $headEnv env fingerprints of head's environment
  * @param array{sha: string, dir: string, manifest: array<mixed>}|null $bundle validated bundle
+ * @param string|null $baseLockSha sha256 of the base's resolved lock; null when it has none
  * @return array<string, bool>
  */
-function reusableProjects(array $names, array $headEnv, ?array $bundle): array
+function reusableProjects(array $corpus, array $prShards, array $headEnv, ?array $bundle, ?string $baseLockSha): array
 {
     $reusable = [];
-    foreach ($names as $name) {
-        $reusable[$name] = $bundle !== null && isset($headEnv[$name])
-            && bundleResultReusable($bundle['dir'], $bundle['manifest'], $bundle['sha'], $name, $headEnv[$name]);
+    foreach ($prShards as $shard => $names) {
+        foreach ($names as $name) {
+            $reusable[$name] = $bundle !== null && isset($headEnv[$name]) && bundleResultReusable(
+                $bundle['dir'],
+                $bundle['manifest'],
+                $bundle['sha'],
+                $name,
+                [
+                    'env' => $headEnv[$name],
+                    'lock_sha256' => $baseLockSha,
+                    'shard' => (string) $shard,
+                    'mode' => $corpus['shards'][$shard]['mode'],
+                ],
+            );
+        }
     }
 
     return $reusable;
@@ -458,8 +489,9 @@ function buildPlan(array $corpus, array $in): array
     $headFailed = $headLock['lock_source'] === 'failed';
     $baseFailed = $isPr && $baseLock['lock_source'] === 'failed';
     $prShards = prShards($corpus);
-    $names = array_merge(...array_values($prShards)) ?: [];
-    $reusable = $isPr ? reusableProjects($names, $in['head_env'], $in['bundle']) : [];
+    // A failed base lock has no sha: nothing can match it, so nothing is reused and nothing is measured for base.
+    $baseLockSha = $isPr && !$baseFailed && is_string($baseLock['sha256'] ?? null) ? $baseLock['sha256'] : null;
+    $reusable = $isPr ? reusableProjects($corpus, $prShards, $in['head_env'], $in['bundle'], $baseLockSha) : [];
     $anyCached = in_array(true, $reusable, true);
 
     $measure = [];
@@ -481,14 +513,15 @@ function buildPlan(array $corpus, array $in): array
         ];
     }
 
-    [$extra, $notes] = $isPr ? [[], []] : extraJobs($corpus, $in['include_disabled']);
+    [$extra, $notes, $t4Skipped] = $isPr ? [[], [], []] : extraJobs($corpus, $in['include_disabled']);
     if ($headFailed) {
         $measure = [];
         $extra = [];
+        $t4Skipped = [];
     }
 
     return [
-        'plan' => ['measure' => $measure, 'extra' => $extra, 'notes' => $notes],
+        'plan' => ['measure' => $measure, 'extra' => $extra, 'notes' => $notes, 't4_skipped' => $t4Skipped],
         'expected' => buildExpected($corpus, $in, $prShards, $reusable, $anyCached, $headFailed, $baseFailed),
     ];
 }
@@ -513,14 +546,18 @@ function prShards(array $corpus): array
 /**
  * push/dispatch only: post-merge shards plus t4 for the PR-tier natives that pass the J2 memory rule.
  *
+ * The third element lists the natives that get no t4 pass because of the memory budget, so the report of the
+ * run can record it: their results never see run-shard's own t4 note when no extra job covers them.
+ *
  * @param array<mixed> $corpus
  * @param list<string> $includeDisabled
- * @return array{0: list<array<mixed>>, 1: list<string>} jobs and notes
+ * @return array{0: list<array<mixed>>, 1: list<string>, 2: list<array{project: string, reason: string}>}
+ *     jobs, notes and t4 skips
  */
 function extraJobs(array $corpus, array $includeDisabled): array
 {
     $extra = [];
-    $anyT4 = false;
+    $t4Jobs = [];
     foreach ($corpus['shards'] as $shard => $def) {
         $shard = (string) $shard;
         $names = shardProjects($corpus, $shard);
@@ -528,30 +565,27 @@ function extraJobs(array $corpus, array $includeDisabled): array
             $includeDisabled,
             static fn(string $n): bool => projectShard($corpus['projects'][$n]) === $shard,
         ));
-        $eligible = array_values(array_filter(
-            $names,
-            static fn(string $n): bool => t4Eligible($def['mode'], $corpus['projects'][$n]),
-        ));
-        $anyT4 = $anyT4 || $eligible !== [];
+        $isEligible = static fn(string $n): bool => perfT4Eligible($corpus, $corpus['projects'][$n]);
 
         if ($def['tier'] === 'post-merge') {
             $projects = [...$names, ...$added];
         } else {
             // PR-tier shards were measured by `measure`; here only their t4 pass (and included disabled projects) run.
-            $projects = [...$eligible, ...$added];
+            $projects = [...array_filter($names, $isEligible), ...$added];
         }
 
         if ($projects === []) {
             continue;
         }
 
-        $t4 = array_values(array_filter(
-            $projects,
-            static fn(string $n): bool => t4Eligible($def['mode'], $corpus['projects'][$n]),
-        ));
+        $t4 = array_values(array_filter($projects, $isEligible));
         $extraSeconds = 0;
         foreach ($t4 as $name) {
-            $extraSeconds += projectTimeout($corpus['projects'][$name]);
+            $extraSeconds += perfAnalysisTimeout($corpus['projects'][$name]);
+        }
+
+        if ($t4 !== []) {
+            array_push($t4Jobs, ...$projects);
         }
 
         $step = stepMinutes($corpus, $projects, $extraSeconds);
@@ -559,18 +593,28 @@ function extraJobs(array $corpus, array $includeDisabled): array
             'shard' => $shard,
             'mode' => $def['mode'],
             'threads4' => $t4 !== [],
-            'projects' => $projects,
+            'projects' => array_values($projects),
             'step_timeout_minutes' => $step,
             'job_timeout_minutes' => $step + JOB_SLACK_MINUTES,
         ];
     }
 
-    $notes = [];
-    if (!$anyT4) {
-        $notes[] = 't4 (4 threads) skipped for every native project: 5 x 1.25 x expected_mb does not fit 12 GB';
+    $skipped = [];
+    foreach ([...array_keys(enabledProjects($corpus)), ...$includeDisabled] as $name) {
+        $project = $corpus['projects'][$name];
+        $isNative = perfProjectMode($corpus, $project) === 'native';
+        if ($isNative && !perfT4Eligible($corpus, $project) && !in_array($name, $t4Jobs, true)) {
+            $skipped[] = ['project' => $name, 'reason' => 'memory budget'];
+        }
     }
 
-    return [$extra, $notes];
+    $notes = [];
+    if ($skipped !== []) {
+        $notes[] = 't4 (4 threads) skipped (5 x 1.25 x expected_mb does not fit 12 GB): '
+            . implode(', ', array_column($skipped, 'project'));
+    }
+
+    return [$extra, $notes, $skipped];
 }
 
 /**
@@ -599,7 +643,7 @@ function buildExpected(
             $projects[$name] = [
                 'shard' => $shard,
                 'mode' => $mode,
-                'timeout' => projectTimeout($project),
+                'timeout' => perfAnalysisTimeout($project),
                 'expected_seconds' => $project['expected_seconds'],
                 'expected_ir' => $project['expected_ir'] ?? null,
                 'expected_mb' => $project['expected_mb'],
@@ -671,9 +715,15 @@ function includeDisabledProblems(array $corpus, array $names): array
         }
 
         $shard = $project['shards'][0] ?? null;
-        $sized = is_numeric($project['expected_seconds'] ?? null);
+        $sized = is_numeric($project['expected_seconds'] ?? null)
+            && is_numeric($project['expected_install_seconds'] ?? null);
         if (!is_string($shard) || !isset($corpus['shards'][$shard]) || !$sized) {
-            $problems[] = "--include-disabled: {$name} needs a known shard and expected_seconds to be sized";
+            $problems[] = "--include-disabled: {$name} needs a known shard, expected_seconds and "
+                . 'expected_install_seconds to be sized';
+        }
+
+        foreach (installTimeoutProblems($corpus, $name, $project) as $problem) {
+            $problems[] = "--include-disabled: {$problem}";
         }
     }
 

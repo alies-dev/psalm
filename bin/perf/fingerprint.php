@@ -11,6 +11,7 @@ declare(strict_types=1);
  * Exit: 0 ok, 2 usage/corpus error.
  */
 
+require __DIR__ . '/lib/corpus.php';
 require __DIR__ . '/lib/measure.php';
 require __DIR__ . '/lib/fingerprint.php';
 

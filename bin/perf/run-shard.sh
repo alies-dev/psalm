@@ -53,22 +53,28 @@ mkdir -p "$OUT" "$WORK"
 OUT="$(cd "$OUT" && pwd -P)"
 WORK="$(cd "$WORK" && pwd -P)"
 
-MODE="$(jq -r --arg s "$SHARD" '.shards[$s].mode // empty' "$CORPUS")"
-[ -n "$MODE" ] || die "unknown shard: $SHARD"
+PHP_BIN="$(command -v php)"
 if [ -n "${PERF_FORCE_MODE:-}" ]; then
     case "$PERF_FORCE_MODE" in
-        native|cachegrind) MODE=$PERF_FORCE_MODE ;;
+        native|cachegrind) ;;
         *) die "PERF_FORCE_MODE must be native or cachegrind" ;;
     esac
 fi
 
+# Every sizing rule (mode, memory limit, timeouts, t4 eligibility, CPU calibration, project selection) is applied
+# by lib/corpus.php; the shell only reads the answers.
+INFO="$("$PHP_BIN" "$SCRIPT_DIR/project-info.php" --corpus "$CORPUS" --shard "$SHARD" --projects "$ONLY")" \
+    || die "cannot read shard $SHARD from $CORPUS"
+MODE="$(printf '%s' "$INFO" | jq -r '.mode')"
 # Psalm ignores `php -d memory_limit`: only --memory-limit caps it. A cap below the runner's RAM turns a
 # blow-up into a crash with the fatal error in log_tail instead of an OOM-killed job.
-MEMORY_LIMIT="$(jq -r --arg m "$MODE" '.memory_limit[$m] // empty' "$CORPUS")"
-[ -n "$MEMORY_LIMIT" ] || die "corpus.json has no memory_limit.$MODE"
-INSTALL_TIMEOUT="$(jq -r '.install_timeout // 180' "$CORPUS")"
+MEMORY_LIMIT="$(printf '%s' "$INFO" | jq -r '.memory_limit')"
+CPU_MODEL="$(printf '%s' "$INFO" | jq -r '.cpu')"
+CPU_MEASURED="$(printf '%s' "$INFO" | jq -r '.cpu_measured')"
+if [ "$CPU_MEASURED" != true ]; then
+    echo "::warning::runner CPU '$CPU_MODEL' is not in corpus.json measured_cpus: Ir is unaffected but wall times and timeouts are not calibrated for it"
+fi
 
-PHP_BIN="$(command -v php)"
 if [ "$MODE" = cachegrind ]; then
     command -v valgrind >/dev/null 2>&1 || die "valgrind is required for cachegrind shards"
 fi
@@ -105,8 +111,8 @@ num() { if [ -n "${1:-}" ]; then printf '%s' "$1"; else printf 'null'; fi; }
 # JSON string or null from a possibly empty string.
 str() { if [ -n "${1:-}" ]; then jq -Rn --arg v "$1" '$v'; else printf 'null'; fi; }
 
-# <project field filter> of the current project, raw
-pf() { jq -r --arg n "$NAME" ".projects[\$n] | $1" "$CORPUS"; }
+# <filter> applied to the current project's entry of the shard info, raw
+pf() { printf '%s' "$PJ" | jq -r "$1"; }
 
 vm_ram_kb() {
     if [ -r /proc/meminfo ]; then awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo
@@ -136,14 +142,7 @@ if [ "$MODE" = cachegrind ]; then
     [ -n "$VALGRIND_VERSION" ] || VALGRIND_VERSION="$(valgrind --version | sed 's/^valgrind-//')"
 fi
 
-PROJECT_LIST="$(jq -r --arg s "$SHARD" --arg only "$ONLY" '
-    ($only | split(",") | map(select(. != ""))) as $o
-    | (.projects | keys) as $known
-    | if ($o - $known | length) > 0 then error("unknown project(s): " + (($o - $known) | join(", "))) else . end
-    | .projects | to_entries[]
-    | select(if ($o | length) > 0 then (.key as $k | $o | index($k)) != null
-             else (.value | has("disabled") | not) and ((.value.shards // []) | index($s)) != null end)
-    | .key' "$CORPUS")" || die "cannot select projects of shard $SHARD"
+PROJECT_LIST="$(printf '%s' "$INFO" | jq -r '.projects[].name')"
 if [ -z "$PROJECT_LIST" ]; then
     echo "run-shard: no projects selected in shard $SHARD" >&2
     exit 0
@@ -152,16 +151,6 @@ fi
 FINGERPRINTS="$("$PHP_BIN" "$SCRIPT_DIR/fingerprint.php" --corpus "$CORPUS" \
     --projects "$(printf '%s' "$PROJECT_LIST" | tr '\n' ',')" --valgrind-version "${VALGRIND_VERSION:-none}")" \
     || die "fingerprint.php failed"
-CPU_MODEL="$(printf '%s' "$FINGERPRINTS" | jq -r '[.soft[]][0].cpu // "unknown"')"
-# case-insensitive, whitespace-collapsed: corpus.json holds the strings as recorded by various runners
-if ! jq -e --arg c "$CPU_MODEL" '
-    def norm: ascii_downcase | gsub("\\s+"; " ") | gsub("^ | $"; "");
-    ($c | norm) as $m | (.measured_cpus // []) | map(norm) | index($m) != null' "$CORPUS" >/dev/null; then
-    CPU_MEASURED=0
-    echo "::warning::runner CPU '$CPU_MODEL' is not in corpus.json measured_cpus: Ir is unaffected but wall times and timeouts are not calibrated for it"
-else
-    CPU_MEASURED=1
-fi
 
 PSALM_PACKAGES="$(jq -c '[(.packages // .)[] | {key: .name, value: .version}] | from_entries' "$PSALM_DIR/vendor/composer/installed.json")"
 LOCK_SHA=''
@@ -174,23 +163,32 @@ VM_RAM_KB="$(vm_ram_kb)"
 
 # ------------------------------------------------------------ project helpers
 # Per-project state, reset by measure_project.
-NAME='' PROJ='' STATUS='' REASON='' LOG_TAIL='' T4_NOTE=''
+NAME='' PROJ='' PJ='' STATUS='' REASON='' LOG_TAIL='' T4_JSON=''
 IR='' MB='' WALL1='' CPU1='' RSS1='' WALL4='' RSS4='' MB4='' ISSUE_COUNT='' ISSUES_FILE=''
 EXIT_CODE='' SIGNAL='' OOM_KILLED='' ELAPSED_INSTALL='' ELAPSED_ANALYSIS=''
 
-# Failure excerpt: fatal-error lines first (valgrind noise would push them out), then the tail; <= 50 lines.
+# Failure excerpt of a log (fatal-error lines first, then the tail; <= 50 lines): lib/result.php, the same
+# function write-stubs.php uses.
 log_tail_of() {
-    local fatal_lines nfatal
-    [ -s "$1" ] || return 0
-    fatal_lines="$({ grep -E 'Fatal|Allowed memory|^PHP ' "$1" 2>/dev/null || true; } | tail -n 10)"
-    nfatal=0
-    if [ -n "$fatal_lines" ]; then nfatal="$(printf '%s\n' "$fatal_lines" | wc -l | tr -d ' ')"; fi
-    { [ -z "$fatal_lines" ] || printf '%s\n' "$fatal_lines"; tail -n $((50 - nfatal)) "$1"; } \
-        | awk 'NF && !seen[$0]++' | head -n 50 | cut -c1-500
+    "$PHP_BIN" -r 'require $argv[1]; echo perfLogTail($argv[2]) ?? "";' "$SCRIPT_DIR/lib/result.php" "$1"
 }
 
-# Keep the Psalm output next to the result: write-stubs.php and humans read it.
-keep_log() { tail -c 1048576 "$1" > "$OUT/$NAME.log" 2>/dev/null || true; }
+# Psalm streams its output straight into $OUT/<project>.log, so write-stubs.php finds the live tail of a run
+# the job never finished. Only afterwards is the log cut down to its last MiB.
+trim_log() {
+    local log="$OUT/$NAME.log"
+    [ -f "$log" ] || return 0
+    tail -c 1048576 "$log" > "$log.tmp" && mv "$log.tmp" "$log"
+}
+
+# Written before anything runs: write-stubs.php copies it into the stub of an interrupted project, so the stub
+# keeps the environment identity (fingerprint, CPU) the comparator needs.
+write_env_file() {
+    printf '%s' "$FINGERPRINTS" | jq --arg n "$NAME" --arg cpu "$CPU_MODEL" \
+        --argjson measured "$CPU_MEASURED" --argjson ram "$(num "$VM_RAM_KB")" \
+        '{fingerprint: .env[$n], soft: .soft[$n], cpu: $cpu, cpu_measured: $measured, vm_ram_kb: $ram}' \
+        > "$OUT/$NAME.env.json.tmp" && mv "$OUT/$NAME.env.json.tmp" "$OUT/$NAME.env.json"
+}
 
 write_result() {
     jq -n \
@@ -202,7 +200,8 @@ write_result() {
         --argjson issue_count "$(num "$ISSUE_COUNT")" --argjson issues_file "$(str "$ISSUES_FILE")" \
         --argjson exit_code "$(num "$EXIT_CODE")" --argjson signal "$(str "$SIGNAL")" \
         --argjson max_rss "$(num "$RSS1")" --argjson oom "${OOM_KILLED:-null}" \
-        --argjson lock_sha "$(str "$LOCK_SHA")" --argjson t4_note "$(str "$T4_NOTE")" \
+        --argjson lock_sha "$(str "$LOCK_SHA")" --argjson t4 "${T4_JSON:-null}" \
+        --arg cpu "$CPU_MODEL" --argjson cpu_measured "$CPU_MEASURED" \
         --argjson fingerprints "$FINGERPRINTS" --argjson packages "$PSALM_PACKAGES" \
         --argjson php "$(printf '%s' "$("$PHP_BIN" -r 'echo PHP_VERSION;')" | jq -Rs .)" \
         --argjson valgrind "$(str "$VALGRIND_REPORTED")" --argjson vm_ram "$(num "$VM_RAM_KB")" \
@@ -215,12 +214,13 @@ write_result() {
                       wall_t4: $wall4, rss_t4_kb: $rss4, psalm_mb_t4: $mb4},
             issue_count: $issue_count, issues_file: $issues_file,
             exit_code: $exit_code, signal: $signal, max_rss_kb: $max_rss, oom_killed: $oom,
-            lock_sha256: $lock_sha, t4_note: $t4_note,
+            lock_sha256: $lock_sha, t4: $t4,
             env: {fingerprint: $fingerprints.env[$project], soft: $fingerprints.soft[$project],
+                  cpu: $cpu, cpu_measured: $cpu_measured,
                   php: $php, valgrind: $valgrind, psalm_packages: $packages, vm_ram_kb: $vm_ram},
             elapsed_analysis: $elapsed_analysis, elapsed_install: $elapsed_install,
             log_tail: $log_tail
-        }' > "$OUT/$NAME.json"
+        }' > "$OUT/$NAME.json.tmp" && mv "$OUT/$NAME.json.tmp" "$OUT/$NAME.json"
 }
 
 # fetch_and_install <repo> <ref> <composer true|false> <setup snippet> <lock file or empty> <tag>
@@ -259,12 +259,12 @@ ensure_installed() {
 }
 export -f fetch_and_install ensure_installed
 
-# install_project: sets REASON on failure. Returns 1 on failure.
+# install_project: sets REASON on failure. Returns 1 on failure. The install output goes to $OUT/<project>.log
+# (the analysis log replaces it), the kill limit is the project's INSTALL_TIMEOUT.
 install_project() {
     local repo ref tag composer setup config lock_dir lock stamp rc=0 guard
-    repo="$(pf '.repo')" ref="$(pf '.ref')" tag="$(pf '.tag // ""')"
-    composer="$(pf 'if .composer == false then "false" else "true" end')"
-    setup="$(pf '.setup // ""')" config="$(pf '.config // $n')" lock_dir="$(pf '.lock // .config // $n')"
+    repo="$(pf '.repo')" ref="$(pf '.ref')" tag="$(pf '.tag')" composer="$(pf '.composer')"
+    setup="$(pf '.setup')" config="$(pf '.config')" lock_dir="$(pf '.lock')"
     if [ ! -f "$CORPUS_DIR/$config/psalm.xml" ]; then
         REASON="missing corpus config $CORPUS_DIR/$config/psalm.xml"
         return 1
@@ -277,12 +277,12 @@ install_project() {
     if [ -n "$TIMEOUT_BIN" ]; then guard=("$TIMEOUT_BIN" -k 20 "$INSTALL_TIMEOUT"); fi
     export PROJ
     "${guard[@]}" bash -c 'ensure_installed "$@"' _ "$repo" "$ref" "$composer" "$setup" "$lock" "$tag" "$stamp" \
-        > "$WORK/$NAME.setup.log" 2>&1 < /dev/null || rc=$?
+        > "$OUT/$NAME.log" 2>&1 < /dev/null || rc=$?
     if [ "$rc" -eq 124 ]; then
         REASON="install exceeded ${INSTALL_TIMEOUT}s"
         return 1
     elif [ "$rc" -ne 0 ]; then
-        REASON="install failed: $(grep -v '^[[:space:]]*$' "$WORK/$NAME.setup.log" | tail -n 1 | cut -c1-300)"
+        REASON="install failed: $(grep -v '^[[:space:]]*$' "$OUT/$NAME.log" | tail -n 1 | cut -c1-300)"
         return 1
     fi
 
@@ -352,53 +352,62 @@ parse_time() {
     fi
 }
 
-# classify_run <log> <report> <limit seconds>: sets RUN_STATUS (ok|crash|timeout) for the run just made.
+# Exit status of the run just made in the shell convention (128 + signal when /usr/bin/time saw one). Needs parse_time.
+run_exit_code() {
+    if [ -n "$TIME_SIGNAL" ]; then echo $((128 + TIME_SIGNAL)); else echo "$RUN_RC"; fi
+}
+
+# classify_run <log> <report> <limit seconds>: sets RUN_STATUS (ok|crash|timeout) for the run just made (parse_time first).
+# ok = Psalm exited 0 (no issues) or 2 (issues found) AND printed its "Checks took" line AND wrote a report.
+# Any other exit or signal, even after the report was written, is a crash.
 # A KILLed process after timeout's grace period exits 137, the same as an OOM kill: tell them apart by wall time.
 RUN_STATUS=''
 classify_run() {
+    local rc
+    rc="$(run_exit_code)"
     if [ "$RUN_RC" -eq 124 ] || { [ "$RUN_RC" -eq 137 ] && awk -v w="$RUN_WALL" -v l="$3" 'BEGIN { exit !(w >= l) }'; }; then
         RUN_STATUS=timeout
-    elif grep -q 'Checks took' "$1" && [ -s "$2" ]; then
+    elif { [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; } && grep -q 'Checks took' "$1" && [ -s "$2" ]; then
         RUN_STATUS=ok
     else
         RUN_STATUS=crash
     fi
 }
 
-# exit code and signal of the run just made, in the shell convention (128 + signal).
+# EXIT_CODE and SIGNAL of the t1 run just made.
 set_exit_info() {
-    EXIT_CODE=$RUN_RC SIGNAL=''
-    if [ -n "$TIME_SIGNAL" ]; then EXIT_CODE=$((128 + TIME_SIGNAL)); fi
+    EXIT_CODE="$(run_exit_code)" SIGNAL=''
     if [ "$EXIT_CODE" -gt 128 ] && [ "$EXIT_CODE" -le 192 ]; then SIGNAL="SIG$(kill -l $((EXIT_CODE - 128)))"; fi
 }
 
+# crash_reason <log> <report>
 crash_reason() {
     if [ "$RUN_OOM" = true ]; then REASON="killed by the kernel OOM killer"
     elif grep -q 'Allowed memory size' "$1"; then REASON="PHP memory limit exceeded"
     elif [ -n "$SIGNAL" ]; then REASON="killed by $SIGNAL"
+    elif grep -q 'Checks took' "$1" && [ -s "$2" ]; then REASON="Psalm exited with code $EXIT_CODE after finishing the analysis"
     else REASON="Psalm exited with code $EXIT_CODE without a report"
     fi
 }
 
-# t4 (push/dispatch, native only): only when 5 processes at 1.25 x expected_mb fit the 12 GB budget (J2).
+# t4 (push/dispatch, native only): only projects that pass the J2 memory rule (lib/corpus.php) run; the others
+# record the skip.
 run_t4() {
-    local res=$1 expected_mb limit_mb
-    expected_mb="$(pf '.expected_mb // empty')"
-    if [ -z "$expected_mb" ] || ! awk -v m="$expected_mb" 'BEGIN { exit !(5 * 1.25 * m <= 12288) }'; then
-        T4_NOTE="t4 skipped: memory budget"
+    local res=$1
+    if [ "$(pf '.t4_eligible')" != true ]; then
+        T4_JSON='{"skipped":"memory budget"}'
         return 0
     fi
-    limit_mb="$(awk -v m="$expected_mb" 'BEGIN { printf "%dM", int(1.25 * m + 0.999999) }')"
-    run_psalm 4 "$res/report-t4.json" "$res/t4.log" "$res/t4.time" '' "$limit_mb" "$TIMEOUT"
+    run_psalm 4 "$res/report-t4.json" "$res/t4.log" "$res/t4.time" '' "$(pf '.t4_limit_mb')M" "$TIMEOUT"
+    parse_time "$res/t4.time"
     classify_run "$res/t4.log" "$res/report-t4.json" "$TIMEOUT"
     if [ "$RUN_STATUS" = ok ]; then
         WALL4=$RUN_WALL
         MB4="$(parse_psalm_mb "$res/t4.log")"
-        parse_time "$res/t4.time"
         RSS4=$TIME_RSS_KB
     else
         # Informational run: the t1 result stands.
-        T4_NOTE="t4 failed: $RUN_STATUS"
+        T4_JSON="$(jq -nc --arg s "$RUN_STATUS" '{failed: $s}')"
         echo "run-shard: $NAME threads=4 run failed ($RUN_STATUS), metrics left empty" >&2
     fi
 }
@@ -409,23 +418,14 @@ fail_run() {
     LOG_TAIL="$(log_tail_of "$1")"
 }
 
-measure_project() {
-    NAME=$1
-    PROJ="$WORK/$NAME"
-    STATUS=ok REASON='' LOG_TAIL='' T4_NOTE=''
-    IR='' MB='' WALL1='' CPU1='' RSS1='' WALL4='' RSS4='' MB4='' ISSUE_COUNT='' ISSUES_FILE=''
-    EXIT_CODE='' SIGNAL='' OOM_KILLED='' ELAPSED_INSTALL='' ELAPSED_ANALYSIS=''
-    rm -f "$OUT/$NAME.json" "$OUT/$NAME.issues.json" "$OUT/$NAME.started" "$OUT/$NAME.log"
-    echo "== $NAME ($MODE)" >&2
-
-    TIMEOUT="$(pf '(.expected_seconds * 1.5 | ceil)')"
-    local t0 t1
+# The work of one project after its state is reset and its env file written. Always returns 0.
+measure_project_body() {
+    local t0 t1 log="$OUT/$NAME.log"
     t0="$(now)"
     if ! install_project; then
         STATUS=setup-failed
         ELAPSED_INSTALL="$(elapsed "$t0" "$(now)")"
-        LOG_TAIL="$(log_tail_of "$WORK/$NAME.setup.log")"
-        keep_log "$WORK/$NAME.setup.log"
+        LOG_TAIL="$(log_tail_of "$log")"
         write_result
         return 0
     fi
@@ -436,37 +436,37 @@ measure_project() {
     local res="$WORK/$NAME.results"
     rm -rf "$res"
     mkdir -p "$res"
-    run_psalm 1 "$res/report.json" "$res/t1.log" "$res/t1.time" "$res/cachegrind.out" "$MEMORY_LIMIT" "$TIMEOUT"
+    # The log replaces the install output and is written live (see trim_log).
+    run_psalm 1 "$res/report.json" "$log" "$res/t1.time" "$res/cachegrind.out" "$MEMORY_LIMIT" "$TIMEOUT"
     OOM_KILLED=$RUN_OOM
     ELAPSED_ANALYSIS=$RUN_WALL WALL1=$RUN_WALL
     parse_time "$res/t1.time"
     CPU1=$TIME_CPU RSS1=$TIME_RSS_KB
     set_exit_info
-    classify_run "$res/t1.log" "$res/report.json" "$TIMEOUT"
-    keep_log "$res/t1.log"
+    classify_run "$log" "$res/report.json" "$TIMEOUT"
 
     if [ "$RUN_STATUS" = timeout ]; then
-        fail_run "$res/t1.log"
+        fail_run "$log"
         REASON="analysis exceeded ${TIMEOUT}s"
-        if [ "$CPU_MEASURED" -eq 0 ]; then
+        if [ "$CPU_MEASURED" != true ]; then
             STATUS=inconclusive
             REASON="timeout on unmeasured CPU $CPU_MODEL"
         fi
         write_result
         return 0
     elif [ "$RUN_STATUS" = crash ]; then
-        fail_run "$res/t1.log"
-        crash_reason "$res/t1.log"
+        fail_run "$log"
+        crash_reason "$log" "$res/report.json"
         write_result
         return 0
     fi
 
-    MB="$(parse_psalm_mb "$res/t1.log")"
+    MB="$(parse_psalm_mb "$log")"
     if [ "$MODE" = cachegrind ]; then
         IR="$(awk '/^summary:/ {print $2; exit}' "$res/cachegrind.out" 2>/dev/null || true)"
         if [ -z "$IR" ]; then
             STATUS=crash REASON="cachegrind produced no summary"
-            LOG_TAIL="$(log_tail_of "$res/t1.log")"
+            LOG_TAIL="$(log_tail_of "$log")"
         fi
     fi
 
@@ -485,6 +485,22 @@ measure_project() {
         write_result
     fi
     rm -rf "$res"
+}
+
+measure_project() {
+    NAME=$1
+    PROJ="$WORK/$NAME"
+    PJ="$(printf '%s' "$INFO" | jq -c --arg n "$NAME" '.projects[] | select(.name == $n)')"
+    TIMEOUT="$(pf '.timeout')" INSTALL_TIMEOUT="$(pf '.install_timeout')"
+    STATUS=ok REASON='' LOG_TAIL='' T4_JSON=''
+    IR='' MB='' WALL1='' CPU1='' RSS1='' WALL4='' RSS4='' MB4='' ISSUE_COUNT='' ISSUES_FILE=''
+    EXIT_CODE='' SIGNAL='' OOM_KILLED='' ELAPSED_INSTALL='' ELAPSED_ANALYSIS=''
+    rm -f "$OUT/$NAME.json" "$OUT/$NAME.issues.json" "$OUT/$NAME.started" "$OUT/$NAME.log" "$OUT/$NAME.env.json"
+    echo "== $NAME ($MODE)" >&2
+
+    write_env_file
+    measure_project_body
+    trim_log
 }
 
 # ----------------------------------------------------------------------- main

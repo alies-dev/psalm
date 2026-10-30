@@ -14,13 +14,19 @@ declare(strict_types=1);
  *       --fingerprints <fingerprint.php output of head's environment> --locks-info <json> --harness-sha <sha>
  *       --out-expected <file> [--include-disabled <csv>]
  *
- *   stdout: {"measure": [...], "extra": [...], "notes": [...]}; --out-expected gets expected.json.
- *   `measure` is empty when the head lock failed. Exit 0, 2 on usage or corpus errors.
+ *   stdout: {"measure": [...], "extra": [...], "notes": [...], "t4_skipped": [{"project", "reason"}]}; --out-expected
+ *   gets expected.json. `measure` and `extra` are empty when the head lock failed. A base lock_source of "failed"
+ *   (pull_request) means nothing is measured or reused for base and expected.json marks the base source "none".
+ *   t4_skipped (push/dispatch) lists the natives without a t4 pass because of the memory budget.
+ *   Reusing the bundle also needs locks-info base sha256 == the bundle manifest's lock_sha256. Exit 0, 2 on usage
+ *   or corpus errors.
  *
  * PERF_CORPUS overrides the corpus.json path (tests).
  */
 
 require __DIR__ . '/lib/cli.php';
+require __DIR__ . '/lib/corpus.php';
+require __DIR__ . '/lib/validate.php';
 require __DIR__ . '/lib/bundle.php';
 require __DIR__ . '/lib/plan.php';
 

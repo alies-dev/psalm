@@ -10,14 +10,17 @@ declare(strict_types=1);
  *                        --harness-sha <sha> --out <bundle dir>
  *   php bundle.php validate --dir <dir> --sha <sha>
  *
- * build: exit 0 and bundle written when every expected PR-tier head result is present and storable, exit 3
- *        (reasons on stderr, nothing written) otherwise. --lock-info is the whole locks-info.json; its "head"
- *        entry is used.
- * validate: exit 0 and the manifest on stdout, exit 1 (problems on stderr) when the bundle is not trustworthy.
+ * build: exit 0 and bundle written when every expected PR-tier head result is present and storable (it passes
+ *        perfResultProblems() of lib/validate.php, the validation compare.php applies, against the head sha and the
+ *        lock file), exit 3 (reasons on stderr, nothing written) otherwise. --lock-info is the whole
+ *        locks-info.json; its "head" entry is used.
+ * validate: exit 0 and the manifest on stdout, exit 1 (problems on stderr) when the bundle is not trustworthy
+ *        (every stored result is validated by the same rules against the manifest's sha and lock_sha256).
  * Exit 2: usage error.
  */
 
 require __DIR__ . '/lib/cli.php';
+require __DIR__ . '/lib/validate.php';
 require __DIR__ . '/lib/bundle.php';
 
 $fail = static function (string $message, int $code): never {

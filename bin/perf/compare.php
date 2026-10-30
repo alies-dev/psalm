@@ -11,10 +11,14 @@ declare(strict_types=1);
  *
  * Outcome per project: regression, compared, not comparable (base crash/timeout), inconclusive.
  * Verdict: any regression => fail > any inconclusive => inconclusive > pass. Push/dispatch runs have no base:
- * the report lists the head results and is a pass unless something is missing or invalid.
+ * the report lists the head results and is a pass unless a result is missing, invalid or setup-failed/inconclusive
+ * (a valid head crash or timeout is listed as not comparable, not a warning by itself).
+ * Result validation (sha, lock, mode, shard, status fields, issues file) lives in lib/validate.php.
  * Exit: 0 on success (the verdict is in summary.json), 2 on usage errors.
  */
 
+require __DIR__ . '/lib/corpus.php';
+require __DIR__ . '/lib/validate.php';
 require __DIR__ . '/lib/compare.php';
 require __DIR__ . '/lib/issues.php';
 require __DIR__ . '/lib/report.php';

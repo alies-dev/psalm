@@ -7,12 +7,15 @@ declare(strict_types=1);
  *
  * Usage: php write-stubs.php --corpus <corpus.json> --out <dir> --projects <csv> --sha <psalm sha>
  * Run once per rev directory. Existing <project>.json files are never touched.
- * Stub status: .started older than the project timeout => timeout; .started younger => inconclusive
- * (interrupted); no .started => setup-failed.
+ * Stub status: .started older than the project timeout => timeout (inconclusive on an unmeasured CPU); .started
+ * younger => inconclusive (interrupted); no .started => setup-failed.
+ * A stub carries the lock sha (.lock_sha256), the environment run-shard.sh recorded before analysis
+ * (<project>.env.json: fingerprint, soft, cpu, cpu_measured, vm_ram_kb) and the live tail of <project>.log.
+ * Without an env file the stub's env fingerprint is null and the comparator reports it as inconclusive.
  * Exit: 0 ok, 2 usage/corpus error.
  */
 
-require __DIR__ . '/lib/measure.php';
+require __DIR__ . '/lib/corpus.php';
 require __DIR__ . '/lib/result.php';
 
 $options = getopt('', ['corpus:', 'out:', 'projects:', 'sha:']);
@@ -40,7 +43,8 @@ foreach (perfSelectProjects($corpus, $names) as $name => $project) {
         continue;
     }
 
-    $outcome = perfStubOutcome("{$out}/{$name}.started", perfProjectTimeout($project), time());
+    $env = perfReadEnvFile("{$out}/{$name}.env.json");
+    $outcome = perfStubOutcome("{$out}/{$name}.started", perfAnalysisTimeout($project), time(), $env);
     $stub = perfStubResult(
         $name,
         perfShardId($project),
@@ -49,6 +53,7 @@ foreach (perfSelectProjects($corpus, $names) as $name => $project) {
         $outcome,
         perfLogTail("{$out}/{$name}.log"),
         $lockSha,
+        $env,
     );
 
     file_put_contents(

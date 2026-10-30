@@ -28,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Commit SHA or ref of Psalm to measure (default: the tip of the selected branch)'
+        description: 'Commit SHA or ref of Psalm to measure, must be part of the selected branch (default: its tip)'
         required: false
         type: string
       branch:
@@ -125,7 +125,7 @@ jobs:
 
       # Needed for the environment fingerprints (the valgrind package version is part of them).
       - name: Install valgrind
-        run: sudo apt-get install -y valgrind
+        run: sudo apt-get install -y valgrind || { sudo apt-get update -q && sudo apt-get install -y valgrind; }
 
       - name: Resolve revisions
         id: revisions
@@ -168,6 +168,12 @@ jobs:
               ;;
           esac
           [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Cannot resolve the revision to measure"; exit 1; }
+          # A dispatch runs the named code with the runner's cache-capable token under the branch's cache scope, so
+          # only commits that are already part of the branch may be measured (not e.g. refs/pull/N/head).
+          if [ "$EVENT" = workflow_dispatch ] && ! git merge-base --is-ancestor "$head_sha" "origin/$PERF_BRANCH"; then
+            echo "::error::${head_sha} is not part of ${PERF_BRANCH}: a dispatch may only measure commits of the selected branch"
+            exit 1
+          fi
 
           # Nearest first, at most 30 first-parent commits: the candidates for the base bundle.
           : > "$RUNNER_TEMP/ancestry.txt"
@@ -201,8 +207,9 @@ jobs:
           keys="$RUNNER_TEMP/bundle-keys.txt"
           : > "$keys"
           pages=0
+          listing_failed=0
           for page in 1 2 3 4 5; do
-            page_keys=$(list_keys "$prefix" "$page") || { echo "::warning::Listing caches failed"; break; }
+            page_keys=$(list_keys "$prefix" "$page") || { echo "::warning::Listing caches failed"; listing_failed=1; break; }
             pages=$page
             [ -n "$page_keys" ] && printf '%s\n' "$page_keys" >> "$keys"
             [ "$(printf '%s\n' "$page_keys" | grep -c .)" -eq 100 ] || break
@@ -213,7 +220,7 @@ jobs:
             if grep -Fxq "${prefix}${sha}" "$keys"; then bundle_sha=$sha; break; fi
           done < "$RUNNER_TEMP/ancestry.txt"
 
-          if [ -z "$bundle_sha" ] && [ "$pages" -gt 1 ]; then
+          if [ -z "$bundle_sha" ] && { [ "$pages" -gt 1 ] || [ "$listing_failed" -eq 1 ]; }; then
             while IFS= read -r sha; do
               found=$(list_keys "${prefix}${sha}") || continue
               if grep -Fxq "${prefix}${sha}" <<< "$found"; then bundle_sha=$sha; break; fi
@@ -294,11 +301,19 @@ jobs:
           head_mode=fallback
           if [ "$EVENT" = pull_request ]; then
             git show "${BASE_SHA}:composer.json" > "$work/base/composer.json"
+            rc=0
             php bin/perf/resolve-lock.php --start "$start" --composer-json "$work/base/composer.json" \
-              --mode fallback --out "$plan/base.lock" --info "$work/base/info.json"
+              --mode fallback --out "$plan/base.lock" --info "$work/base/info.json" || rc=$?
+            if [ "$rc" -eq 3 ]; then
+              echo "::warning title=Dependency resolution::The base's composer.json cannot be resolved, the base is not measured"
+            elif [ "$rc" -ne 0 ]; then
+              exit "$rc"
+            fi
             base_info=$(with_sha "$work/base/info.json" "$plan/base.lock")
-            head_start="$plan/base.lock"
-            head_mode=strict
+            if [ "$rc" -eq 0 ]; then
+              head_start="$plan/base.lock"
+              head_mode=strict
+            fi
           fi
 
           git show "${HEAD_SHA}:composer.json" > "$work/head/composer.json"
@@ -359,6 +374,7 @@ jobs:
 
           php bin/perf/select.php "${args[@]}" > "$RUNNER_TEMP/plan.json"
           jq . "$RUNNER_TEMP/plan.json"
+          cp "$RUNNER_TEMP/plan.json" "$plan_dir/plan.json"
 
           jq -r '.notes[]?' "$RUNNER_TEMP/plan.json" | while IFS= read -r note; do
             echo "::warning title=Perf plan::$note"
@@ -415,7 +431,7 @@ jobs:
 
       - name: Install valgrind
         if: matrix.mode == 'cachegrind'
-        run: sudo apt-get install -y valgrind
+        run: sudo apt-get install -y valgrind || { sudo apt-get update -q && sudo apt-get install -y valgrind; }
 
       - name: Download plan
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -452,6 +468,19 @@ jobs:
           if [ -n "$PROJECTS" ]; then args+=(--projects "$PROJECTS"); fi
           harness/bin/perf/run-shard.sh "${args[@]}"
 
+      # Directly after the base run so that a project interrupted by the step timeout is stubbed with the elapsed
+      # time it really had. Interrupted or failed shards still produce a result per expected project (timeout,
+      # inconclusive or setup-failed) instead of a bare "missing".
+      - name: Write stub results (base)
+        if: ${{ (failure() || cancelled()) && contains(matrix.revs, 'base') }}
+        env:
+          PROJECTS: ${{ join(matrix.base_projects, ',') }}
+          PSALM_SHA: ${{ needs.prepare.outputs.base_sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out/base"
+          php harness/bin/perf/write-stubs.php --corpus harness/bin/perf/corpus.json \
+            --out "$RUNNER_TEMP/out/base" --projects "$PROJECTS" --sha "$PSALM_SHA"
+
       # A failed base must not prevent measuring the head: the report marks the project inconclusive instead.
       - name: Checkout Psalm (head)
         if: ${{ !cancelled() && contains(matrix.revs, 'head') }}
@@ -481,18 +510,7 @@ jobs:
           if [ -n "$PROJECTS" ]; then args+=(--projects "$PROJECTS"); fi
           harness/bin/perf/run-shard.sh "${args[@]}"
 
-      # Interrupted or failed shards still produce a result per expected project (timeout, inconclusive or
-      # setup-failed) instead of a bare "missing".
-      - name: Write stub results (base)
-        if: ${{ (failure() || cancelled()) && contains(matrix.revs, 'base') }}
-        env:
-          PROJECTS: ${{ join(matrix.base_projects, ',') }}
-          PSALM_SHA: ${{ needs.prepare.outputs.base_sha }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/out/base"
-          php harness/bin/perf/write-stubs.php --corpus harness/bin/perf/corpus.json \
-            --out "$RUNNER_TEMP/out/base" --projects "$PROJECTS" --sha "$PSALM_SHA"
-
+      # Existing results are never overwritten, so the head stub is a no-op for projects that finished.
       - name: Write stub results (head)
         if: ${{ (failure() || cancelled()) && contains(matrix.revs, 'head') }}
         env:
@@ -546,7 +564,7 @@ jobs:
 
       - name: Install valgrind
         if: matrix.mode == 'cachegrind'
-        run: sudo apt-get install -y valgrind
+        run: sudo apt-get install -y valgrind || { sudo apt-get update -q && sudo apt-get install -y valgrind; }
 
       - name: Download plan
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -796,7 +814,7 @@ jobs:
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # Only commits that are part of the branch are published (a dispatch may name any ref).
+      # Defence in depth: prepare already restricts dispatches to commits of the branch.
       - name: Checkout Psalm history
         if: steps.key.outputs.enabled == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -819,6 +837,15 @@ jobs:
             echo "::notice title=perf-data::${HEAD_SHA} is not part of ${PERF_BRANCH}, not publishing."
             echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Checkout harness
+        if: steps.ancestry.outputs.publish == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.harness_sha }}
+          path: harness
+          sparse-checkout: bin/perf
+          persist-credentials: false
 
       - name: Set up PHP
         if: steps.ancestry.outputs.publish == 'true'
@@ -861,18 +888,25 @@ jobs:
           path: perf-data
 
       # Per-project metrics and fingerprints only: no issue lists. The threads=4 numbers come from the extra tier;
-      # everything else from the measurement the report was based on. The shared library hashes are collapsed into
-      # one hash to keep the records small.
+      # everything else from the measurement the report was based on. Disabled projects (measured via
+      # include_disabled for sizing) stay in the job summary only. The shared library hashes are collapsed into
+      # one hash to keep the records small. A dispatch never overwrites a record that already exists.
       - name: Write record
         if: steps.ancestry.outputs.publish == 'true'
         env:
+          EVENT: ${{ github.event_name }}
           HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
         run: |
+          target="perf-data/results/${PERF_BRANCH}/${HEAD_SHA}.json"
+          if [ "$EVENT" = workflow_dispatch ] && [ -e "$target" ]; then
+            echo "::notice title=perf-data::A record for ${HEAD_SHA} already exists, a dispatch does not overwrite it."
+            exit 0
+          fi
           cat > "$RUNNER_TEMP/record.php" <<'PHP'
           <?php
           declare(strict_types=1);
 
-          [, $measuredDir, $extraDir, $planDir, $out, $branch, $sha] = $argv;
+          [, $measuredDir, $extraDir, $planDir, $out, $branch, $sha, $corpusFile] = $argv;
 
           $read = static function (string $file): array {
               return json_decode(file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
@@ -900,6 +934,12 @@ jobs:
                   }
               }
           }
+          $corpus = $read($corpusFile);
+          foreach (array_keys($projects) as $name) {
+              if (($corpus['projects'][$name]['disabled'] ?? null) !== null) {
+                  unset($projects[$name]);
+              }
+          }
           if ($projects === []) {
               fwrite(STDERR, "No project results found\n");
               exit(1);
@@ -919,6 +959,7 @@ jobs:
 
           $expected = $read($planDir . '/expected.json');
           $locks = $read($planDir . '/locks-info.json');
+          $plan = is_file($planDir . '/plan.json') ? $read($planDir . '/plan.json') : [];
           file_put_contents(
               $out,
               json_encode(
@@ -929,6 +970,7 @@ jobs:
                       'harness_sha' => $expected['harness_sha'] ?? null,
                       'lock_source' => $locks['head']['lock_source'] ?? null,
                       'lock_sha256' => $locks['head']['sha256'] ?? null,
+                      't4_skipped' => $plan['t4_skipped'] ?? [],
                       'projects' => $projects,
                   ],
                   JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
@@ -937,7 +979,7 @@ jobs:
           PHP
           mkdir -p "perf-data/results/${PERF_BRANCH}"
           php "$RUNNER_TEMP/record.php" "$RUNNER_TEMP/measured/head" "$RUNNER_TEMP/extra/head" "$RUNNER_TEMP/plan" \
-            "perf-data/results/${PERF_BRANCH}/${HEAD_SHA}.json" "$PERF_BRANCH" "$HEAD_SHA"
+            "$target" "$PERF_BRANCH" "$HEAD_SHA" harness/bin/perf/corpus.json
 
       - name: Push record
         if: steps.ancestry.outputs.publish == 'true'

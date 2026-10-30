@@ -189,6 +189,7 @@
             ],
             "expected_seconds": 205,
             "expected_install_seconds": 130,
+            "install_timeout": 240,
             "expected_mb": 3373,
             "exercises": "very wide codebase (about 4400 files), PHP 8.4+ features (property hooks, asymmetric visibility), many small independent components, polyfills, heavy interface graphs"
         },
@@ -276,6 +277,7 @@
             ],
             "expected_seconds": 336,
             "expected_install_seconds": 200,
+            "install_timeout": 300,
             "expected_mb": 11762,
             "exercises": "procedural global-function code (allFunctionsGlobal), global state and superglobals, no autoloader, extraFiles for vendored libraries, huge taint surface",
             "composer": false,

@@ -30,6 +30,7 @@ perf-comment.yml (workflow_run, default branch) ── sticky PR comment from pe
 | `fingerprint.php` | Environment fingerprints (hard) and soft fingerprints |
 | `resolve-lock.php` | Psalm's own `composer.lock` for base and head |
 | `run-shard.sh` | Measures all projects of one shard for one Psalm checkout |
+| `project-info.php` | Sizing answers for one shard (mode, memory limit, timeouts, `t4_eligible`, CPU), printed as JSON |
 | `write-stubs.php` | Result stubs for shards that were interrupted or failed |
 | `bundle.php` | Builds and validates the base bundle |
 | `normalize-issues.php` | Psalm's `report.json` to a stable, sorted issue list |
@@ -43,6 +44,20 @@ Two modes, chosen per shard:
 
 * `cachegrind`: one run under `valgrind --tool=cachegrind`. Records `Ir` (stable to about 0.001 %), Psalm MiB, issues.
 * `native`: wall time, CPU time, max RSS, Psalm MiB, issues. Post-merge only: a second run with `--threads=4`.
+
+`run-shard.sh` asks `project-info.php --corpus <corpus.json> --shard <id> [--projects <csv>]` once per shard instead of re-implementing the sizing rules in shell. It prints `mode`, `memory_limit`, `cpu`, `cpu_measured` and, per selected project, the pinned repo and ref, `timeout`, `install_timeout`, `expected_mb`, `t4_eligible` and `t4_limit_mb`. It exits 2 on an unknown shard or project, or when the mode has no memory limit.
+
+Before analysing a project, `run-shard.sh` writes `<project>.env.json` (`fingerprint`, `soft`, `cpu`, `cpu_measured`, `vm_ram_kb`) next to the result. `write-stubs.php` copies it into the stub of a project that was interrupted, so the stub keeps the environment identity the comparator needs.
+
+The result file `<project>.json` carries a `t4` field for the threads=4 run of native projects:
+
+| `t4` | Meaning |
+|---|---|
+| `null` | No threads=4 result to explain: the run succeeded (its metrics are `wall_t4`, `rss_t4_kb`, `psalm_mb_t4`) or was not requested |
+| `{"skipped": "memory budget"}` | `run-shard.sh --threads4` met a project that is not `t4_eligible` and did not attempt the run |
+| `{"failed": "<status>"}` | The threads=4 run ended with that status; its metrics stay empty and the threads=1 result stands |
+
+Natives that are not eligible are listed in the plan's `t4_skipped` (`{"project", "reason"}`) and published in the `t4_skipped` field of the `perf-data` record.
 
 ### Which base is used
 
@@ -117,7 +132,7 @@ Queueing is outside the workflow's control: `ci.yml` starts about 45 jobs and th
    }
    ```
 
-   Optional fields: `"composer": false` (skip install), `"setup": "<shell run in the project root before install>"`, `"config": "<corpus dir>"` (take `psalm.xml` from another directory), `"lock": "<project>"` (reuse another project's `composer.lock`).
+   Optional fields: `"composer": false` (skip install), `"setup": "<shell run in the project root before install>"`, `"config": "<corpus dir>"` (take `psalm.xml` from another directory), `"lock": "<project>"` (reuse another project's `composer.lock`), `"install_timeout": <seconds>` (overrides the global install timeout of `corpus.json` for a project whose install is slower than the default; size it above `expected_install_seconds`).
 
 3. Create `corpus/<name>/psalm.xml`. Paths resolve against the project root. Do not set `loadLibraryPlugins`.
 
@@ -171,7 +186,9 @@ To size a disabled project without enabling it, dispatch the workflow with `incl
 gh workflow run perf.yml --ref master -f include_disabled=wordpress
 ```
 
-The project runs in the extra tier (memory rule skipped), never saves a base, and its measured MiB appear in the job summary of the `publish` job.
+The project runs in the extra tier (memory rule skipped) and never saves a base. Its measured MiB appear in the job summary of the `publish` job only: disabled projects are not written to `psalm/perf-data`. A project with a slow install needs its own `install_timeout` first.
+
+A dispatch may only measure commits that are already part of the selected branch (`ref` defaults to its tip). `prepare` rejects any other ref, including `refs/pull/<n>/head`, because dispatched code runs with the branch's cache scope. A dispatch never overwrites a `results/<branch>/<sha>.json` that already exists in `psalm/perf-data`.
 
 ## Run locally
 
@@ -198,9 +215,9 @@ php bin/perf/fingerprint.php --corpus bin/perf/corpus.json --projects amphp-amp
 
 ## Projects that are not in the PR tier
 
-`wordpress` carries a `disabled` reason in `corpus.json`: on master its Psalm peak is about 11.7 GiB because of the taint bug (vimeo/psalm#12618, #12561), which leaves no headroom under the 12G native limit. Re-enable it after those fixes land: re-measure `expected_mb` (about 2.8 GiB with the fix), remove `disabled`, and assign it to a shard.
+`wordpress` carries a `disabled` reason in `corpus.json`: on master its Psalm peak is about 11.7 GiB because of the taint bug (vimeo/psalm#12618, #12561), which leaves no headroom under the 12G native limit. Re-enable it after those fixes land: re-measure `expected_mb` (about 2.8 GiB with the fix) and remove `disabled`. It is already assigned to the post-merge shard `nat-wordpress`; to measure it on pull requests, move it to a PR-tier shard, or leave it post-merge.
 
-The post-merge tier (`measure-extra`, push and dispatch only) runs the full `doctrine-orm`, `psl`, `phpunit` and `php-parser` under cachegrind, and the threads=4 runs. A native project gets a threads=4 run only if 5 processes at 1.25 times `expected_mb` fit in 12 GB; today that qualifies only `laravel`. `select.php plan` prints a warning when no native project qualifies. The others record "t4 skipped: memory budget".
+The post-merge tier (`measure-extra`, push and dispatch only) runs the full `doctrine-orm`, `psl`, `phpunit` and `php-parser` under cachegrind, and the threads=4 runs. Only PR-tier native projects are considered for a threads=4 run, and only those for which 5 processes at 1.25 times `expected_mb` fit in 12 GB get one; today that qualifies only `laravel`. `select.php plan` prints a warning when no native project qualifies. The other PR-tier native projects never reach `measure-extra`; the plan lists them as `t4_skipped` (memory budget), and `publish` stores that list in the `t4_skipped` field of the `perf-data` record.
 
 ## Security model
 

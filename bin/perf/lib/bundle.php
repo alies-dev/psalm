@@ -22,25 +22,25 @@ function fileSha256(string $path): ?string
 }
 
 /**
- * Problems that make a result unusable as a stored head result of a bundle.
+ * Problems that make a result unusable as a stored head result of a bundle: the project name, a storable status
+ * and everything perfResultProblems() (the validation of the report) demands of it.
  *
  * @param array<mixed> $result decoded <project>.json
  * @param array<mixed> $expected expected.json entry of the project
+ * @param string $lockSha sha256 of the Psalm lock the head results were measured with
  * @return list<string>
  */
-function storableResultProblems(string $dir, string $project, array $result, array $expected, string $sha): array
-{
+function storableResultProblems(
+    string $dir,
+    string $project,
+    array $result,
+    array $expected,
+    string $sha,
+    string $lockSha,
+): array {
     $problems = [];
-    $wanted = [
-        'project' => $project,
-        'psalm_sha' => $sha,
-        'shard' => $expected['shard'] ?? null,
-        'mode' => $expected['mode'] ?? null,
-    ];
-    foreach ($wanted as $key => $want) {
-        if (($result[$key] ?? null) !== $want) {
-            $problems[] = "{$key} is " . json_encode($result[$key] ?? null) . ", expected " . json_encode($want);
-        }
+    if (($result['project'] ?? null) !== $project) {
+        $problems[] = 'project is ' . json_encode($result['project'] ?? null) . ", expected {$project}";
     }
 
     $status = $result['status'] ?? null;
@@ -48,41 +48,13 @@ function storableResultProblems(string $dir, string $project, array $result, arr
         return [...$problems, 'status ' . json_encode($status) . ' cannot be stored (setup-failed or unknown)'];
     }
 
-    if ($status !== 'ok') {
-        if (empty($result['reason']) && empty($result['log_tail'])) {
-            $problems[] = "status {$status} has neither reason nor log_tail";
-        }
-    } else {
-        array_push($problems, ...okResultProblems($dir, $result));
-    }
+    $mode = is_string($expected['mode'] ?? null) ? $expected['mode'] : '';
+    $identity = ['sha' => $sha, 'lock_sha256' => $lockSha];
+    array_push($problems, ...perfResultProblems($result, $identity, $expected, $mode, $dir));
 
     $fingerprint = $result['env']['fingerprint'] ?? null;
     if (in_array($status, BUNDLE_REUSABLE_STATUSES, true) && !isSha256($fingerprint)) {
         $problems[] = 'env.fingerprint is missing';
-    }
-
-    return $problems;
-}
-
-/**
- * @param array<mixed> $result
- * @return list<string>
- */
-function okResultProblems(string $dir, array $result): array
-{
-    $problems = [];
-    $metrics = $result['metrics'] ?? [];
-    if (!is_numeric($metrics['psalm_mb'] ?? null)) {
-        $problems[] = 'metrics.psalm_mb is missing';
-    }
-
-    if (($result['mode'] ?? null) === 'cachegrind' && !is_numeric($metrics['ir'] ?? null)) {
-        $problems[] = 'metrics.ir is missing';
-    }
-
-    $issues = is_string($result['issues_file'] ?? null) ? basename($result['issues_file']) : '';
-    if ($issues === '' || !is_file($dir . '/' . $issues)) {
-        $problems[] = 'issues file is missing';
     }
 
     return $problems;
@@ -138,7 +110,8 @@ function buildBundle(
             continue;
         }
 
-        foreach (storableResultProblems($headDir, $name, $result, $entry, (string) $sha) as $problem) {
+        $found = storableResultProblems($headDir, $name, $result, $entry, (string) $sha, (string) $lockSha);
+        foreach ($found as $problem) {
             $problems[] = "{$name}: {$problem}";
         }
 
@@ -232,6 +205,10 @@ function validateBundle(string $dir, string $sha): array
         }
     }
 
+    if (!isSha256($manifest['lock_sha256'] ?? null)) {
+        $problems[] = 'manifest lock_sha256 is missing';
+    }
+
     if (fileSha256("{$dir}/psalm-composer.lock") !== ($manifest['lock_sha256'] ?? null)) {
         $problems[] = 'psalm-composer.lock does not match manifest lock_sha256';
     }
@@ -251,6 +228,8 @@ function validateBundle(string $dir, string $sha): array
 }
 
 /**
+ * Every stored result must pass the validation the report applies, against the manifest's sha and lock.
+ *
  * @param array<mixed> $manifest
  * @return list<string>
  */
@@ -271,13 +250,21 @@ function storedResultProblems(string $dir, array $manifest, string $sha, string 
     }
 
     $problems = [];
-    if (($result['project'] ?? null) !== $name || ($result['psalm_sha'] ?? null) !== $sha) {
-        $problems[] = 'project or psalm_sha of the result differs from the manifest';
+    if (($result['project'] ?? null) !== $name) {
+        $problems[] = 'project of the result differs from the manifest';
     }
 
     if (!in_array($result['status'] ?? null, BUNDLE_STORED_STATUSES, true)) {
         $problems[] = 'status ' . json_encode($result['status'] ?? null) . ' is not storable';
     }
+
+    $mode = $result['mode'] ?? null;
+    if ($mode !== 'cachegrind' && $mode !== 'native') {
+        $problems[] = 'mode is ' . json_encode($mode);
+    }
+
+    $expectedRev = ['sha' => $sha, 'lock_sha256' => $manifest['lock_sha256'] ?? null];
+    array_push($problems, ...perfResultProblems($result, $expectedRev, [], (string) $mode, "{$dir}/results"));
 
     if (($result['env']['fingerprint'] ?? null) !== $fingerprint) {
         $problems[] = 'env fingerprint differs from the manifest';
@@ -295,13 +282,21 @@ function storedResultProblems(string $dir, array $manifest, string $sha, string 
 }
 
 /**
- * Reuse rule: a stored ok/crash/timeout result measured in an identical environment.
+ * Reuse rule: a stored ok/crash/timeout result that the report would accept as the base of this run: same
+ * environment, same Psalm lock as the base's resolved lock, same shard and mode as in the current corpus, and
+ * valid by perfResultProblems().
  *
  * @param array<mixed> $manifest validated manifest
+ * @param array{env: string, lock_sha256: ?string, shard: string, mode: string} $want
  */
-function bundleResultReusable(string $dir, array $manifest, string $sha, string $name, string $headEnvFingerprint): bool
+function bundleResultReusable(string $dir, array $manifest, string $sha, string $name, array $want): bool
 {
-    if (($manifest['env_fingerprints'][$name] ?? null) !== $headEnvFingerprint) {
+    $lock = $manifest['lock_sha256'] ?? null;
+    if (!isSafeName($name)
+        || ($manifest['env_fingerprints'][$name] ?? null) !== $want['env']
+        || !isSha256($lock)
+        || $lock !== $want['lock_sha256']
+    ) {
         return false;
     }
 
@@ -309,6 +304,13 @@ function bundleResultReusable(string $dir, array $manifest, string $sha, string 
     $result = is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
 
     return is_array($result)
-        && ($result['psalm_sha'] ?? null) === $sha
-        && in_array($result['status'] ?? null, BUNDLE_REUSABLE_STATUSES, true);
+        && ($result['project'] ?? null) === $name
+        && in_array($result['status'] ?? null, BUNDLE_REUSABLE_STATUSES, true)
+        && perfResultProblems(
+            $result,
+            ['sha' => $sha, 'lock_sha256' => $lock],
+            ['shard' => $want['shard']],
+            $want['mode'],
+            "{$dir}/results",
+        ) === [];
 }
