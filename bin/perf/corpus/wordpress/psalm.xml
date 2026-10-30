@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<psalm
+    errorLevel="4"
+    resolveFromConfigFile="true"
+    findUnusedCode="false"
+    findUnusedBaselineEntry="false"
+    findUnusedIssueHandlerSuppression="false"
+    allFunctionsGlobal="true"
+    allConstantsGlobal="true"
+    xmlns="https://getpsalm.org/schema/config"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="https://getpsalm.org/schema/config vendor/vimeo/psalm/config.xsd"
+>
+    <projectFiles>
+        <directory name="src/wp-includes" />
+        <directory name="src/wp-admin" />
+        <ignoreFiles allowMissingFiles="true">
+            <directory name="src/wp-includes/ID3" />
+            <directory name="src/wp-includes/SimplePie" />
+            <directory name="src/wp-includes/Requests" />
+            <directory name="src/wp-includes/sodium_compat" />
+            <directory name="src/wp-includes/PHPMailer" />
+            <directory name="src/wp-includes/js" />
+        </ignoreFiles>
+    </projectFiles>
+    <extraFiles>
+        <directory name="src/wp-includes/ID3" />
+        <directory name="src/wp-includes/SimplePie" />
+        <directory name="src/wp-includes/Requests" />
+        <directory name="src/wp-includes/sodium_compat" />
+        <directory name="src/wp-includes/PHPMailer" />
+    </extraFiles>
+</psalm>

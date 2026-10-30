@@ -1,0 +1,503 @@
+name: Perf
+
+# Measures Psalm (Ir under cachegrind, peak memory, wall time) and diffs reported issues on a pinned corpus of
+# real projects, base vs head. See bin/perf/README.md. The sticky PR comment is posted by perf-comment.yml
+# (workflow_run), which is the only part with write access; this workflow never has secrets in PR context.
+
+on:
+  pull_request:
+    # Keep in sync with PERF_BRANCH below (trigger filters cannot read env).
+    branches: [master]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Commit SHA or ref of Psalm to measure (default: the selected branch)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # PRs: newest push wins. Pushes to the branch get their own group per commit so that no base result is dropped.
+  group: perf-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The single place that names the measured branch: Actions cache keys (perf-<branch>-<sha>-<shard>) and
+  # perf-data paths (results/<branch>/<sha>.json) are derived from it.
+  PERF_BRANCH: master
+  COMPOSER_ROOT_VERSION: dev-master
+  PERF_PHP_EXTENSIONS: intl, bcmath, gmp, mbstring, pcntl, posix, sodium, zip, xml, dom, simplexml, tokenizer, opcache
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    name: Select shards
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # gh cache list
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      cached: ${{ steps.select.outputs.cached }}
+      head_sha: ${{ steps.select.outputs.head_sha }}
+      base_sha: ${{ steps.select.outputs.base_sha }}
+      base_source: ${{ steps.select.outputs.base_source }}
+      pr_number: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          # pull_request checks out a synthetic merge commit by default; we measure the PR head itself.
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
+          # Full history (all branches) so that merge-base with origin/<base_ref> works without a further fetch.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select shards
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head_sha=$(git rev-parse HEAD)
+          args=(--event "$EVENT" --head-sha "$head_sha")
+          base_sha=
+          cached_csv=
+
+          if [ "$EVENT" = pull_request ]; then
+            base_sha=$(git merge-base "origin/$BASE_REF" "$head_sha")
+            prefix="perf-${PERF_BRANCH}-${base_sha}-"
+            # Shards whose base results were already produced by a push run on the base branch.
+            while IFS= read -r key; do
+              [ -n "$key" ] && cached_csv+="${cached_csv:+,}${key#"$prefix"}"
+            done < <(gh cache list --repo "$GITHUB_REPOSITORY" --key "$prefix" --limit 100 --json key --jq '.[].key')
+            args+=(--base-sha "$base_sha")
+            [ -n "$cached_csv" ] && args+=(--cached-shards "$cached_csv")
+          fi
+
+          php bin/perf/select.php "${args[@]}" > select.json
+          jq . select.json
+
+          base_measured=$(jq '[.matrix[] | select(.rev == "base")] | length' select.json)
+          if [ -n "$cached_csv" ] && [ "$base_measured" -eq 0 ]; then base_source=cached; else base_source=measured; fi
+
+          {
+            echo "matrix=$(jq -c '{include: .matrix}' select.json)"
+            echo "cached=$(jq -n -c --arg csv "$cached_csv" '$csv | split(",") | map(select(length > 0))')"
+            echo "head_sha=$head_sha"
+            echo "base_sha=$base_sha"
+            echo "base_source=$base_source"
+            echo "lock_shard=${cached_csv%%,*}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Base and head must run against the same dependency versions of Psalm, otherwise Packagist drift between
+      # the (possibly days old) cached base results and today's head shows up as a perf/issue difference.
+      # One composer.lock per run: taken from a cached base shard when there is one, else resolved here
+      # (for a PR from the base revision, otherwise from the revision under test).
+      - name: Restore lock of a cached base shard
+        id: lock-cache
+        if: steps.select.outputs.lock_shard != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ${{ runner.temp }}/out/head
+          key: perf-${{ env.PERF_BRANCH }}-${{ steps.select.outputs.base_sha }}-${{ steps.select.outputs.lock_shard }}
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.5'
+          tools: composer:v2
+          coverage: none
+          extensions: ${{ env.PERF_PHP_EXTENSIONS }}
+        env:
+          fail-fast: true
+
+      - name: Provide Psalm lock
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ steps.select.outputs.base_sha }}
+          CACHE_HIT: ${{ steps.lock-cache.outputs.cache-hit }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/psalm-lock"
+          cached="$RUNNER_TEMP/out/head/psalm-composer.lock"
+
+          if [ "$CACHE_HIT" = true ] && [ -f "$cached" ]; then
+            cp "$cached" "$RUNNER_TEMP/psalm-lock/composer.lock"
+            exit 0
+          fi
+
+          src="$GITHUB_WORKSPACE"
+          if [ "$EVENT" = pull_request ]; then
+            src="$RUNNER_TEMP/base-src"
+            git worktree add --detach "$src" "$BASE_SHA"
+          fi
+          (cd "$src" && composer update --no-dev --no-install --no-interaction --no-progress)
+          cp "$src/composer.lock" "$RUNNER_TEMP/psalm-lock/composer.lock"
+
+      - name: Upload Psalm lock
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-psalm-lock
+          path: ${{ runner.temp }}/psalm-lock
+          retention-days: 14
+
+  measure:
+    name: Measure ${{ matrix.rev }} ${{ matrix.shard }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      # Psalm would otherwise re-exec itself without opcache settings (vimeo/psalm#12694).
+      PSALM_ALLOW_XDEBUG: '1'
+    steps:
+      # The harness always comes from the PR head, also when measuring the base revision.
+      - name: Checkout harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+          path: harness
+          sparse-checkout: bin/perf
+          persist-credentials: false
+
+      - name: Checkout Psalm under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ matrix.sha }}
+          path: psalm
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.5'
+          tools: composer:v2
+          coverage: none
+          extensions: ${{ env.PERF_PHP_EXTENSIONS }}
+          ini-values: >-
+            memory_limit=-1,
+            opcache.enable=1,
+            opcache.enable_cli=1,
+            opcache.jit=0,
+            opcache.validate_timestamps=0,
+            opcache.file_update_protection=0,
+            opcache.max_accelerated_files=1000000,
+            opcache.interned_strings_buffer=64,
+            opcache.memory_consumption=512,
+            opcache.optimization_level=0x7FFEBFFF,
+            opcache.save_comments=1
+        env:
+          fail-fast: true
+
+      - name: Install valgrind
+        if: matrix.mode == 'cachegrind'
+        run: sudo apt-get install -y valgrind
+
+      - name: Get Composer Cache Directories
+        id: composer-cache
+        run: echo "files_cache=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache composer cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ${{ steps.composer-cache.outputs.files_cache }}
+          key: ${{ runner.os }}-composer-perf-${{ hashFiles('psalm/composer.json') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-perf-
+
+      - name: Download Psalm lock
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: perf-psalm-lock
+          path: ${{ runner.temp }}/psalm-lock
+
+      # Same dependency versions for base and head. When the revision changed composer.json (the shared lock is
+      # out of date for it) only that revision gets freshly resolved versions.
+      - name: Install Psalm dependencies
+        working-directory: psalm
+        run: |
+          cp "$RUNNER_TEMP/psalm-lock/composer.lock" composer.lock
+          if composer validate --no-check-all --no-check-publish --no-interaction; then
+            composer install --no-dev --no-interaction --no-progress
+          else
+            echo "::notice title=Psalm dependencies::Shared composer.lock is out of date for this revision, resolving fresh versions"
+            composer update --no-dev --no-interaction --no-progress
+          fi
+
+      - name: Run shard
+        env:
+          SHARD: ${{ matrix.shard }}
+          REV: ${{ matrix.rev }}
+        run: |
+          harness/bin/perf/run-shard.sh \
+            --shard "$SHARD" \
+            --psalm "$GITHUB_WORKSPACE/psalm" \
+            --out "$RUNNER_TEMP/out/$REV"
+
+      # Cached and uploaded with the results, so that later PRs reuse exactly these dependency versions.
+      - name: Keep Psalm lock with results
+        env:
+          REV: ${{ matrix.rev }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out/$REV"
+          cp psalm/composer.lock "$RUNNER_TEMP/out/$REV/psalm-composer.lock"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-${{ matrix.rev }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out/${{ matrix.rev }}
+          retention-days: 14
+          if-no-files-found: warn
+
+      # Pushes to the branch produce the base results that later PRs restore instead of re-measuring.
+      # The cache path is absolute and is restored to the same path (see restore-base).
+      - name: Save results for later PRs
+        if: github.event_name == 'push' && matrix.rev == 'head'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ${{ runner.temp }}/out/head
+          key: perf-${{ env.PERF_BRANCH }}-${{ matrix.sha }}-${{ matrix.shard }}
+
+  # Actions caches cannot be restored dynamically inside one job (one step per key), so each cached base shard is
+  # restored by a trivial matrix job that republishes it as the artifact `perf-base-<shard>`, exactly like a
+  # measured base shard. `report` then handles cached and measured base shards uniformly.
+  restore-base:
+    name: Restore base ${{ matrix.shard }}
+    needs: prepare
+    if: needs.prepare.outputs.cached != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.cached) }}
+    steps:
+      - name: Restore cached base results
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          # Same absolute path the cache was saved from (measure job, rev=head on push).
+          path: ${{ runner.temp }}/out/head
+          key: perf-${{ env.PERF_BRANCH }}-${{ needs.prepare.outputs.base_sha }}-${{ matrix.shard }}
+          fail-on-cache-miss: true
+
+      - name: Upload as base results
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-base-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out/head
+          retention-days: 14
+
+  report:
+    name: Compare and report
+    needs: [prepare, measure, restore-base]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+          path: harness
+          sparse-checkout: bin/perf
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.5'
+          coverage: none
+        env:
+          fail-fast: true
+
+      - name: Prepare directories
+        run: mkdir -p "$RUNNER_TEMP/base" "$RUNNER_TEMP/head" "$RUNNER_TEMP/report"
+
+      # Artifacts are flattened (<project>.json + <project>.issues.json), shards have disjoint projects.
+      - name: Download head results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: perf-head-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/head
+
+      - name: Download base results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: perf-base-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/base
+
+      # pr_number and head_sha are consumed (as untrusted data) by perf-comment.yml.
+      - name: Write comment metadata
+        env:
+          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+        run: |
+          printf '%s' "$PR_NUMBER" > "$RUNNER_TEMP/report/pr_number"
+          printf '%s' "$HEAD_SHA" > "$RUNNER_TEMP/report/head_sha"
+
+      - name: Compare
+        env:
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+          BASE_SOURCE: ${{ needs.prepare.outputs.base_source }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          args=(
+            --base "$RUNNER_TEMP/base"
+            --head "$RUNNER_TEMP/head"
+            --out-md "$RUNNER_TEMP/report/report.md"
+            --out-json "$RUNNER_TEMP/report/summary.json"
+            --head-sha "$HEAD_SHA"
+            --base-source "$BASE_SOURCE"
+            --run-url "$RUN_URL"
+          )
+          [ -n "$BASE_SHA" ] && args+=(--base-sha "$BASE_SHA")
+          php harness/bin/perf/compare.php "${args[@]}"
+          cat "$RUNNER_TEMP/report/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-report
+          path: ${{ runner.temp }}/report
+          retention-days: 14
+
+      - name: Enforce gate
+        run: |
+          # shellcheck disable=SC2016
+          php -r '
+            $s = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
+            if (($s["gate"] ?? null) === "fail") {
+                $reasons = str_replace(["\r", "\n"], " ", implode("; ", $s["reasons"] ?? []));
+                fwrite(STDERR, "::error title=Perf gate failed::" . $reasons . "\n");
+                exit(1);
+            }
+          ' "$RUNNER_TEMP/report/summary.json"
+
+  publish:
+    name: Publish to perf-data
+    needs: [prepare, measure, report]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      PERF_DATA_DEPLOY_KEY: ${{ secrets.PERF_DATA_DEPLOY_KEY }}
+    steps:
+      - name: Check deploy key
+        id: key
+        run: |
+          if [ -z "$PERF_DATA_DEPLOY_KEY" ]; then
+            echo "::notice title=perf-data::PERF_DATA_DEPLOY_KEY is not set, skipping publication of results."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up PHP
+        if: steps.key.outputs.enabled == 'true'
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.5'
+          coverage: none
+        env:
+          fail-fast: true
+
+      - name: Download head results
+        if: steps.key.outputs.enabled == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: perf-head-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/head
+
+      - name: Checkout perf-data
+        if: steps.key.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          repository: psalm/perf-data
+          ssh-key: ${{ secrets.PERF_DATA_DEPLOY_KEY }}
+          path: perf-data
+
+      - name: Write and push results
+        if: steps.key.outputs.enabled == 'true'
+        env:
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+        run: |
+          out="perf-data/results/${PERF_BRANCH}/${HEAD_SHA}.json"
+          mkdir -p "$(dirname "$out")"
+
+          # Per-project metrics and env only: no issue lists, no gate verdict.
+          # shellcheck disable=SC2016
+          php -r '
+            $projects = [];
+            foreach (glob($argv[1] . "/*.json") as $file) {
+                if (str_ends_with($file, ".issues.json")) {
+                    continue;
+                }
+                $r = json_decode(file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
+                $projects[$r["project"]] = array_intersect_key(
+                    $r,
+                    array_flip(["shard", "mode", "status", "metrics", "issue_count", "env"])
+                );
+            }
+            if ($projects === []) {
+                fwrite(STDERR, "No project results found in " . $argv[1] . "\n");
+                exit(1);
+            }
+            ksort($projects);
+            file_put_contents(
+                $argv[2],
+                json_encode(
+                    ["schema" => 1, "branch" => $argv[3], "psalm_sha" => $argv[4], "projects" => $projects],
+                    JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+                ) . "\n"
+            );
+          ' "$RUNNER_TEMP/head" "$out" "$PERF_BRANCH" "$HEAD_SHA"
+
+          cd perf-data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "results/${PERF_BRANCH}/${HEAD_SHA}.json"
+          if git diff --cached --quiet; then
+            echo "::notice title=perf-data::Results for ${HEAD_SHA} are already published."
+            exit 0
+          fi
+          git commit -m "perf(${PERF_BRANCH}): ${HEAD_SHA:0:12}"
+
+          branch=$(git rev-parse --abbrev-ref HEAD)
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${branch}"; then
+              exit 0
+            fi
+            echo "Push failed (attempt ${attempt}), rebasing and retrying"
+            git pull --rebase origin "$branch"
+          done
+          echo "::error title=perf-data::Could not push results after 3 attempts"
+          exit 1
