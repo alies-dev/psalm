@@ -7,7 +7,7 @@ name: Perf
 on:
   pull_request:
     # Keep in sync with PERF_BRANCH below (trigger filters cannot read env).
-    branches: [master]
+    branches: [master, alies-dev/perf-ci]
     types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - 'docs/**'
