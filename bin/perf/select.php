@@ -16,7 +16,11 @@ declare(strict_types=1);
  * Shards without projects are skipped. Exit: 0 ok, 2 usage/corpus error.
  */
 
-$defaultTimeoutMinutes = 15;
+// A job runs its projects one after another, each killed after its own `timeout` (default 900 s). The job limit
+// must outlive the sum of those plus setup and upload, or a hung project would cancel the job and lose the results
+// of the projects that did finish.
+$defaultProjectTimeoutSeconds = 900;
+$jobOverheadMinutes = 7;
 
 $fail = static function (string $message): never {
     fwrite(STDERR, "select: {$message}\n");
@@ -50,6 +54,8 @@ if (!is_array($corpus) || !is_array($corpus['shards'] ?? null) || !is_array($cor
 
 /** @var array<string, int> $projectCount */
 $projectCount = [];
+/** @var array<string, int> $shardSeconds */
+$shardSeconds = [];
 foreach ($corpus['projects'] as $name => $project) {
     foreach ($project['shards'] ?? [] as $shard) {
         if (!isset($corpus['shards'][$shard])) {
@@ -57,6 +63,8 @@ foreach ($corpus['projects'] as $name => $project) {
         }
 
         $projectCount[$shard] = ($projectCount[$shard] ?? 0) + 1;
+        $timeout = (int) ($project['timeout'] ?? $defaultProjectTimeoutSeconds);
+        $shardSeconds[$shard] = ($shardSeconds[$shard] ?? 0) + $timeout;
     }
 }
 
@@ -68,14 +76,17 @@ $add = static function (
     string $sha,
 ) use (
     &$matrix,
-    $defaultTimeoutMinutes,
+    $shardSeconds,
+    $jobOverheadMinutes,
 ): void {
     $matrix[] = [
         'shard' => $shard,
         'rev' => $rev,
         'sha' => $sha,
         'mode' => $def['mode'],
-        'timeout_minutes' => $def['timeout_minutes'] ?? $defaultTimeoutMinutes,
+        // native shards run every project twice (threads=1, threads=4)
+        'timeout_minutes' => $def['timeout_minutes']
+            ?? (int) ceil($shardSeconds[$shard] * ($def['mode'] === 'native' ? 2 : 1) / 60) + $jobOverheadMinutes,
     ];
 };
 
