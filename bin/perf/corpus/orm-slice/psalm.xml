@@ -1,4 +1,5 @@
 <?xml version="1.0"?>
+<!-- perf e2e: comment-only change -->
 <psalm
     errorLevel="3"
     resolveFromConfigFile="true"
