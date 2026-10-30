@@ -2,8 +2,8 @@ name: Perf comment
 
 # Posts the sticky perf report on the pull request. Runs from the default branch with a write token, therefore it
 # never checks out or executes anything from the pull request: the `perf-report` artifact produced by the
-# unprivileged Perf workflow is treated as untrusted data (validated, passed via files and env, never interpolated
-# into shell).
+# unprivileged Perf workflow is untrusted data. It is validated against GitHub's own metadata, passed via files and
+# env, and never interpolated into a shell script. Of summary.json only the `verdict` enum is ever read.
 
 on:
   workflow_run:
@@ -25,7 +25,8 @@ defaults:
 jobs:
   comment:
     name: Upsert PR comment
-    # "failure" is the normal outcome when the gate fails; the report must still be posted.
+    # "failure" is the normal outcome when the verdict is fail; the report must still be posted. Cancelled runs
+    # (superseded by a newer push) post nothing.
     if: >-
       github.event.workflow_run.event == 'pull_request' &&
       (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure')
@@ -42,12 +43,14 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
 
-      - name: Validate report and pull request
-        id: validate
+      - name: Validate report and build comment
+        id: build
         if: steps.download.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           dir="$RUNNER_TEMP/perf-report"
           skip() { echo "::notice title=Perf comment::$1"; echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0; }
@@ -59,29 +62,49 @@ jobs:
           report_sha=$(head -c 64 "$dir/head_sha" 2>/dev/null || true)
           [[ "$pr_number" =~ ^[0-9]{1,9}$ ]] || skip "Artifact has no valid pr_number."
           [[ "$report_sha" =~ ^[0-9a-f]{40}$ ]] || skip "Artifact has no valid head_sha."
+          [[ "$RUN_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || skip "Triggering run has no valid head sha."
           [ "$report_sha" = "$RUN_HEAD_SHA" ] || skip "Artifact head_sha does not match the triggering run."
 
-          # The PR must still point at the measured commit (a newer push has its own run and comment).
-          pr_head=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" --jq '.head.sha')
+          # The pull request must still point at the measured commit, from the same repository the run came from
+          # (a newer push has its own run and comment).
+          IFS=$'\t' read -r pr_head pr_repo < <(
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" --jq '[.head.sha, (.head.repo.full_name // "")] | @tsv'
+          )
           [ "$pr_head" = "$RUN_HEAD_SHA" ] || skip "PR #${pr_number} moved on to ${pr_head}, ignoring stale report."
+          [ "$pr_repo" = "$RUN_HEAD_REPO" ] || skip "PR #${pr_number} head repository does not match the triggering run."
 
-          # Marker is added here, not taken from the artifact. GitHub limits comments to 65536 characters.
-          {
-            echo '<!-- psalm-perf-report -->'
-            head -c 60000 "$dir/report.md" | iconv -f UTF-8 -t UTF-8 -c
-          } > "$RUNNER_TEMP/comment.md"
-          if [ "$(wc -c < "$dir/report.md")" -gt 60000 ]; then
-            printf '\n\n_Report truncated, see the workflow run for the full summary._\n' >> "$RUNNER_TEMP/comment.md"
+          verdict=$(jq -r '.verdict // empty' "$dir/summary.json" 2>/dev/null || true)
+          case "$verdict" in pass | inconclusive | fail) ;; *) verdict=unknown ;; esac
+
+          # Marker and mention neutralisation (zero width space after every @) are applied here; the artifact never
+          # supplies the marker. GitHub limits comments to 65536 characters.
+          marker='<!-- psalm-perf-report -->'
+          zwsp=$(printf '\342\200\213')
+          comment="$RUNNER_TEMP/comment.md"
+          limit=60000
+          neutralised() { { echo "$marker"; iconv -f UTF-8 -t UTF-8 -c < "$1" | sed "s/@/@${zwsp}/g"; } > "$comment"; }
+
+          neutralised "$dir/report.md"
+          if [ "$(wc -c < "$comment")" -gt "$limit" ]; then
+            if [ -f "$dir/report-short.md" ]; then neutralised "$dir/report-short.md"; else : > "$comment"; fi
+          fi
+          if [ "$(wc -c < "$comment")" -gt "$limit" ] || [ ! -s "$comment" ]; then
+            {
+              echo "$marker"
+              # shellcheck disable=SC2016
+              printf 'Perf report for `%s`: **%s**. The report is too large for a comment, see the [workflow run](%s).\n' \
+                "${RUN_HEAD_SHA:0:12}" "$verdict" "$RUN_URL"
+            } > "$comment"
           fi
 
           echo "ready=true" >> "$GITHUB_OUTPUT"
           echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
 
       - name: Upsert sticky comment
-        if: steps.validate.outputs.ready == 'true'
+        if: steps.build.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ steps.validate.outputs.pr_number }}
+          PR_NUMBER: ${{ steps.build.outputs.pr_number }}
         run: |
           comment_id=$(
             gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \

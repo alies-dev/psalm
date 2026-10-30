@@ -1,106 +1,219 @@
 # Psalm perf and issue-diff harness
 
-CI measures Psalm against a pinned corpus of real projects on every PR to master and compares the result with the base commit. It reports CPU cost (cachegrind instructions, `Ir`), Psalm's own peak memory, wall time, and the exact issues that were added, removed or changed. A PR fails the gate on a clear regression.
+CI measures Psalm against a pinned corpus of real projects on every non-draft PR to `master` and compares it with the PR's merge-base. It reports CPU cost (cachegrind instructions, `Ir`), Psalm's own peak memory, wall time, and the exact issues that were added, removed or changed. A clear regression fails the check; anything that could not be measured reliably is flagged, never silently ignored.
 
 ## How it works
 
 ```
-corpus.json              registry: shards and projects (pinned by commit SHA)
-corpus/<name>/           our psalm.xml and composer.lock for that project
-select.php               builds the CI job matrix (which shard, for which commit)
-run-shard.sh             measures all projects of one shard for one Psalm checkout
-normalize-issues.php     Psalm report.json into a stable, sorted issue list
-compare.php              base vs head into report.md and summary.json (gate verdict)
+pull_request / push / workflow_dispatch
+        |
+   prepare ── lint corpus, find the base bundle, resolve Psalm's composer locks,
+        |     fingerprint the environment, plan the matrix  ──> artifact perf-plan
+        |
+   measure (one job per shard; base first, then head, on the same runner)
+        |                                               ──> artifacts perf-<shard>
+   measure-extra (push/dispatch only: post-merge shards, threads=4 runs)
+        |                                               ──> artifacts perf-extra-<shard>
+   report ── compare.php, job summary, verdict          ──> artifact perf-report
+        |     (push only: save the base bundle)
+   publish (push/dispatch only) ── results/<branch>/<sha>.json in psalm/perf-data
+
+perf-comment.yml (workflow_run, default branch) ── sticky PR comment from perf-report
 ```
 
-Per project, `run-shard.sh` clones the pinned SHA, drops in our `composer.lock`, runs `composer install --no-dev`, copies our `psalm.xml` to `psalm-perf.xml` and runs Psalm with `--no-cache --no-progress --ignore-baseline --output-format=console --report=<json>`. Psalm re-exec is disabled (`PSALM_ALLOW_XDEBUG=1`) and the opcache settings are passed explicitly. `--threads` is always passed because `CI=true` would otherwise force one thread. `--memory-limit` comes from the top level `memory_limit` of `corpus.json` (default `12G`; Psalm ignores `php -d memory_limit`), so a blow-up ends as status `crash` with the fatal error in `log_tail`. `COMPOSER_ROOT_VERSION` is set to the project `tag` (without a leading `v`) for the composer install, for locks that depend on `self.version`.
-
-Two modes, chosen per shard in `corpus.json`:
-
-* `cachegrind`: one run under `valgrind --tool=cachegrind` with `--threads=1`. Records `Ir`, Psalm MB and the issues. Ir is stable to about 0.001 %.
-* `native`: `--threads=1` (wall, user+sys, max RSS, Psalm MB, issues) and `--threads=4` (wall, RSS, Psalm MB). No repeats.
-
-Output per project in `--out`: `<project>.json` (metrics, `status` of `ok|crash|timeout|setup-failed`, `env`, `log_tail`) and `<project>.issues.json`. The exit code of `run-shard.sh` stays 0 when a project crashes.
-
-Issues are normalized so two runs of the same Psalm are byte identical: paths relative to the project root, digit runs of 9 or more characters in messages replaced by `#` (runtime values like `REQUEST_TIME`), sorted. Issue identity is file, lines, columns, type and message. An added and a removed issue at the same file, line and type with different messages are shown as "changed".
-
-## Gate
-
-`compare.php` marks the PR as failed when, for any project and compared with base:
-
-| Metric | Fails when |
+| File | Purpose |
 |---|---|
-| `Ir` (cachegrind shards) | more than +3 % |
-| Psalm peak MB at threads=1 | more than +5 % |
-| status | head is `crash` or `timeout` where base was `ok` |
+| `corpus.json` | Registry: shards, projects (pinned by commit SHA), sizing |
+| `corpus/<name>/` | Our `psalm.xml` and `composer.lock` for that project |
+| `php-flags.txt` | Every `-d` flag of a Psalm run (also part of the environment fingerprint) |
+| `select.php` | `--lint` enforces the sizing rules; `plan` builds the job matrix and `expected.json` |
+| `fingerprint.php` | Environment fingerprints (hard) and soft fingerprints |
+| `resolve-lock.php` | Psalm's own `composer.lock` for base and head |
+| `run-shard.sh` | Measures all projects of one shard for one Psalm checkout |
+| `write-stubs.php` | Result stubs for shards that were interrupted or failed |
+| `bundle.php` | Builds and validates the base bundle |
+| `normalize-issues.php` | Psalm's `report.json` to a stable, sorted issue list |
+| `compare.php`, `lib/` | Base vs head into `report.md`, `report-short.md`, `summary.json` |
 
-Deltas below 0.5 % are shown as `≈`. Wall time and threads=4 numbers are informational. If base and head were measured with a different PHP, valgrind or harness (`bin/perf` content, except `README.md`), Ir and MB comparisons are marked invalid and not gated. Psalm's own dependency versions are not part of that check, so a dependency change made by a PR is gated like any other change.
+### What is measured
 
-Exit code of `compare.php` is 0 even when the gate fails; read `gate` in `summary.json`.
+Per project, `run-shard.sh` clones the pinned SHA, installs it from our `composer.lock` (bounded by `install_timeout`), then runs Psalm with `--no-cache --no-progress --ignore-baseline --threads=1 --output-format=console --report=<json>` and a memory limit from `corpus.json`. Analysis is bounded by `timeout` (1.5 times `expected_seconds`). The `loadLibraryPlugins="false"` attribute is injected into the project's config only when the tested Psalm's `config.xsd` declares it.
+
+Two modes, chosen per shard:
+
+* `cachegrind`: one run under `valgrind --tool=cachegrind`. Records `Ir` (stable to about 0.001 %), Psalm MiB, issues.
+* `native`: wall time, CPU time, max RSS, Psalm MiB, issues. Post-merge only: a second run with `--threads=4`.
+
+### Which base is used
+
+The base of a PR is its merge-base with the target branch. Measuring it on every PR would double the cost, so a push run on the branch saves a base bundle (all PR-tier head results plus the Psalm lock) under the cache key `perf-base-<branch>-<sha>`. Prepare walks up to 30 first-parent commits from the merge-base and uses the nearest bundle.
+
+* A bundle from an ancestor A of the merge-base provides results only if nothing outside `docs`, `*.md`, `.github`, `.circleci`, `tests` and `bin/perf` changed between A and the merge-base. Its lock is always the starting point for locking.
+* A cached result is reused per project when its status is `ok`, `crash` or `timeout` and its environment fingerprint equals the one prepare computed for the head. Everything else is measured fresh. A shard measures its base only if at least one of its projects needs it, and then only those projects.
+* Only push runs on protected branches (`master`) save bundles. Pull request and dispatch runs never do.
+* Every project's base has exactly one source (bundle or fresh), shown in `summary.json` as `base_source`.
+
+Psalm's own dependencies are pinned the same way: the base lock is derived from the bundle lock with `composer update --minimal-changes`, the head lock from the base lock (strict: the PR must not move unrelated packages unless its `composer.json` forces it). Packagist drift therefore never shows up as a perf difference, and packages that differ between the two locks are listed in the report footer.
+
+## Verdicts
+
+The first line of the report is the verdict, the head SHA and `N/M compared`.
+
+| Verdict | Meaning | Check |
+|---|---|---|
+| ✅ pass | Nothing regressed | succeeds |
+| ⚠️ inconclusive | At least one project could not be compared reliably | succeeds |
+| ❌ fail | At least one regression | fails |
+
+Per project:
+
+| Outcome | When |
+|---|---|
+| regression | `Ir` more than +3 % or Psalm MiB more than +5 % (both runs `ok`, same environment); head `crash` where base was `ok`; head `timeout` where base was `ok` and comfortably inside its timeout |
+| compared | both `ok` and the environment fingerprints are equal |
+| not comparable | base `crash` or `timeout`; listed, excluded from `N` |
+| inconclusive | `setup-failed`, `inconclusive`, missing or invalid result on either side; environment fingerprint mismatch; a timeout on a CPU model that was never measured; dependency resolution failed |
+
+Downgrades to inconclusive, so that noise never fails a PR:
+
+* A memory crash (PHP "Allowed memory size" fatal, or an OOM kill reported by the cgroup) when the base already used more than 80 % of the limit.
+* An `Ir` regression while the soft fingerprints (shared library hashes) differ between base and head. Memory regressions are never downgraded.
+* A timeout that the base's predicted time on the slowest CPU does not explain.
+
+Deltas below 0.5 % print as `≈`. Rows are marked `env differs` whenever shared libraries differ, and when a result is within 20 % of its timeout.
+
+Issues are compared as a multiset of file, lines, columns, type, severity and message (digit runs of 9 or more in messages are masked). "Changed" means same file, line and type with a different message or severity. Details are capped at 10 entries per list per project and 40 000 bytes in total.
+
+## Latency
+
+| Scenario | Time from push to report |
+|---|---|
+| Warm PR (bundle reusable, only head measured) | about 7 to 9 minutes plus queue |
+| Cold PR (no bundle or env changed, base and head share one runner) | about 13 to 16 minutes plus queue |
+
+Queueing is outside the workflow's control: `ci.yml` starts about 45 jobs and the organization has 20 slots. A PR shows `pending` until slots free up. The first PR after a harness change (`bin/perf`) or a runner image change is always cold for the affected projects.
 
 ## Add a project
 
 1. Pick a release tag and resolve its commit:
 
    ```bash
-   gh api repos/doctrine/orm/commits/3.7.5 --jq .sha
+   gh api repos/doctrine/orm/commits/3.7.6 --jq .sha
    ```
 
-2. Add the project to `corpus.json`. Optional fields: `"composer": false` (skip install, e.g. WordPress), `"setup": "<shell run in the project root before install>"`, `"config": "<other corpus dir>"` (take `psalm.xml` from another dir, for slices sharing a repo).
+2. Add it to `corpus.json` with a shard (a project belongs to exactly one) and its sizing:
 
    ```json
    "doctrine-orm": {
      "repo": "https://github.com/doctrine/orm",
-     "ref": "00c2fd70da291cca1ec75f4dae5344fe3df588fa",
-     "tag": "3.7.5",
-     "shards": ["cg-1"],
-     "timeout": 900,
-     "exercises": "deep class hierarchies, class-string<T> repositories, attributes metadata"
+     "ref": "4487f850401c0e1f27891cce5897fa90b3055c2a",
+     "tag": "3.7.6",
+     "shards": ["cg-orm"],
+     "expected_seconds": 300,
+     "expected_ir": 50000000000,
+     "expected_install_seconds": 20,
+     "expected_mb": 440,
+     "exercises": "deep class hierarchies, class-string<T> repositories"
    }
    ```
 
-3. Create `corpus/<name>/psalm.xml`. Paths resolve against the project checkout root. Do not set `loadLibraryPlugins`; the harness injects `loadLibraryPlugins="false"` when the tested Psalm supports it.
+   Optional fields: `"composer": false` (skip install), `"setup": "<shell run in the project root before install>"`, `"config": "<corpus dir>"` (take `psalm.xml` from another directory), `"lock": "<project>"` (reuse another project's `composer.lock`).
 
-4. Generate the lock (see below) and commit it as `corpus/<name>/composer.lock`.
+3. Create `corpus/<name>/psalm.xml`. Paths resolve against the project root. Do not set `loadLibraryPlugins`.
 
-5. Size cachegrind shards at about 75G Ir in total (roughly 8 minutes on the slowest runner CPU). Check with a local native run and the Ir of an earlier CI run.
+4. Generate the lock (below) into `corpus/<name>/composer.lock`.
+
+5. Measure it (see "Re-size") and fill in the `expected_*` numbers, then run `php bin/perf/select.php --lint`. Lint enforces the whole sizing contract and fails the CI run with a message instead of dropping a project:
+
+   * every enabled project has `expected_mb`, and the mode's memory limit is at least 1.25 times that
+   * a shard's projects fit the PR budget (`pr_budget_seconds`) on the slowest measured CPU
+   * no project is in two shards, and every shard exists
+   * `disabled`, if present, is a non-empty string
+
+   `expected_*` values come from the slowest CPU in `measured_cpus` and from the largest Psalm MiB seen in any measured run, including the master base.
 
 ## Bump a project, regenerate a lock
 
-Change `ref` and `tag`, then regenerate the lock against PHP 8.5 with the same flags the harness uses:
+Change `ref` and `tag`, then regenerate the lock with the harness' PHP version:
 
 ```bash
 git clone https://github.com/doctrine/orm /tmp/lock-orm
-git -C /tmp/lock-orm checkout 00c2fd70da291cca1ec75f4dae5344fe3df588fa
+git -C /tmp/lock-orm checkout 4487f850401c0e1f27891cce5897fa90b3055c2a
 cd /tmp/lock-orm
 rm -f composer.lock
 composer update --no-dev --no-scripts --no-plugins --ignore-platform-reqs --no-interaction
 cp composer.lock <psalm checkout>/bin/perf/corpus/doctrine-orm/composer.lock
 ```
 
-Any change under `bin/perf` changes the harness hash, so cached base results are measured again on the next PR.
+Project fields, `psalm.xml` and the lock are part of the environment fingerprint, so bumping a project makes only that project's cached base results stale. Any change to `run-shard.sh`, `normalize-issues.php` or `php-flags.txt` makes all of them stale.
 
-## Run a shard locally
+## Slice a project
 
-```bash
-bin/perf/run-shard.sh --shard cg-1 --psalm "$PWD" --out /tmp/perf-out/head
-bin/perf/run-shard.sh --shard cg-1 --psalm "$PWD" --out /tmp/perf-out/base   # another checkout for base
-php bin/perf/compare.php --base /tmp/perf-out/base --head /tmp/perf-out/head \
-    --out-md /tmp/perf-out/report.md --out-json /tmp/perf-out/summary.json
+Slices are separate projects that share the full project's `repo`, `ref` and lock, with a `psalm.xml` whose `projectFiles` cover a subset:
+
+```json
+"orm-slice": {
+  "repo": "https://github.com/doctrine/orm", "ref": "4487f850401c0e1f27891cce5897fa90b3055c2a", "tag": "3.7.6",
+  "config": "orm-slice", "lock": "doctrine-orm", "shards": ["cg-orm"],
+  "expected_seconds": 300, "expected_ir": 50000000000, "expected_mb": 440
+}
 ```
 
-`--psalm` is a Psalm checkout with its dependencies installed. `--work` (default `$RUNNER_TEMP/perf-work` or `/tmp/perf-work`) holds the project clones; an unchanged clone is reused on the next run.
+Aim for 35 to 55 G `Ir` per PR-tier cachegrind project so the slowest CPU stays within the budget. Estimate the share from the native time share of the directories, then confirm with a cachegrind run. The full project runs in the post-merge tier.
 
-Cachegrind needs Linux and valgrind. On macOS, force native mode for testing only:
+## Re-size
 
-```bash
-PERF_FORCE_MODE=native bin/perf/run-shard.sh --shard cg-1 --psalm "$PWD" --out /tmp/perf-out/head
-```
+Run the shard on a push or dispatch run (`measure-extra` and the PR tier both upload artifacts) and read `ir`, `psalm_mb`, `wall_t1` from `perf-<shard>/head/<project>.json`; take the maximum over a few runs on the slowest CPU model. For a cachegrind project `expected_seconds` is `expected_ir` divided by the slowest throughput (about 167 M `Ir`/s on the slowest CPU seen so far) plus overhead. When the report warns that a push run predicts more than 1.2 times `expected_seconds`, re-size.
 
-The result then has `mode: native` and no `Ir`, so it must never be compared against cachegrind results. `PERF_FORCE_MODE` is not used by CI.
-
-Build a CI matrix by hand:
+To size a disabled project without enabling it, dispatch the workflow with `include_disabled`:
 
 ```bash
-php bin/perf/select.php --event pull_request --head-sha <sha> --base-sha <sha> --cached-shards cg-1
+gh workflow run perf.yml --ref master -f include_disabled=wordpress
 ```
+
+The project runs in the extra tier (memory rule skipped), never saves a base, and its measured MiB appear in the job summary of the `publish` job.
+
+## Run locally
+
+```bash
+bin/perf/run-shard.sh --shard cg-orm --psalm "$PWD" --sha "$(git rev-parse HEAD)" --out /tmp/perf-out/head
+bin/perf/run-shard.sh --shard cg-orm --psalm ../psalm-base --sha <base sha> --out /tmp/perf-out/base
+jq '{project, status, metrics}' /tmp/perf-out/head/*.json
+```
+
+`--psalm` is a Psalm checkout with its dependencies installed. `--projects a,b` restricts the shard, `--work` holds the project clones (an unchanged clone is reused), `--threads4` adds the threads=4 run of native projects.
+
+Cachegrind needs Linux and valgrind. On macOS force native mode for a smoke test (the result has no `Ir` and must never be compared with cachegrind results; CI never sets this):
+
+```bash
+PERF_FORCE_MODE=native bin/perf/run-shard.sh --shard cg-orm --psalm "$PWD" --sha "$(git rev-parse HEAD)" --out /tmp/perf-out/head
+```
+
+Check the sizing rules and the fingerprints without running anything:
+
+```bash
+php bin/perf/select.php --lint
+php bin/perf/fingerprint.php --corpus bin/perf/corpus.json --projects amphp-amp
+```
+
+## Projects that are not in the PR tier
+
+`wordpress` carries a `disabled` reason in `corpus.json`: on master its Psalm peak is about 11.7 GiB because of the taint bug (vimeo/psalm#12618, #12561), which leaves no headroom under the 12G native limit. Re-enable it after those fixes land: re-measure `expected_mb` (about 2.8 GiB with the fix), remove `disabled`, and assign it to a shard.
+
+The post-merge tier (`measure-extra`, push and dispatch only) runs the full `doctrine-orm`, `psl`, `phpunit` and `php-parser` under cachegrind, and the threads=4 runs. A native project gets a threads=4 run only if 5 processes at 1.25 times `expected_mb` fit in 12 GB; today that qualifies only `laravel`. `select.php plan` prints a warning when no native project qualifies. The others record "t4 skipped: memory budget".
+
+## Security model
+
+* `prepare`, `measure` and `report` run PR code with a read-only token and no secrets. Fork PRs work the same way.
+* The deploy key for `psalm/perf-data` exists only in `publish`, which never runs on `pull_request` and publishes only commits that are ancestors of the branch.
+* `perf-comment.yml` runs from the default branch, never checks out PR code, and treats the `perf-report` artifact as untrusted: `pr_number` and `head_sha` must match GitHub's own metadata for the run and the PR, mentions are neutralised, oversized reports fall back to a short report and then to a constant text built by the poster.
+* Base bundles are saved only by the `report` job of a push run on a protected branch, with a key built from `github.sha`. Caches written by PR runs live in the PR's own ref scope and are never found by branch runs or by other PRs.
+
+## Enable another branch (6.x)
+
+1. Add the branch to `branches` in `corpus.json`.
+2. Add it to the `branches` of the `pull_request` and `push` triggers in `.github/workflows/perf.yml`. Trigger filters cannot read variables, so this stays a literal list.
+3. Make sure the branch contains `bin/perf` and `perf.yml` (pull request runs use the workflow file of the PR's merge ref). `perf-comment.yml` only needs to exist on the default branch.
+4. Merge or push once: the push run saves the first bundle for `6.x`, and the first PR before that is cold. `COMPOSER_ROOT_VERSION` becomes `6.x-dev` automatically (any `^\d+(\.\d+)*\.x$` branch; other branches use `dev-<branch>`).
+5. `publish` creates `results/6.x/` in `psalm/perf-data` by itself; check it after the first push run.
+6. Re-check the sizing once: 6.x may be slower or faster than master, and `expected_*` are shared by all branches.

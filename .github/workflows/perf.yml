@@ -1,39 +1,58 @@
 name: Perf
 
-# Measures Psalm (Ir under cachegrind, peak memory, wall time) and diffs reported issues on a pinned corpus of
-# real projects, base vs head. See bin/perf/README.md. The sticky PR comment is posted by perf-comment.yml
-# (workflow_run), which is the only part with write access; this workflow never has secrets in PR context.
+# Measures Psalm (Ir under cachegrind, peak memory, wall time) and diffs the reported issues on a pinned corpus of real
+# projects, base vs head. See bin/perf/README.md.
+#
+# Trust model:
+#   * Everything that runs PR code (prepare, measure, report) has a read-only token and no secrets.
+#   * The sticky PR comment is posted by perf-comment.yml (workflow_run, default branch), which treats the
+#     `perf-report` artifact as untrusted data.
+#   * The only secret (PERF_DATA_DEPLOY_KEY) exists in `publish`, which never runs on pull_request.
+#   * The base bundle cache is written only by the `report` job of a push run (see "Save base bundle").
 
 on:
   pull_request:
-    # Keep in sync with PERF_BRANCH below (trigger filters cannot read env).
+    # Branches must be listed literally here (trigger filters cannot read env), keep in sync with `branches` in
+    # bin/perf/corpus.json.
     branches: [master]
     types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - 'docs/**'
       - '**.md'
   push:
+    # Protected branches only: pushes here are the only runs that may save a base bundle.
     branches: [master]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Commit SHA or ref of Psalm to measure (default: the selected branch)'
+        description: 'Commit SHA or ref of Psalm to measure (default: the tip of the selected branch)'
+        required: false
+        type: string
+      branch:
+        description: 'Branch whose corpus configuration, base bundle and perf-data directory apply'
+        required: false
+        default: master
+        type: string
+      include_disabled:
+        description: 'Comma separated disabled corpus projects to measure for sizing (extra tier, never saved as a base)'
         required: false
         type: string
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
-  # PRs: newest push wins. Pushes to the branch get their own group per commit so that no base result is dropped.
-  group: perf-${{ github.event.pull_request.number || github.sha }}
+  # PRs: the newest push wins. Pushes and dispatches never cancel each other so that no base result is dropped.
+  group: perf-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # The single place that names the measured branch: Actions cache keys (perf-<branch>-<sha>-<shard>) and
-  # perf-data paths (results/<branch>/<sha>.json) are derived from it.
-  PERF_BRANCH: master
-  COMPOSER_ROOT_VERSION: dev-master
+  # The single place that names the measured branch: base bundle keys (perf-base-<branch>-<sha>) and perf-data
+  # paths (results/<branch>/<sha>.json) are derived from it.
+  PERF_BRANCH: ${{ github.base_ref || inputs.branch || github.ref_name }}
+  # Shared by every job so that all of them end up with the same PHP build (the environment fingerprint covers it).
   PERF_PHP_EXTENSIONS: intl, bcmath, gmp, mbstring, pcntl, posix, sodium, zip, xml, dom, simplexml, tokenizer, opcache
 
 defaults:
@@ -42,167 +61,355 @@ defaults:
 
 jobs:
   prepare:
-    name: Select shards
+    name: Plan
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     permissions:
       contents: read
-      actions: read # gh cache list
+      actions: read # list the base bundle caches
     outputs:
-      matrix: ${{ steps.select.outputs.matrix }}
-      cached: ${{ steps.select.outputs.cached }}
-      head_sha: ${{ steps.select.outputs.head_sha }}
-      base_sha: ${{ steps.select.outputs.base_sha }}
-      base_source: ${{ steps.select.outputs.base_source }}
-      pr_number: ${{ github.event.pull_request.number }}
+      php_version: ${{ steps.config.outputs.php_version }}
+      composer_root_version: ${{ steps.config.outputs.composer_root_version }}
+      harness_sha: ${{ steps.revisions.outputs.harness_sha }}
+      head_sha: ${{ steps.revisions.outputs.head_sha }}
+      base_sha: ${{ steps.revisions.outputs.base_sha }}
+      bundle_key: ${{ steps.bundle.outputs.key }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_measure: ${{ steps.plan.outputs.has_measure }}
+      shards: ${{ steps.plan.outputs.shards }}
+      extra_matrix: ${{ steps.plan.outputs.extra_matrix }}
+      has_extra: ${{ steps.plan.outputs.has_extra }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      # The harness is the PR head itself (never the synthetic merge commit), the pushed commit, or the commit the
+      # dispatch ran on. Full history: merge-base, ancestry walk and the docs-only diff need it.
+      - name: Checkout harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
-          # pull_request checks out a synthetic merge commit by default; we measure the PR head itself.
-          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
-          # Full history (all branches) so that merge-base with origin/<base_ref> works without a further fetch.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Select shards
-        id: select
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
-          GH_TOKEN: ${{ github.token }}
+      - name: Read corpus configuration
+        id: config
         run: |
-          head_sha=$(git rev-parse HEAD)
-          args=(--event "$EVENT" --head-sha "$head_sha")
-          base_sha=
-          cached_csv=
-
-          if [ "$EVENT" = pull_request ]; then
-            base_sha=$(git merge-base "origin/$BASE_REF" "$head_sha")
-            prefix="perf-${PERF_BRANCH}-${base_sha}-"
-            # Shards whose base results were already produced by a push run on the base branch.
-            while IFS= read -r key; do
-              [ -n "$key" ] && cached_csv+="${cached_csv:+,}${key#"$prefix"}"
-            done < <(gh cache list --repo "$GITHUB_REPOSITORY" --key "$prefix" --limit 100 --json key --jq '.[].key')
-            args+=(--base-sha "$base_sha")
-            [ -n "$cached_csv" ] && args+=(--cached-shards "$cached_csv")
+          if ! [[ "$PERF_BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+            echo "::error::Invalid branch name '$PERF_BRANCH'"
+            exit 1
           fi
-
-          php bin/perf/select.php "${args[@]}" > select.json
-          jq . select.json
-
-          base_measured=$(jq '[.matrix[] | select(.rev == "base")] | length' select.json)
-          if [ -n "$cached_csv" ] && [ "$base_measured" -eq 0 ]; then base_source=cached; else base_source=measured; fi
-
+          if [[ "$PERF_BRANCH" =~ ^[0-9]+(\.[0-9]+)*\.x$ ]]; then
+            composer_root_version="${PERF_BRANCH}-dev"
+          else
+            composer_root_version="dev-${PERF_BRANCH}"
+          fi
           {
-            echo "matrix=$(jq -c '{include: .matrix}' select.json)"
-            echo "cached=$(jq -n -c --arg csv "$cached_csv" '$csv | split(",") | map(select(length > 0))')"
-            echo "head_sha=$head_sha"
-            echo "base_sha=$base_sha"
-            echo "base_source=$base_source"
-            echo "lock_shard=${cached_csv%%,*}"
+            echo "php_version=$(jq -r '.php' bin/perf/corpus.json)"
+            echo "composer_root_version=$composer_root_version"
           } >> "$GITHUB_OUTPUT"
-
-      # Base and head must run against the same dependency versions of Psalm, otherwise Packagist drift between
-      # the (possibly days old) cached base results and today's head shows up as a perf/issue difference.
-      # One composer.lock per run: taken from a cached base shard when there is one, else resolved here
-      # (for a PR from the base revision, otherwise from the revision under test).
-      - name: Restore lock of a cached base shard
-        id: lock-cache
-        if: steps.select.outputs.lock_shard != ''
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
-        with:
-          path: ${{ runner.temp }}/out/head
-          key: perf-${{ env.PERF_BRANCH }}-${{ steps.select.outputs.base_sha }}-${{ steps.select.outputs.lock_shard }}
+          echo "COMPOSER_ROOT_VERSION=$composer_root_version" >> "$GITHUB_ENV"
 
       - name: Set up PHP
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
         with:
-          php-version: '8.5'
+          php-version: ${{ steps.config.outputs.php_version }}
+          ini-file: production
           tools: composer:v2
           coverage: none
           extensions: ${{ env.PERF_PHP_EXTENSIONS }}
         env:
           fail-fast: true
 
-      - name: Provide Psalm lock
+      # Sizing rules (budget, memory, single shard membership, branches) fail the run here, not silently later.
+      - name: Lint corpus
+        run: php bin/perf/select.php --lint
+
+      # Needed for the environment fingerprints (the valgrind package version is part of them).
+      - name: Install valgrind
+        run: sudo apt-get install -y valgrind
+
+      - name: Resolve revisions
+        id: revisions
         env:
           EVENT: ${{ github.event_name }}
-          BASE_SHA: ${{ steps.select.outputs.base_sha }}
-          CACHE_HIT: ${{ steps.lock-cache.outputs.cache-hit }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          INPUT_REF: ${{ inputs.ref }}
         run: |
-          mkdir -p "$RUNNER_TEMP/psalm-lock"
-          cached="$RUNNER_TEMP/out/head/psalm-composer.lock"
+          resolve_commit() {
+            git rev-parse --verify --quiet "$1^{commit}" \
+              || git rev-parse --verify --quiet "origin/$1^{commit}" \
+              || { git fetch --quiet --no-tags origin "$1" && git rev-parse --verify --quiet 'FETCH_HEAD^{commit}'; }
+          }
 
-          if [ "$CACHE_HIT" = true ] && [ -f "$cached" ]; then
-            cp "$cached" "$RUNNER_TEMP/psalm-lock/composer.lock"
-            exit 0
+          harness_sha=$(git rev-parse HEAD)
+          base_sha=
+          case "$EVENT" in
+            pull_request)
+              head_sha=$PR_HEAD_SHA
+              base_sha=$(git merge-base "origin/$BASE_REF" "$head_sha")
+              start=$base_sha
+              ;;
+            push)
+              head_sha=$GITHUB_SHA
+              start=$(git rev-parse --verify --quiet "$head_sha^" || true)
+              ;;
+            workflow_dispatch)
+              ref=${INPUT_REF:-origin/$PERF_BRANCH}
+              if ! [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/~^-]*$ ]]; then
+                echo "::error::Invalid ref '$ref'"
+                exit 1
+              fi
+              head_sha=$(resolve_commit "$ref")
+              start=$(git rev-parse --verify --quiet "$head_sha^" || true)
+              ;;
+            *)
+              echo "::error::Unsupported event $EVENT"
+              exit 1
+              ;;
+          esac
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Cannot resolve the revision to measure"; exit 1; }
+
+          # Nearest first, at most 30 first-parent commits: the candidates for the base bundle.
+          : > "$RUNNER_TEMP/ancestry.txt"
+          if [ -n "$start" ]; then
+            git rev-list --first-parent --max-count=30 "$start" > "$RUNNER_TEMP/ancestry.txt"
           fi
 
-          src="$GITHUB_WORKSPACE"
+          {
+            echo "harness_sha=$harness_sha"
+            echo "head_sha=$head_sha"
+            echo "base_sha=$base_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      # Only caches saved by push runs on the branch itself (ref=refs/heads/<branch>) are listed. The list API is
+      # paged (100 per page, newest first); when the bundle is not within the pages read, each ancestor is looked
+      # up by its exact key.
+      - name: Find base bundle
+        id: discover
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ steps.revisions.outputs.base_sha }}
+        run: |
+          prefix="perf-base-${PERF_BRANCH}-"
+          list_keys() {
+            gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/caches" \
+              -f key="$1" -f ref="refs/heads/${PERF_BRANCH}" -f sort=created_at -f direction=desc \
+              -f per_page=100 -f page="${2:-1}" --jq '.actions_caches[].key'
+          }
+
+          keys="$RUNNER_TEMP/bundle-keys.txt"
+          : > "$keys"
+          pages=0
+          for page in 1 2 3 4 5; do
+            page_keys=$(list_keys "$prefix" "$page") || { echo "::warning::Listing caches failed"; break; }
+            pages=$page
+            [ -n "$page_keys" ] && printf '%s\n' "$page_keys" >> "$keys"
+            [ "$(printf '%s\n' "$page_keys" | grep -c .)" -eq 100 ] || break
+          done
+
+          bundle_sha=
+          while IFS= read -r sha; do
+            if grep -Fxq "${prefix}${sha}" "$keys"; then bundle_sha=$sha; break; fi
+          done < "$RUNNER_TEMP/ancestry.txt"
+
+          if [ -z "$bundle_sha" ] && [ "$pages" -gt 1 ]; then
+            while IFS= read -r sha; do
+              found=$(list_keys "${prefix}${sha}") || continue
+              if grep -Fxq "${prefix}${sha}" <<< "$found"; then bundle_sha=$sha; break; fi
+            done < "$RUNNER_TEMP/ancestry.txt"
+          fi
+
+          # A bundle from an ancestor A of the merge-base only provides results when nothing that affects Psalm's
+          # behaviour changed in between. The lock of the nearest bundle is used either way.
+          usable=0
+          if [ -n "$bundle_sha" ] && [ "$EVENT" = pull_request ]; then
+            if [ "$bundle_sha" = "$BASE_SHA" ] || git diff --quiet "$bundle_sha" "$BASE_SHA" -- . \
+              ':(exclude)docs' ':(exclude,glob)**/*.md' ':(exclude).github' ':(exclude).circleci' \
+              ':(exclude)tests' ':(exclude)bin/perf'; then
+              usable=1
+            fi
+          fi
+
+          if [ -n "$bundle_sha" ]; then
+            echo "::notice title=Base bundle::${bundle_sha} (base results usable: ${usable})"
+          else
+            echo "::notice title=Base bundle::none found, the base is measured from scratch"
+          fi
+          {
+            echo "sha=$bundle_sha"
+            echo "key=${bundle_sha:+${prefix}${bundle_sha}}"
+            echo "usable=$usable"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore base bundle
+        id: restore
+        if: steps.discover.outputs.key != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ${{ runner.temp }}/perf-bundle
+          key: ${{ steps.discover.outputs.key }}
+
+      - name: Validate base bundle
+        id: bundle
+        env:
+          KEY: ${{ steps.discover.outputs.key }}
+          BUNDLE_SHA: ${{ steps.discover.outputs.sha }}
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+        run: |
+          if [ -n "$KEY" ] && [ "$CACHE_HIT" = true ] \
+            && php bin/perf/bundle.php validate --dir "$RUNNER_TEMP/perf-bundle" --sha "$BUNDLE_SHA" > /dev/null; then
+            echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          else
+            [ -z "$KEY" ] || echo "::warning title=Base bundle::${KEY} could not be restored or is invalid, ignoring it"
+            echo "key=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # PR: base lock = f(bundle lock, base composer.json, fallback); head lock = f(base lock, head composer.json,
+      # strict). Push and dispatch: head lock = f(bundle lock, head composer.json, fallback).
+      - name: Resolve Psalm locks
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ steps.revisions.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.revisions.outputs.head_sha }}
+          BUNDLE_KEY: ${{ steps.bundle.outputs.key }}
+        run: |
+          plan="$RUNNER_TEMP/plan"
+          work="$RUNNER_TEMP/locks"
+          mkdir -p "$plan" "$work/base" "$work/head"
+
+          start=-
+          if [ -n "$BUNDLE_KEY" ]; then start="$RUNNER_TEMP/perf-bundle/psalm-composer.lock"; fi
+
+          with_sha() { # <info.json> <lock file>
+            if [ -f "$2" ]; then
+              jq --arg sha "$(sha256sum "$2" | cut -d' ' -f1)" '. + {sha256: $sha}' "$1"
+            else
+              jq '. + {sha256: null}' "$1"
+            fi
+          }
+
+          base_info=null
+          head_start=$start
+          head_mode=fallback
           if [ "$EVENT" = pull_request ]; then
-            src="$RUNNER_TEMP/base-src"
-            git worktree add --detach "$src" "$BASE_SHA"
+            git show "${BASE_SHA}:composer.json" > "$work/base/composer.json"
+            php bin/perf/resolve-lock.php --start "$start" --composer-json "$work/base/composer.json" \
+              --mode fallback --out "$plan/base.lock" --info "$work/base/info.json"
+            base_info=$(with_sha "$work/base/info.json" "$plan/base.lock")
+            head_start="$plan/base.lock"
+            head_mode=strict
           fi
-          (cd "$src" && composer update --no-dev --no-install --no-interaction --no-progress)
-          cp "$src/composer.lock" "$RUNNER_TEMP/psalm-lock/composer.lock"
 
-      - name: Upload Psalm lock
+          git show "${HEAD_SHA}:composer.json" > "$work/head/composer.json"
+          rc=0
+          php bin/perf/resolve-lock.php --start "$head_start" --composer-json "$work/head/composer.json" \
+            --mode "$head_mode" --out "$plan/head.lock" --info "$work/head/info.json" || rc=$?
+          if [ "$rc" -eq 3 ]; then
+            echo "::warning title=Dependency resolution::The head's composer.json cannot be resolved from the base lock, the head is not measured"
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+          head_info=$(with_sha "$work/head/info.json" "$plan/head.lock")
+
+          jq -n --argjson base "$base_info" --argjson head "$head_info" '{base: $base, head: $head}' \
+            > "$plan/locks-info.json"
+          jq . "$plan/locks-info.json"
+
+      # Fingerprints of the environment the head would run in (same PHP setup, valgrind installed): a cached base
+      # result is only reused when its fingerprint equals this one.
+      - name: Fingerprint environment
+        run: |
+          projects=$(jq -r '. as $c | [.projects | to_entries[]
+            | select(.value.disabled == null and $c.shards[.value.shards[0]].tier == "pr") | .key] | join(",")' \
+            bin/perf/corpus.json)
+          php bin/perf/fingerprint.php --corpus bin/perf/corpus.json --projects "$projects" \
+            --valgrind-version "$(dpkg-query -W -f='${Version}' valgrind)" > "$RUNNER_TEMP/fingerprints.json"
+
+      - name: Select shards
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ steps.revisions.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.revisions.outputs.head_sha }}
+          HARNESS_SHA: ${{ steps.revisions.outputs.harness_sha }}
+          BUNDLE_KEY: ${{ steps.bundle.outputs.key }}
+          BUNDLE_SHA: ${{ steps.discover.outputs.sha }}
+          BUNDLE_USABLE: ${{ steps.discover.outputs.usable }}
+          INCLUDE_DISABLED: ${{ inputs.include_disabled }}
+        run: |
+          plan_dir="$RUNNER_TEMP/plan"
+          args=(
+            plan
+            --event "$EVENT"
+            --branch "$PERF_BRANCH"
+            --head-sha "$HEAD_SHA"
+            --fingerprints "$RUNNER_TEMP/fingerprints.json"
+            --locks-info "$plan_dir/locks-info.json"
+            --harness-sha "$HARNESS_SHA"
+            --out-expected "$plan_dir/expected.json"
+          )
+          if [ -n "$BASE_SHA" ]; then args+=(--base-sha "$BASE_SHA"); fi
+          if [ -n "$BUNDLE_KEY" ]; then
+            args+=(--bundle-dir "$RUNNER_TEMP/perf-bundle" --bundle-sha "$BUNDLE_SHA" --bundle-results-usable "$BUNDLE_USABLE")
+          fi
+          if [ "$EVENT" = workflow_dispatch ] && [ -n "$INCLUDE_DISABLED" ]; then
+            args+=(--include-disabled "$INCLUDE_DISABLED")
+          fi
+
+          php bin/perf/select.php "${args[@]}" > "$RUNNER_TEMP/plan.json"
+          jq . "$RUNNER_TEMP/plan.json"
+
+          jq -r '.notes[]?' "$RUNNER_TEMP/plan.json" | while IFS= read -r note; do
+            echo "::warning title=Perf plan::$note"
+          done
+
+          # Pull requests never run the extra tier.
+          if [ "$EVENT" = pull_request ]; then extra='[]'; else extra=$(jq -c '.extra' "$RUNNER_TEMP/plan.json"); fi
+          {
+            echo "matrix=$(jq -c '{include: .measure}' "$RUNNER_TEMP/plan.json")"
+            echo "has_measure=$(jq '(.measure | length) > 0' "$RUNNER_TEMP/plan.json")"
+            echo "shards=$(jq -c '[.measure[].shard]' "$RUNNER_TEMP/plan.json")"
+            echo "extra_matrix=$(jq -c -n --argjson e "$extra" '{include: $e}')"
+            echo "has_extra=$(jq -n --argjson e "$extra" '($e | length) > 0')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload plan
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: perf-psalm-lock
-          path: ${{ runner.temp }}/psalm-lock
+          name: perf-plan
+          path: ${{ runner.temp }}/plan
           retention-days: 14
 
   measure:
-    name: Measure ${{ matrix.rev }} ${{ matrix.shard }}
+    name: Measure ${{ matrix.shard }}
     needs: prepare
+    if: needs.prepare.outputs.has_measure == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ matrix.timeout_minutes }}
+    timeout-minutes: ${{ matrix.job_timeout_minutes }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
-    env:
-      # Psalm would otherwise re-exec itself without opcache settings (vimeo/psalm#12694).
-      PSALM_ALLOW_XDEBUG: '1'
     steps:
-      # The harness always comes from the PR head, also when measuring the base revision.
+      # The harness always comes from the revision prepare planned with, also when measuring the base revision.
       - name: Checkout harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
-          ref: ${{ needs.prepare.outputs.head_sha }}
+          ref: ${{ needs.prepare.outputs.harness_sha }}
           path: harness
           sparse-checkout: bin/perf
-          persist-credentials: false
-
-      - name: Checkout Psalm under test
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
-        with:
-          ref: ${{ matrix.sha }}
-          path: psalm
           persist-credentials: false
 
       - name: Set up PHP
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
         with:
-          php-version: '8.5'
+          php-version: ${{ needs.prepare.outputs.php_version }}
+          ini-file: production
           tools: composer:v2
           coverage: none
           extensions: ${{ env.PERF_PHP_EXTENSIONS }}
-          ini-values: >-
-            memory_limit=-1,
-            opcache.enable=1,
-            opcache.enable_cli=1,
-            opcache.jit=0,
-            opcache.validate_timestamps=0,
-            opcache.file_update_protection=0,
-            opcache.max_accelerated_files=1000000,
-            opcache.interned_strings_buffer=64,
-            opcache.memory_consumption=512,
-            opcache.optimization_level=0x7FFEBFFF,
-            opcache.save_comments=1
         env:
           fail-fast: true
 
@@ -210,116 +417,118 @@ jobs:
         if: matrix.mode == 'cachegrind'
         run: sudo apt-get install -y valgrind
 
-      - name: Get Composer Cache Directories
-        id: composer-cache
-        run: echo "files_cache=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache composer cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
-        with:
-          path: ${{ steps.composer-cache.outputs.files_cache }}
-          key: ${{ runner.os }}-composer-perf-${{ hashFiles('psalm/composer.json') }}
-          restore-keys: |
-            ${{ runner.os }}-composer-perf-
-
-      - name: Download Psalm lock
+      - name: Download plan
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: perf-psalm-lock
-          path: ${{ runner.temp }}/psalm-lock
+          name: perf-plan
+          path: ${{ runner.temp }}/plan
 
-      # Same dependency versions for base and head. When the revision changed composer.json (the shared lock is
-      # out of date for it) only that revision gets freshly resolved versions.
-      - name: Install Psalm dependencies
-        working-directory: psalm
+      # Base first: it shares the runner (and the project clones) with the head.
+      - name: Checkout Psalm (base)
+        if: contains(matrix.revs, 'base')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.base_sha }}
+          path: psalm-base
+          persist-credentials: false
+
+      - name: Install Psalm dependencies (base)
+        if: contains(matrix.revs, 'base')
+        env:
+          COMPOSER_ROOT_VERSION: ${{ needs.prepare.outputs.composer_root_version }}
         run: |
-          cp "$RUNNER_TEMP/psalm-lock/composer.lock" composer.lock
-          if composer validate --no-check-all --no-check-publish --no-interaction; then
-            composer install --no-dev --no-interaction --no-progress
-          else
-            echo "::notice title=Psalm dependencies::Shared composer.lock is out of date for this revision, resolving fresh versions"
-            composer update --no-dev --no-interaction --no-progress
-          fi
+          cp "$RUNNER_TEMP/plan/base.lock" psalm-base/composer.lock
+          composer install --working-dir=psalm-base --no-dev --no-scripts --no-interaction --no-progress
 
-      - name: Run shard
+      - name: Run shard (base)
+        if: contains(matrix.revs, 'base')
+        timeout-minutes: ${{ matrix.step_timeout_minutes }}
         env:
           SHARD: ${{ matrix.shard }}
-          REV: ${{ matrix.rev }}
+          PROJECTS: ${{ join(matrix.base_projects, ',') }}
+          PSALM_SHA: ${{ needs.prepare.outputs.base_sha }}
         run: |
-          harness/bin/perf/run-shard.sh \
-            --shard "$SHARD" \
-            --psalm "$GITHUB_WORKSPACE/psalm" \
-            --out "$RUNNER_TEMP/out/$REV"
+          args=(--shard "$SHARD" --psalm "$GITHUB_WORKSPACE/psalm-base" --sha "$PSALM_SHA" --out "$RUNNER_TEMP/out/base")
+          if [ -n "$PROJECTS" ]; then args+=(--projects "$PROJECTS"); fi
+          harness/bin/perf/run-shard.sh "${args[@]}"
 
-      # Cached and uploaded with the results, so that later PRs reuse exactly these dependency versions.
-      - name: Keep Psalm lock with results
+      # A failed base must not prevent measuring the head: the report marks the project inconclusive instead.
+      - name: Checkout Psalm (head)
+        if: ${{ !cancelled() && contains(matrix.revs, 'head') }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+          path: psalm-head
+          persist-credentials: false
+
+      - name: Install Psalm dependencies (head)
+        if: ${{ !cancelled() && contains(matrix.revs, 'head') }}
         env:
-          REV: ${{ matrix.rev }}
+          COMPOSER_ROOT_VERSION: ${{ needs.prepare.outputs.composer_root_version }}
         run: |
-          mkdir -p "$RUNNER_TEMP/out/$REV"
-          cp psalm/composer.lock "$RUNNER_TEMP/out/$REV/psalm-composer.lock"
+          cp "$RUNNER_TEMP/plan/head.lock" psalm-head/composer.lock
+          composer install --working-dir=psalm-head --no-dev --no-scripts --no-interaction --no-progress
+
+      - name: Run shard (head)
+        if: ${{ !cancelled() && contains(matrix.revs, 'head') }}
+        timeout-minutes: ${{ matrix.step_timeout_minutes }}
+        env:
+          SHARD: ${{ matrix.shard }}
+          PROJECTS: ${{ join(matrix.head_projects, ',') }}
+          PSALM_SHA: ${{ needs.prepare.outputs.head_sha }}
+        run: |
+          args=(--shard "$SHARD" --psalm "$GITHUB_WORKSPACE/psalm-head" --sha "$PSALM_SHA" --out "$RUNNER_TEMP/out/head")
+          if [ -n "$PROJECTS" ]; then args+=(--projects "$PROJECTS"); fi
+          harness/bin/perf/run-shard.sh "${args[@]}"
+
+      # Interrupted or failed shards still produce a result per expected project (timeout, inconclusive or
+      # setup-failed) instead of a bare "missing".
+      - name: Write stub results (base)
+        if: ${{ (failure() || cancelled()) && contains(matrix.revs, 'base') }}
+        env:
+          PROJECTS: ${{ join(matrix.base_projects, ',') }}
+          PSALM_SHA: ${{ needs.prepare.outputs.base_sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out/base"
+          php harness/bin/perf/write-stubs.php --corpus harness/bin/perf/corpus.json \
+            --out "$RUNNER_TEMP/out/base" --projects "$PROJECTS" --sha "$PSALM_SHA"
+
+      - name: Write stub results (head)
+        if: ${{ (failure() || cancelled()) && contains(matrix.revs, 'head') }}
+        env:
+          PROJECTS: ${{ join(matrix.head_projects, ',') }}
+          PSALM_SHA: ${{ needs.prepare.outputs.head_sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out/head"
+          php harness/bin/perf/write-stubs.php --corpus harness/bin/perf/corpus.json \
+            --out "$RUNNER_TEMP/out/head" --projects "$PROJECTS" --sha "$PSALM_SHA"
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: perf-${{ matrix.rev }}-${{ matrix.shard }}
-          path: ${{ runner.temp }}/out/${{ matrix.rev }}
+          name: perf-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out
           retention-days: 14
           if-no-files-found: warn
 
-      # Pushes to the branch produce the base results that later PRs restore instead of re-measuring.
-      # The cache path is absolute and is restored to the same path (see restore-base).
-      - name: Save results for later PRs
-        if: github.event_name == 'push' && matrix.rev == 'head'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
-        with:
-          path: ${{ runner.temp }}/out/head
-          key: perf-${{ env.PERF_BRANCH }}-${{ matrix.sha }}-${{ matrix.shard }}
-
-  # Actions caches cannot be restored dynamically inside one job (one step per key), so each cached base shard is
-  # restored by a trivial matrix job that republishes it as the artifact `perf-base-<shard>`, exactly like a
-  # measured base shard. `report` then handles cached and measured base shards uniformly.
-  restore-base:
-    name: Restore base ${{ matrix.shard }}
+  # Post-merge shards and the threads=4 runs of native projects. Not needed by `report`; feeds `publish` only.
+  measure-extra:
+    name: Measure extra ${{ matrix.shard }}
     needs: prepare
-    if: needs.prepare.outputs.cached != '[]'
+    if: github.event_name != 'pull_request' && needs.prepare.outputs.has_extra == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: ${{ fromJSON(needs.prepare.outputs.cached) }}
-    steps:
-      - name: Restore cached base results
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
-        with:
-          # Same absolute path the cache was saved from (measure job, rev=head on push).
-          path: ${{ runner.temp }}/out/head
-          key: perf-${{ env.PERF_BRANCH }}-${{ needs.prepare.outputs.base_sha }}-${{ matrix.shard }}
-          fail-on-cache-miss: true
-
-      - name: Upload as base results
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: perf-base-${{ matrix.shard }}
-          path: ${{ runner.temp }}/out/head
-          retention-days: 14
-
-  report:
-    name: Compare and report
-    needs: [prepare, measure, restore-base]
-    if: always() && needs.prepare.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: ${{ matrix.job_timeout_minutes }}
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.extra_matrix) }}
     steps:
       - name: Checkout harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
-          ref: ${{ needs.prepare.outputs.head_sha }}
+          ref: ${{ needs.prepare.outputs.harness_sha }}
           path: harness
           sparse-checkout: bin/perf
           persist-credentials: false
@@ -327,91 +536,258 @@ jobs:
       - name: Set up PHP
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
         with:
-          php-version: '8.5'
+          php-version: ${{ needs.prepare.outputs.php_version }}
+          ini-file: production
+          tools: composer:v2
           coverage: none
+          extensions: ${{ env.PERF_PHP_EXTENSIONS }}
         env:
           fail-fast: true
 
-      - name: Prepare directories
-        run: mkdir -p "$RUNNER_TEMP/base" "$RUNNER_TEMP/head" "$RUNNER_TEMP/report"
+      - name: Install valgrind
+        if: matrix.mode == 'cachegrind'
+        run: sudo apt-get install -y valgrind
 
-      # Artifacts are flattened (<project>.json + <project>.issues.json), shards have disjoint projects.
-      - name: Download head results
+      - name: Download plan
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: perf-head-*
-          merge-multiple: true
-          path: ${{ runner.temp }}/head
+          name: perf-plan
+          path: ${{ runner.temp }}/plan
 
-      - name: Download base results
+      - name: Checkout Psalm (head)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+          path: psalm-head
+          persist-credentials: false
+
+      - name: Install Psalm dependencies (head)
+        env:
+          COMPOSER_ROOT_VERSION: ${{ needs.prepare.outputs.composer_root_version }}
+        run: |
+          cp "$RUNNER_TEMP/plan/head.lock" psalm-head/composer.lock
+          composer install --working-dir=psalm-head --no-dev --no-scripts --no-interaction --no-progress
+
+      - name: Run shard (head)
+        timeout-minutes: ${{ matrix.step_timeout_minutes }}
+        env:
+          SHARD: ${{ matrix.shard }}
+          PROJECTS: ${{ join(matrix.projects, ',') }}
+          THREADS4: ${{ matrix.threads4 }}
+          PSALM_SHA: ${{ needs.prepare.outputs.head_sha }}
+        run: |
+          args=(--shard "$SHARD" --psalm "$GITHUB_WORKSPACE/psalm-head" --sha "$PSALM_SHA" --out "$RUNNER_TEMP/out/head")
+          if [ -n "$PROJECTS" ]; then args+=(--projects "$PROJECTS"); fi
+          if [ "$THREADS4" = true ]; then args+=(--threads4); fi
+          harness/bin/perf/run-shard.sh "${args[@]}"
+
+      - name: Write stub results (head)
+        if: ${{ failure() || cancelled() }}
+        env:
+          PROJECTS: ${{ join(matrix.projects, ',') }}
+          PSALM_SHA: ${{ needs.prepare.outputs.head_sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out/head"
+          php harness/bin/perf/write-stubs.php --corpus harness/bin/perf/corpus.json \
+            --out "$RUNNER_TEMP/out/head" --projects "$PROJECTS" --sha "$PSALM_SHA"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-extra-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+          if-no-files-found: warn
+
+  report:
+    name: Compare and report
+    needs: [prepare, measure]
+    # Runs after failed or skipped measure jobs too (their shards then show up as missing results).
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # gh run download of the shard artifacts
+    env:
+      HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.harness_sha }}
+          sparse-checkout: bin/perf
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: ${{ needs.prepare.outputs.php_version }}
+          ini-file: production
+          coverage: none
+          extensions: ${{ env.PERF_PHP_EXTENSIONS }}
+        env:
+          fail-fast: true
+
+      - name: Download plan
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: perf-base-*
-          merge-multiple: true
-          path: ${{ runner.temp }}/base
+          name: perf-plan
+          path: ${{ runner.temp }}/plan
 
-      # pr_number and head_sha are consumed (as untrusted data) by perf-comment.yml.
+      # The shard artifacts are fetched by exact name from the plan (a pattern would also match perf-plan,
+      # perf-extra-* and perf-report). Shards have disjoint projects, so base/ and head/ merge without collisions.
+      - name: Download measured results
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHARDS: ${{ needs.prepare.outputs.shards }}
+        run: |
+          measured="$RUNNER_TEMP/measured"
+          mkdir -p "$measured/base" "$measured/head"
+          for shard in $(jq -r '.[]' <<< "$SHARDS"); do
+            dir="$RUNNER_TEMP/shard-$shard"
+            if ! gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" -n "perf-$shard" -D "$dir"; then
+              echo "::warning title=Perf::No artifact for shard $shard (the job produced no results)"
+              continue
+            fi
+            for rev in base head; do
+              if [ -d "$dir/$rev" ]; then cp -R "$dir/$rev/." "$measured/$rev/"; fi
+            done
+          done
+
+      # Same bundle as prepare used, restored by its exact key (K5: never a prefix or fallback key).
+      # Pull requests only (push runs build a new bundle into the same path, and compare nothing against one).
+      - name: Restore base bundle
+        if: github.event_name == 'pull_request' && needs.prepare.outputs.bundle_key != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ${{ runner.temp }}/perf-bundle
+          key: ${{ needs.prepare.outputs.bundle_key }}
+
+      - name: Compare
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          plan="$RUNNER_TEMP/plan"
+          report="$RUNNER_TEMP/report"
+          mkdir -p "$report"
+          args=(
+            --expected "$plan/expected.json"
+            --base "$RUNNER_TEMP/measured/base"
+            --head "$RUNNER_TEMP/measured/head"
+            --locks-info "$plan/locks-info.json"
+            --out-md "$report/report.md"
+            --out-short "$report/report-short.md"
+            --out-json "$report/summary.json"
+            --run-url "$RUN_URL"
+          )
+          if [ -d "$RUNNER_TEMP/perf-bundle" ]; then args+=(--bundle-dir "$RUNNER_TEMP/perf-bundle"); fi
+          php bin/perf/compare.php "${args[@]}"
+          cat "$report/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # pr_number and head_sha are read (as untrusted data, and cross-checked) by perf-comment.yml.
       - name: Write comment metadata
         env:
-          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
-          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           printf '%s' "$PR_NUMBER" > "$RUNNER_TEMP/report/pr_number"
           printf '%s' "$HEAD_SHA" > "$RUNNER_TEMP/report/head_sha"
 
-      - name: Compare
-        env:
-          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
-          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
-          BASE_SOURCE: ${{ needs.prepare.outputs.base_source }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          args=(
-            --base "$RUNNER_TEMP/base"
-            --head "$RUNNER_TEMP/head"
-            --out-md "$RUNNER_TEMP/report/report.md"
-            --out-json "$RUNNER_TEMP/report/summary.json"
-            --head-sha "$HEAD_SHA"
-            --base-source "$BASE_SOURCE"
-            --run-url "$RUN_URL"
-          )
-          [ -n "$BASE_SHA" ] && args+=(--base-sha "$BASE_SHA")
-          php harness/bin/perf/compare.php "${args[@]}"
-          cat "$RUNNER_TEMP/report/report.md" >> "$GITHUB_STEP_SUMMARY"
-
       - name: Upload report
-        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: perf-report
           path: ${{ runner.temp }}/report
           retention-days: 14
 
-      - name: Enforce gate
+      # K5: the base bundle is written only here, only by a push run on the protected branch itself, and only from
+      # that run's own measurements. Pull request and dispatch runs never save one, and the key is built from
+      # github.sha (never from an input or an artifact), so no run can write a key it does not own.
+      - name: Build base bundle
+        id: bundle
+        if: github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name == env.PERF_BRANCH
+        env:
+          HARNESS_SHA: ${{ needs.prepare.outputs.harness_sha }}
         run: |
-          # shellcheck disable=SC2016
-          php -r '
-            $s = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
-            if (($s["gate"] ?? null) === "fail") {
-                $reasons = str_replace(["\r", "\n"], " ", implode("; ", $s["reasons"] ?? []));
-                fwrite(STDERR, "::error title=Perf gate failed::" . $reasons . "\n");
-                exit(1);
-            }
-          ' "$RUNNER_TEMP/report/summary.json"
+          plan="$RUNNER_TEMP/plan"
+          rm -rf "$RUNNER_TEMP/perf-bundle"
+          rc=0
+          php bin/perf/bundle.php build \
+            --head-dir "$RUNNER_TEMP/measured/head" \
+            --expected "$plan/expected.json" \
+            --lock "$plan/head.lock" \
+            --lock-info "$plan/locks-info.json" \
+            --harness-sha "$HARNESS_SHA" \
+            --out "$RUNNER_TEMP/perf-bundle" || rc=$?
+          case "$rc" in
+            0) echo "eligible=true" >> "$GITHUB_OUTPUT" ;;
+            3) echo "::notice title=Base bundle::Not saved, see the reason above"; echo "eligible=false" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
+
+      - name: Save base bundle
+        if: steps.bundle.outputs.eligible == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ${{ runner.temp }}/perf-bundle
+          key: perf-base-${{ env.PERF_BRANCH }}-${{ github.sha }}
+
+      - name: Enforce verdict
+        run: |
+          verdict=$(jq -r '.verdict' "$RUNNER_TEMP/report/summary.json")
+          if [ "$verdict" = fail ]; then
+            echo "::error title=Perf regression::See the report in the job summary"
+            exit 1
+          fi
 
   publish:
     name: Publish to perf-data
-    needs: [prepare, measure, report]
-    if: github.event_name == 'push'
+    needs: [prepare, report, measure-extra]
+    # Failed or skipped extra measurements and a failed verdict must not prevent publishing what was measured.
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.prepare.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
-    env:
-      PERF_DATA_DEPLOY_KEY: ${{ secrets.PERF_DATA_DEPLOY_KEY }}
+      actions: read # gh run download of the shard artifacts
     steps:
+      - name: Download extra results
+        continue-on-error: true # no extra shard may have run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: perf-extra-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/extra
+
+      # Sizing numbers (also of disabled projects measured via include_disabled) stay visible without the secret.
+      - name: Summarise extra results
+        run: |
+          shopt -s nullglob
+          files=()
+          for f in "$RUNNER_TEMP"/extra/head/*.json; do
+            [[ "$f" == *.issues.json ]] || files+=("$f")
+          done
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No extra-tier results."
+            exit 0
+          fi
+          {
+            echo "### Extra tier results (head ${HEAD_SHA:0:12})"
+            echo
+            echo "| Project | Status | Psalm MiB | Wall t1 (s) | Ir | Psalm MiB t4 | Wall t4 (s) | Note |"
+            echo "|---|---|---|---|---|---|---|---|"
+            jq -r -s 'sort_by(.project)[] | . as $r | $r.metrics as $m
+              | "| \($r.project) | \($r.status) | \($m.psalm_mb // "n/a") | \($m.wall_t1 // "n/a") | \($m.ir // "n/a")"
+                + " | \($m.psalm_mb_t4 // "n/a") | \($m.wall_t4 // "n/a") | \(($r.reason // "") | gsub("[|\\n]"; " ")) |"' "${files[@]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+
       - name: Check deploy key
         id: key
+        env:
+          PERF_DATA_DEPLOY_KEY: ${{ secrets.PERF_DATA_DEPLOY_KEY }}
         run: |
           if [ -z "$PERF_DATA_DEPLOY_KEY" ]; then
             echo "::notice title=perf-data::PERF_DATA_DEPLOY_KEY is not set, skipping publication of results."
@@ -420,68 +796,155 @@ jobs:
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Set up PHP
+      # Only commits that are part of the branch are published (a dispatch may name any ref).
+      - name: Checkout Psalm history
         if: steps.key.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: composer.json
+          persist-credentials: false
+
+      - name: Check ancestry
+        id: ancestry
+        if: steps.key.outputs.enabled == 'true'
+        env:
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+        run: |
+          if git merge-base --is-ancestor "$HEAD_SHA" "origin/$PERF_BRANCH"; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=perf-data::${HEAD_SHA} is not part of ${PERF_BRANCH}, not publishing."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up PHP
+        if: steps.ancestry.outputs.publish == 'true'
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
         with:
-          php-version: '8.5'
+          php-version: ${{ needs.prepare.outputs.php_version }}
           coverage: none
         env:
           fail-fast: true
 
-      - name: Download head results
-        if: steps.key.outputs.enabled == 'true'
+      - name: Download plan
+        if: steps.ancestry.outputs.publish == 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: perf-head-*
-          merge-multiple: true
-          path: ${{ runner.temp }}/head
+          name: perf-plan
+          path: ${{ runner.temp }}/plan
+
+      - name: Download measured results
+        if: steps.ancestry.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHARDS: ${{ needs.prepare.outputs.shards }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/measured/head" "$RUNNER_TEMP/extra/head"
+          for shard in $(jq -r '.[]' <<< "$SHARDS"); do
+            dir="$RUNNER_TEMP/shard-$shard"
+            if gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" -n "perf-$shard" -D "$dir" && [ -d "$dir/head" ]; then
+              cp -R "$dir/head/." "$RUNNER_TEMP/measured/head/"
+            else
+              echo "::warning title=perf-data::No head results for shard $shard"
+            fi
+          done
 
       - name: Checkout perf-data
-        if: steps.key.outputs.enabled == 'true'
+        if: steps.ancestry.outputs.publish == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           repository: psalm/perf-data
           ssh-key: ${{ secrets.PERF_DATA_DEPLOY_KEY }}
           path: perf-data
 
-      - name: Write and push results
-        if: steps.key.outputs.enabled == 'true'
+      # Per-project metrics and fingerprints only: no issue lists. The threads=4 numbers come from the extra tier;
+      # everything else from the measurement the report was based on. The shared library hashes are collapsed into
+      # one hash to keep the records small.
+      - name: Write record
+        if: steps.ancestry.outputs.publish == 'true'
         env:
           HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
         run: |
-          out="perf-data/results/${PERF_BRANCH}/${HEAD_SHA}.json"
-          mkdir -p "$(dirname "$out")"
+          cat > "$RUNNER_TEMP/record.php" <<'PHP'
+          <?php
+          declare(strict_types=1);
 
-          # Per-project metrics and env only: no issue lists, no gate verdict.
-          # shellcheck disable=SC2016
-          php -r '
-            $projects = [];
-            foreach (glob($argv[1] . "/*.json") as $file) {
-                if (str_ends_with($file, ".issues.json")) {
-                    continue;
-                }
-                $r = json_decode(file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
-                $projects[$r["project"]] = array_intersect_key(
-                    $r,
-                    array_flip(["shard", "mode", "status", "metrics", "issue_count", "env"])
-                );
-            }
-            if ($projects === []) {
-                fwrite(STDERR, "No project results found in " . $argv[1] . "\n");
-                exit(1);
-            }
-            ksort($projects);
-            file_put_contents(
-                $argv[2],
-                json_encode(
-                    ["schema" => 1, "branch" => $argv[3], "psalm_sha" => $argv[4], "projects" => $projects],
-                    JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
-                ) . "\n"
-            );
-          ' "$RUNNER_TEMP/head" "$out" "$PERF_BRANCH" "$HEAD_SHA"
+          [, $measuredDir, $extraDir, $planDir, $out, $branch, $sha] = $argv;
 
-          cd perf-data
+          $read = static function (string $file): array {
+              return json_decode(file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
+          };
+          $results = static function (string $dir) use ($read): array {
+              $found = [];
+              foreach (glob($dir . '/*.json') ?: [] as $file) {
+                  if (!str_ends_with($file, '.issues.json')) {
+                      $r = $read($file);
+                      $found[$r['project']] = $r;
+                  }
+              }
+              return $found;
+          };
+
+          $projects = $results($measuredDir);
+          foreach ($results($extraDir) as $name => $extra) {
+              if (!isset($projects[$name])) {
+                  $projects[$name] = $extra;
+                  continue;
+              }
+              foreach (['wall_t4', 'rss_t4_kb', 'psalm_mb_t4'] as $key) {
+                  if (isset($extra['metrics'][$key])) {
+                      $projects[$name]['metrics'][$key] = $extra['metrics'][$key];
+                  }
+              }
+          }
+          if ($projects === []) {
+              fwrite(STDERR, "No project results found\n");
+              exit(1);
+          }
+
+          $keep = array_flip(['shard', 'mode', 'status', 'reason', 'metrics', 'issue_count', 'oom_killed', 'env']);
+          foreach ($projects as $name => $r) {
+              $r = array_intersect_key($r, $keep);
+              if (isset($r['env']['soft']['libs'])) {
+                  ksort($r['env']['soft']['libs']);
+                  $r['env']['soft']['libs_sha256'] = hash('sha256', json_encode($r['env']['soft']['libs']));
+                  unset($r['env']['soft']['libs']);
+              }
+              $projects[$name] = $r;
+          }
+          ksort($projects);
+
+          $expected = $read($planDir . '/expected.json');
+          $locks = $read($planDir . '/locks-info.json');
+          file_put_contents(
+              $out,
+              json_encode(
+                  [
+                      'schema' => 2,
+                      'branch' => $branch,
+                      'psalm_sha' => $sha,
+                      'harness_sha' => $expected['harness_sha'] ?? null,
+                      'lock_source' => $locks['head']['lock_source'] ?? null,
+                      'lock_sha256' => $locks['head']['sha256'] ?? null,
+                      'projects' => $projects,
+                  ],
+                  JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+              ) . "\n"
+          );
+          PHP
+          mkdir -p "perf-data/results/${PERF_BRANCH}"
+          php "$RUNNER_TEMP/record.php" "$RUNNER_TEMP/measured/head" "$RUNNER_TEMP/extra/head" "$RUNNER_TEMP/plan" \
+            "perf-data/results/${PERF_BRANCH}/${HEAD_SHA}.json" "$PERF_BRANCH" "$HEAD_SHA"
+
+      - name: Push record
+        if: steps.ancestry.outputs.publish == 'true'
+        working-directory: perf-data
+        env:
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "results/${PERF_BRANCH}/${HEAD_SHA}.json"

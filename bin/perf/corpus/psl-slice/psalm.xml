@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<psalm
+    errorLevel="3"
+    phpVersion="8.4"
+    resolveFromConfigFile="true"
+    findUnusedCode="false"
+    findUnusedBaselineEntry="false"
+    findUnusedIssueHandlerSuppression="false"
+    xmlns="https://getpsalm.org/schema/config"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="https://getpsalm.org/schema/config config.xsd"
+>
+    <projectFiles>
+        <directory name="packages/type/src"/>
+        <directory name="packages/collection/src"/>
+        <directory name="packages/dict/src"/>
+        <directory name="packages/vec/src"/>
+        <directory name="packages/iter/src"/>
+        <directory name="packages/str/src"/>
+        <directory name="packages/math/src"/>
+        <directory name="packages/option/src"/>
+        <directory name="packages/result/src"/>
+        <directory name="packages/either/src"/>
+        <directory name="packages/either-or-both/src"/>
+        <directory name="packages/fun/src"/>
+        <directory name="packages/comparison/src"/>
+        <directory name="packages/range/src"/>
+        <directory name="packages/tree/src"/>
+        <directory name="packages/graph/src"/>
+        <directory name="packages/data-structure/src"/>
+        <directory name="packages/async/src"/>
+        <directory name="packages/io/src"/>
+        <directory name="packages/encoding/src"/>
+        <directory name="packages/binary/src"/>
+        <directory name="packages/channel/src"/>
+        <directory name="packages/regex/src"/>
+        <directory name="packages/file/src"/>
+        <directory name="packages/filesystem/src"/>
+        <directory name="packages/process/src"/>
+        <directory name="packages/shell/src"/>
+        <directory name="packages/hash/src"/>
+        <directory name="packages/env/src"/>
+        <directory name="packages/cache/src"/>
+        <directory name="packages/ansi/src"/>
+        <ignoreFiles>
+            <directory name="vendor"/>
+        </ignoreFiles>
+    </projectFiles>
+</psalm>

@@ -12,7 +12,8 @@ declare(strict_types=1);
  * - paths are relative to the project root (also inside messages)
  * - digit runs of >= 9 characters in messages become '#': runtime values such as
  *   REQUEST_TIME embedded in $_SERVER shapes would otherwise differ on every run
- * - sorted by file, line, column, type, message
+ * - sorted by file, line, column, type, message, severity
+ * - severity is kept: the issue diff identity includes it
  */
 
 if ($argc !== 4) {
@@ -78,7 +79,8 @@ usort(
         ?: $a['line_from'] <=> $b['line_from']
         ?: $a['column_from'] <=> $b['column_from']
         ?: strcmp($a['type'], $b['type'])
-        ?: strcmp($a['message'], $b['message']),
+        ?: strcmp($a['message'], $b['message'])
+        ?: strcmp($a['severity'], $b['severity']),
 );
 
 $json = json_encode($issues, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);

@@ -2,209 +2,131 @@
 
 declare(strict_types=1);
 
-const IR_GATE_PCT = 3.0;
-const MB_GATE_PCT = 5.0;
-const SHOW_PCT = 0.5;
-const LIST_CAP = 10;
-const DETAILS_BUDGET_BYTES = 40_000;
-const CLIP_CHARS = 300;
-const LOG_TAIL_LINES = 15;
-/**
- * env keys that must match for Ir/MB to be comparable. Absent on purpose: cpu (Ir is CPU independent), psalm_sha, and
- * psalm_deps/psalm_packages (base and head share one composer.lock, so a difference is caused by the PR and is gated).
- */
-const FINGERPRINT_KEYS = ['php', 'valgrind', 'harness'];
+const IR_REGRESSION_PCT = 3.0;
+const MB_REGRESSION_PCT = 5.0;
+const NEAR_LIMIT_RATIO = 0.8;
+const DRIFT_RATIO = 1.2;
+const OOM_RSS_RATIO = 0.9;
+const DEFAULT_VM_RAM_KB = 16 * 1024 * 1024;
+const STATUSES = ['ok', 'crash', 'timeout', 'setup-failed', 'inconclusive'];
 const METRICS = ['ir', 'psalm_mb', 'wall_t1', 'cpu_t1', 'rss_t1_kb', 'wall_t4', 'rss_t4_kb', 'psalm_mb_t4'];
+const REQUIRED_METRICS = [
+    'cachegrind' => ['ir', 'psalm_mb'],
+    'native' => ['psalm_mb', 'wall_t1'],
+];
 
 function usage(string $message): never
 {
     fwrite(STDERR, "compare: {$message}\n");
-    fwrite(STDERR, "usage: php compare.php --base <dir> --head <dir> --out-md <file> --out-json <file> "
-        . "[--base-sha <sha>] [--head-sha <sha>] [--base-source cached|measured] [--run-url <url>]\n");
+    fwrite(STDERR, "usage: php compare.php --expected <expected.json> --base <dir> --head <dir> [--bundle-dir <dir>] "
+        . "--locks-info <json> --out-md <file> --out-short <file> --out-json <file> [--run-url <url>]\n");
     exit(2);
 }
 
 /**
- * @return array<string, array<string, mixed>> project name => result
+ * @return array<string, mixed>|null
  */
-function loadResults(string $dir): array
+function readJson(string $file): ?array
 {
-    $results = [];
-    foreach (glob(rtrim($dir, '/') . '/*.json') ?: [] as $file) {
-        if (str_ends_with($file, '.issues.json')) {
-            continue;
-        }
+    $raw = is_file($file) ? file_get_contents($file) : false;
+    $data = $raw === false ? null : json_decode($raw, true);
 
-        $data = json_decode((string) file_get_contents($file), true);
-        if (is_array($data) && isset($data['project']) && is_string($data['project'])) {
-            $results[$data['project']] = $data;
-        }
-    }
-
-    ksort($results);
-
-    return $results;
+    return is_array($data) ? $data : null;
 }
 
 /**
- * @param array<string, mixed> $result
  * @return list<array<string, mixed>>|null
  */
-function loadIssues(string $dir, array $result): ?array
+function loadIssues(string $dir, string $issuesFile): ?array
 {
-    $name = is_string($result['issues_file'] ?? null) ? basename($result['issues_file']) : '';
-    $file = rtrim($dir, '/') . '/' . $name;
-    if ($name === '' || !is_file($file)) {
-        return null;
-    }
+    $name = basename($issuesFile);
+    $issues = $name === '' ? null : readJson(rtrim($dir, '/') . '/' . $name);
 
-    $issues = json_decode((string) file_get_contents($file), true);
-
-    return is_array($issues) && array_is_list($issues) ? $issues : null;
-}
-
-/** @param array<string, mixed> $i */
-function issueKey(array $i): string
-{
-    return implode("\0", [
-        (string) ($i['file'] ?? ''),
-        (string) ($i['line_from'] ?? 0),
-        (string) ($i['line_to'] ?? 0),
-        (string) ($i['type'] ?? '?'),
-        (string) ($i['message'] ?? ''),
-        (string) ($i['column_from'] ?? 0),
-        (string) ($i['column_to'] ?? 0),
-    ]);
+    return $issues !== null && array_is_list($issues) ? $issues : null;
 }
 
 /**
- * @param list<array<string, mixed>> $issues
- * @return array<string, int>
- */
-function tally(array $issues): array
-{
-    $counts = [];
-    foreach ($issues as $issue) {
-        $key = issueKey($issue);
-        $counts[$key] = ($counts[$key] ?? 0) + 1;
-    }
-
-    return $counts;
-}
-
-/**
- * Keys more frequent in $from than in $against, with the surplus.
+ * Structural problems of one result file against what expected.json says about it. Empty list = valid.
  *
- * @param array<string, int> $from
- * @param array<string, int> $against
- * @return array<string, int>
+ * @param array<string, mixed> $r
+ * @param array<string, mixed> $exp project entry of expected.json
+ * @param array<string, mixed>|null $lock expected.json locks.<rev>
+ * @return list<string>
  */
-function surplus(array $from, array $against): array
+function resultProblems(array $r, string $project, string $rev, array $exp, ?array $lock): array
 {
-    $diff = [];
-    foreach ($from as $key => $n) {
-        if ($n > ($against[$key] ?? 0)) {
-            $diff[$key] = $n - ($against[$key] ?? 0);
+    $problems = [];
+    $check = static function (bool $ok, string $message) use (&$problems): void {
+        if (!$ok) {
+            $problems[] = $message;
+        }
+    };
+
+    $check(($r['project'] ?? null) === $project, 'project name differs');
+    $check(($r['psalm_sha'] ?? null) === ($exp['revs'][$rev]['sha'] ?? ''), 'psalm_sha differs from the expected sha');
+    $check(($r['shard'] ?? null) === ($exp['shard'] ?? null), 'shard differs');
+    $check(($r['mode'] ?? null) === ($exp['mode'] ?? null), 'mode differs');
+    if (isset($r['lock_sha256']) && isset($lock['sha256']) && $lock['sha256'] !== '') {
+        $check($r['lock_sha256'] === $lock['sha256'], 'Psalm lock differs from the expected lock');
+    }
+
+    $status = $r['status'] ?? null;
+    $check(in_array($status, STATUSES, true), 'unknown status');
+    $hasText = static fn(string $key): bool => is_string($r[$key] ?? null) && trim($r[$key]) !== '';
+    if ($status === 'ok') {
+        foreach (REQUIRED_METRICS[$exp['mode'] ?? ''] ?? [] as $metric) {
+            $value = $r['metrics'][$metric] ?? null;
+            $check(is_numeric($value) && $value > 0, "metric {$metric} missing");
+        }
+
+        $fingerprint = $r['env']['fingerprint'] ?? null;
+        $check(is_string($fingerprint) && $fingerprint !== '', 'env fingerprint missing');
+    } elseif ($status === 'crash' || $status === 'timeout') {
+        $check(is_numeric($r['elapsed_analysis'] ?? null), 'elapsed_analysis missing');
+        $check($hasText('log_tail') || $hasText('reason'), 'neither log_tail nor reason');
+    } elseif ($status !== null) {
+        $check($hasText('reason'), 'reason missing');
+    }
+
+    return $problems;
+}
+
+/**
+ * @param array<string, mixed> $exp
+ * @param array<string, mixed>|null $lock
+ * @return array{result: array<string, mixed>|null, problem: string|null, issues: list<array<string, mixed>>|null}
+ */
+function loadSide(?string $dir, string $project, string $rev, array $exp, ?array $lock): array
+{
+    $none = static fn(string $problem): array => ['result' => null, 'problem' => $problem, 'issues' => null];
+    if ($dir === null) {
+        return $none('result unavailable');
+    }
+
+    $file = rtrim($dir, '/') . "/{$project}.json";
+    if (!is_file($file)) {
+        return $none('result missing');
+    }
+
+    $r = readJson($file);
+    if ($r === null) {
+        return $none('result invalid (not a JSON object)');
+    }
+
+    $problems = resultProblems($r, $project, $rev, $exp, $lock);
+    $issues = null;
+    if ($problems === [] && $r['status'] === 'ok') {
+        $issues = loadIssues($dir, (string) ($r['issues_file'] ?? ''));
+        if ($issues === null) {
+            $problems[] = 'issues file missing';
         }
     }
 
-    return $diff;
-}
-
-/**
- * One entry per key occurrence, sorted by file, line, type, message.
- *
- * @param array<string, int> $counts
- * @return list<array{type: string, loc: string, message: string}>
- */
-function entries(array $counts): array
-{
-    $list = [];
-    foreach ($counts as $key => $n) {
-        $p = explode("\0", $key);
-        for ($k = 0; $k < $n; $k++) {
-            $list[] = [$p[0], (int) $p[1], $p[3], $p[4]];
-        }
+    if ($problems !== []) {
+        return $none('result invalid (' . implode('; ', $problems) . ')');
     }
 
-    sort($list);
-
-    return array_map(
-        static fn(array $e): array => ['type' => $e[2], 'loc' => "{$e[0]}:{$e[1]}", 'message' => $e[3]],
-        $list,
-    );
-}
-
-/**
- * Multiset diff of two issue lists. Leftovers at the same file, line_from and type but with a different
- * message are paired up as "changed".
- *
- * @param list<array<string, mixed>> $base
- * @param list<array<string, mixed>> $head
- * @return array{
- *     added: list<array{type: string, loc: string, message: string}>,
- *     removed: list<array{type: string, loc: string, message: string}>,
- *     changed: list<array{type: string, loc: string, old: string, new: string}>
- * }
- */
-function diffIssues(array $base, array $head): array
-{
-    $baseCounts = tally($base);
-    $headCounts = tally($head);
-    $removed = surplus($baseCounts, $headCounts);
-    $added = surplus($headCounts, $baseCounts);
-    ksort($removed);
-    ksort($added);
-
-    $group = static fn(array $p): string => "{$p[0]}\0{$p[1]}\0{$p[3]}";
-    $addedByGroup = [];
-    foreach (array_keys($added) as $key) {
-        $addedByGroup[$group(explode("\0", $key))][] = $key;
-    }
-
-    $changed = [];
-    foreach (array_keys($removed) as $oldKey) {
-        $o = explode("\0", $oldKey);
-        foreach ($addedByGroup[$group($o)] ?? [] as $newKey) {
-            $n = explode("\0", $newKey);
-            while ($removed[$oldKey] > 0 && $added[$newKey] > 0) {
-                $changed[] = ['type' => $o[3], 'loc' => "{$o[0]}:{$o[1]}", 'old' => $o[4], 'new' => $n[4]];
-                $removed[$oldKey]--;
-                $added[$newKey]--;
-            }
-        }
-    }
-
-    return [
-        'added' => entries(array_filter($added)),
-        'removed' => entries(array_filter($removed)),
-        'changed' => $changed,
-    ];
-}
-
-/**
- * Per issue type counts of a diff, to spot volatile types.
- *
- * @param array{
- *     added: list<array{type: string}>,
- *     removed: list<array{type: string}>,
- *     changed: list<array{type: string}>
- * } $diff
- * @return array<string, array{added: int, removed: int, changed: int}>
- */
-function countByType(array $diff): array
-{
-    $types = [];
-    foreach (['added', 'removed', 'changed'] as $kind) {
-        foreach ($diff[$kind] as $e) {
-            $types[$e['type']] ??= ['added' => 0, 'removed' => 0, 'changed' => 0];
-            $types[$e['type']][$kind]++;
-        }
-    }
-
-    ksort($types);
-
-    return $types;
+    return ['result' => $r, 'problem' => null, 'issues' => $issues];
 }
 
 function deltaPct(float|int|null $base, float|int|null $head): ?float
@@ -216,295 +138,431 @@ function deltaPct(float|int|null $base, float|int|null $head): ?float
     return ($head - $base) / $base * 100;
 }
 
+/** @param array<string, mixed> $r */
+function metricOf(array $r, string $metric): float|int|null
+{
+    $v = $r['metrics'][$metric] ?? null;
+
+    return is_numeric($v) ? $v + 0 : null;
+}
+
+/** @param array<string, mixed> $r */
+function cpuOf(array $r): ?string
+{
+    $cpu = $r['env']['soft']['cpu'] ?? null;
+
+    return is_string($cpu) && $cpu !== '' ? $cpu : null;
+}
+
+/** CPU model strings compare case-insensitively with collapsed whitespace. */
+function normalizeCpu(?string $cpu): ?string
+{
+    return $cpu === null ? null : mb_strtolower(trim((string) preg_replace('/\s+/', ' ', $cpu)));
+}
+
 /**
+ * Shared libraries (soft fingerprint) whose hash differs between the runs; empty when either side has no data.
+ *
  * @param array<string, mixed> $base
  * @param array<string, mixed> $head
- * @return list<string> names of the fingerprint env keys that differ
+ * @return list<string>
  */
-function fingerprintMismatch(array $base, array $head): array
+function softLibDiff(array $base, array $head): array
 {
+    $b = $base['env']['soft']['libs'] ?? null;
+    $h = $head['env']['soft']['libs'] ?? null;
+    if (!is_array($b) || !is_array($h)) {
+        return [];
+    }
+
     $differs = [];
-    foreach (FINGERPRINT_KEYS as $key) {
-        if (($base['env'][$key] ?? null) !== ($head['env'][$key] ?? null)) {
-            $differs[] = $key;
+    foreach (array_unique([...array_keys($b), ...array_keys($h)]) as $path) {
+        if (($b[$path] ?? null) !== ($h[$path] ?? null)) {
+            $differs[] = basename((string) $path);
         }
     }
 
-    if (($base['mode'] ?? null) !== ($head['mode'] ?? null)) {
-        $differs[] = 'mode';
-    }
+    sort($differs);
 
     return $differs;
 }
 
 /**
- * Everything compare knows about one project.
+ * PHP "Allowed memory size" fatal, an OOM kill, or (only when the OOM counter is unknown) a SIGKILL while the process
+ * held at least 90 % of the VM's RAM.
  *
- * @param array<string, mixed>|null $base
- * @param array<string, mixed>|null $head
- * @return array<string, mixed>
+ * @param array<string, mixed> $head
  */
-function analyzeProject(string $name, ?array $base, ?array $head, string $baseDir, string $headDir): array
+function isMemoryCrash(array $head): bool
 {
-    $baseOk = ($base['status'] ?? null) === 'ok';
-    $headOk = ($head['status'] ?? null) === 'ok';
-    $p = [
-        'status_base' => $base['status'] ?? null,
-        'status_head' => $head['status'] ?? null,
-        'mode' => $head['mode'] ?? $base['mode'] ?? null,
-        'comparison_valid' => true,
-        'invalid_reasons' => [],
-        'metrics' => [],
-        'issues' => null,
-        'diff' => null,
-        'gate' => [],
-    ];
-
-    if ($base === null || $head === null) {
-        return $p;
+    $tail = (string) ($head['log_tail'] ?? '') . "\n" . (string) ($head['reason'] ?? '');
+    if (str_contains($tail, 'Allowed memory size')) {
+        return true;
     }
 
-    $mismatch = fingerprintMismatch($base, $head);
-    if ($mismatch !== []) {
-        $p['comparison_valid'] = false;
-        $p['invalid_reasons'] = $mismatch;
+    if (is_bool($head['oom_killed'] ?? null)) {
+        return $head['oom_killed'];
     }
 
-    if ($baseOk && $headOk) {
-        foreach (METRICS as $metric) {
-            $b = $base['metrics'][$metric] ?? null;
-            $h = $head['metrics'][$metric] ?? null;
-            if ($b !== null && $h !== null) {
-                $p['metrics'][$metric] = ['base' => $b, 'head' => $h, 'delta_pct' => deltaPct($b, $h)];
-            }
-        }
+    $killed = ($head['exit_code'] ?? null) === 137 || ($head['signal'] ?? null) === 'SIGKILL';
+    $rssKb = $head['max_rss_kb'] ?? $head['metrics']['rss_t1_kb'] ?? null;
+    $ramKb = $head['env']['vm_ram_kb'] ?? DEFAULT_VM_RAM_KB;
 
-        if ($p['comparison_valid']) {
-            foreach (['ir' => IR_GATE_PCT, 'psalm_mb' => MB_GATE_PCT] as $metric => $limit) {
-                $delta = $p['metrics'][$metric]['delta_pct'] ?? null;
-                if ($delta !== null && $delta > $limit) {
-                    $label = $metric === 'ir' ? 'Ir' : 'Psalm MB';
-                    $p['gate'][] = sprintf('%s: %s %s (gate +%d %%)', $name, $label, fmtPct($delta), (int) $limit);
-                }
-            }
-        }
-
-        $baseIssues = loadIssues($baseDir, $base);
-        $headIssues = loadIssues($headDir, $head);
-        if ($baseIssues !== null && $headIssues !== null) {
-            $diff = diffIssues($baseIssues, $headIssues);
-            $p['diff'] = $diff;
-            $p['issues'] = [
-                'base' => count($baseIssues),
-                'head' => count($headIssues),
-                'added' => count($diff['added']),
-                'removed' => count($diff['removed']),
-                'changed' => count($diff['changed']),
-                'by_type' => countByType($diff),
-            ];
-        }
-    }
-
-    if ($baseOk && in_array($head['status'] ?? null, ['crash', 'timeout'], true)) {
-        $p['gate'][] = sprintf('%s: head %s where base was ok', $name, $head['status']);
-    }
-
-    return $p;
+    return $killed && is_numeric($rssKb) && is_numeric($ramKb) && $rssKb >= OOM_RSS_RATIO * $ramKb;
 }
 
-function fmtPct(float $pct): string
+/**
+ * Base time scaled to the slowest measured CPU (cachegrind: instruction count; native: only the measured wall time).
+ *
+ * @param array<string, mixed> $base
+ * @param array<string, mixed> $exp
+ */
+function predictedSlowestSeconds(array $base, array $exp): ?float
 {
-    return str_replace('-', '−', sprintf('%+.2f %%', $pct));
+    $ir = metricOf($base, 'ir');
+    if ($exp['mode'] === 'cachegrind') {
+        $expIr = (float) ($exp['expected_ir'] ?? 0);
+
+        return $ir === null || $expIr <= 0 ? null : $ir * (float) ($exp['expected_seconds'] ?? 0) / $expIr;
+    }
+
+    $wall = metricOf($base, 'wall_t1');
+
+    return $wall === null ? null : (float) $wall;
 }
 
-/** Δ shown only when |Δ| >= 0.5 %, otherwise "≈". */
-function fmtDelta(?float $pct): string
+/**
+ * @param array<string, mixed> $r ok result
+ * @param array<string, mixed> $exp
+ * @return list<string>
+ */
+function nearLimitMarks(string $side, array $r, array $exp): array
 {
-    if ($pct === null) {
-        return 'n/a';
+    $marks = [];
+    $limit = (float) ($exp['limit_mb'] ?? 0);
+    $mb = metricOf($r, 'psalm_mb');
+    if ($limit > 0 && $mb !== null && $mb > NEAR_LIMIT_RATIO * $limit) {
+        $marks[] = sprintf('%s near memory limit (%.0f of %.0f MB)', $side, $mb, $limit);
     }
 
-    return abs($pct) >= SHOW_PCT ? fmtPct($pct) : '≈';
-}
-
-function fmtIr(int|float $ir): string
-{
-    return number_format($ir / 1e9, 2) . 'G';
-}
-
-/** Markdown inline code of arbitrary text: one line, clipped, no backticks. */
-function code(string $text, int $max = CLIP_CHARS): string
-{
-    $text = (string) preg_replace('/\s+/u', ' ', $text);
-
-    return '`' . str_replace('`', "'", mb_strimwidth($text, 0, $max, '…')) . '`';
-}
-
-/** @param array<string, mixed> $p */
-function irCell(array $p, ?array $head): string
-{
-    if ($p['status_base'] === null) {
-        $ir = $head['metrics']['ir'] ?? null;
-
-        if ($p['status_head'] !== 'ok') {
-            return (string) $p['status_head'];
-        }
-
-        return 'no base' . ($ir !== null ? ' (' . fmtIr($ir) . ')' : '');
+    $timeout = (float) ($exp['timeout'] ?? 0);
+    $wall = metricOf($r, 'wall_t1') ?? (is_numeric($r['elapsed_analysis'] ?? null) ? $r['elapsed_analysis'] : null);
+    if ($timeout > 0 && $wall !== null && $wall >= NEAR_LIMIT_RATIO * $timeout) {
+        $marks[] = sprintf('%s within 20 %% of timeout (%.0f of %.0f s)', $side, $wall, $timeout);
     }
 
-    if ($p['status_head'] === null) {
-        return 'no head result';
-    }
-
-    if ($p['status_head'] !== 'ok') {
-        return sprintf('❌ %s', $p['status_head']);
-    }
-
-    if ($p['status_base'] !== 'ok') {
-        return sprintf('base %s', $p['status_base']);
-    }
-
-    $m = $p['metrics']['ir'] ?? null;
-    if ($m === null) {
-        return '–';
-    }
-
-    if (!$p['comparison_valid']) {
-        return 'invalid';
-    }
-
-    $cell = fmtDelta($m['delta_pct']);
-    if ($cell !== '≈') {
-        $cell .= sprintf(' (%s → %s)', fmtIr($m['base']), fmtIr($m['head']));
-    }
-
-    return $m['delta_pct'] > IR_GATE_PCT ? $cell . ' ❌' : $cell;
-}
-
-/** @param array<string, mixed> $p */
-function mbCell(array $p): string
-{
-    $m = $p['metrics']['psalm_mb'] ?? null;
-    if ($m === null || $p['status_head'] !== 'ok' || $p['status_base'] !== 'ok') {
-        return '–';
-    }
-
-    if (!$p['comparison_valid']) {
-        return 'invalid';
-    }
-
-    $cell = fmtDelta($m['delta_pct']);
-    if ($cell !== '≈') {
-        $cell .= sprintf(' (%.1f → %.1f)', $m['base'], $m['head']);
-    }
-
-    return $m['delta_pct'] > MB_GATE_PCT ? $cell . ' ❌' : $cell;
-}
-
-/** @param array<string, mixed> $p */
-function wallCell(array $p, ?array $head): string
-{
-    $parts = [];
-    foreach (['wall_t1' => 't1', 'wall_t4' => 't4'] as $metric => $label) {
-        $m = $p['metrics'][$metric] ?? null;
-        $value = $m['head'] ?? $head['metrics'][$metric] ?? null;
-        if ($value === null) {
-            continue;
-        }
-
-        $delta = $m !== null ? fmtDelta($m['delta_pct']) : '≈';
-        $parts[] = sprintf('%s %.1fs%s', $label, $value, in_array($delta, ['≈', 'n/a'], true) ? '' : " ({$delta})");
-    }
-
-    return $parts === [] ? '–' : implode(' / ', $parts);
-}
-
-/** @param array<string, mixed> $p */
-function issuesCell(array $p, ?array $base, ?array $head): string
-{
-    $i = $p['issues'];
-    if ($i === null) {
-        $count = $head['issue_count'] ?? null;
-
-        return $count === null ? '–' : (string) $count;
-    }
-
-    if ($i['added'] + $i['removed'] + $i['changed'] === 0) {
-        return $i['base'] === $i['head'] ? "{$i['head']} (unchanged)" : "{$i['base']} → {$i['head']}";
-    }
-
-    return sprintf('%d → %d (+%d / −%d / ~%d)', $i['base'], $i['head'], $i['added'], $i['removed'], $i['changed']);
+    return $marks;
 }
 
 /**
  * @param array<string, mixed> $p
+ * @param list<string> $reasons
+ * @return array<string, mixed>
  */
-function renderDetails(string $name, array $p): string
+function finish(array $p, string $outcome, array $reasons): array
 {
-    $i = $p['issues'];
-    $d = $p['diff'];
-    $out = sprintf(
-        "<details><summary><b>%s</b>: issues %d → %d (+%d / −%d / ~%d)</summary>\n\n",
-        htmlspecialchars($name),
-        $i['base'],
-        $i['head'],
-        $i['added'],
-        $i['removed'],
-        $i['changed'],
-    );
+    $p['outcome'] = $outcome;
+    $p['reasons'] = $reasons;
 
-    $out .= "| Type | added | removed | changed |\n|---|---|---|---|\n";
-    foreach ($i['by_type'] as $type => $n) {
-        $out .= sprintf("| %s | %d | %d | %d |\n", $type, $n['added'], $n['removed'], $n['changed']);
-    }
-
-    $out .= "\n";
-
-    foreach (['added' => 'Added', 'removed' => 'Removed', 'changed' => 'Changed'] as $key => $label) {
-        if ($d[$key] === []) {
-            continue;
-        }
-
-        $out .= sprintf("**%s** (%d)\n\n", $label, count($d[$key]));
-        foreach (array_slice($d[$key], 0, LIST_CAP) as $e) {
-            if ($key === 'changed') {
-                $out .= sprintf(
-                    "- **%s** %s\n  - was: %s\n  - now: %s\n",
-                    $e['type'],
-                    code($e['loc']),
-                    code($e['old']),
-                    code($e['new']),
-                );
-            } else {
-                $out .= sprintf("- **%s** %s %s\n", $e['type'], code($e['loc']), code($e['message']));
-            }
-        }
-
-        if (count($d[$key]) > LIST_CAP) {
-            $out .= sprintf("- … and %d more\n", count($d[$key]) - LIST_CAP);
-        }
-
-        $out .= "\n";
-    }
-
-    return $out . "</details>\n";
+    return $p;
 }
 
 /**
- * @param array<string, mixed> $result
+ * Head crashed or timed out where base was ok.
+ *
+ * @param array<string, mixed> $p
+ * @param array<string, mixed> $exp
+ * @return array<string, mixed>
  */
-function renderLogTail(string $name, string $side, array $result): string
+function headFailureOutcome(array $p, array $base, array $head, array $exp): array
 {
-    $lines = array_slice(explode("\n", trim((string) ($result['log_tail'] ?? ''))), -LOG_TAIL_LINES);
-    $clipped = array_map(static fn(string $l): string => mb_strimwidth($l, 0, 200, '…'), $lines);
-    $tail = str_replace('```', "'''", implode("\n", $clipped));
+    if ($head['status'] === 'crash') {
+        if (!isMemoryCrash($head)) {
+            return finish($p, 'regression', ['head crashed where base was ok']);
+        }
 
-    return sprintf(
-        "<details><summary><b>%s</b> %s: %s</summary>\n\n```\n%s\n```\n</details>\n",
-        htmlspecialchars($name),
-        $side,
-        htmlspecialchars((string) ($result['status'] ?? '?')),
-        $tail === '' ? '(no log)' : $tail,
-    );
+        $limit = (float) ($exp['limit_mb'] ?? 0);
+        $baseMb = (float) metricOf($base, 'psalm_mb');
+        if ($limit <= 0 || $baseMb > NEAR_LIMIT_RATIO * $limit) {
+            return finish($p, 'inconclusive', [sprintf(
+                'head hit the memory limit but base (%.0f MB) is within 20 %% of it (%.0f MB)',
+                $baseMb,
+                $limit,
+            )]);
+        }
+
+        return finish($p, 'regression', ['head hit the memory limit where base was ok']);
+    }
+
+    $timeout = (float) ($exp['timeout'] ?? 0);
+    $predicted = predictedSlowestSeconds($base, $exp);
+    if ($predicted === null || $timeout <= 0) {
+        return finish($p, 'inconclusive', ['head timed out; base time cannot be scaled to the slowest CPU']);
+    }
+
+    if ($exp['mode'] === 'native') {
+        $baseCpu = normalizeCpu(cpuOf($base));
+        if ($p['base_source'] !== 'measured' || $baseCpu === null || $baseCpu !== normalizeCpu(cpuOf($head))) {
+            return finish($p, 'inconclusive', ['head timed out; native base ran on another CPU or was cached']);
+        }
+    }
+
+    if ($predicted > NEAR_LIMIT_RATIO * $timeout) {
+        return finish($p, 'inconclusive', [sprintf(
+            'head timed out but base is within 20 %% of the timeout (predicted %.0f of %.0f s)',
+            $predicted,
+            $timeout,
+        )]);
+    }
+
+    return finish($p, 'regression', [sprintf(
+        'head timed out (%.0f s) where base needs ~%.0f s (scaled to the slowest CPU for cachegrind)',
+        $timeout,
+        $predicted,
+    )]);
+}
+
+/**
+ * Both ok, same env fingerprint.
+ *
+ * @param array<string, mixed> $p
+ * @param array<string, mixed> $base
+ * @param array<string, mixed> $head
+ * @return array<string, mixed>
+ */
+function compareOutcome(array $p, array $base, array $head): array
+{
+    $reasons = [];
+    $irDowngraded = false;
+    foreach (['ir' => IR_REGRESSION_PCT, 'psalm_mb' => MB_REGRESSION_PCT] as $metric => $limit) {
+        $m = $p['metrics'][$metric] ?? null;
+        if ($m === null || $m['delta_pct'] === null || $m['delta_pct'] <= $limit) {
+            continue;
+        }
+
+        if ($metric === 'ir' && $p['env_differs'] !== []) {
+            $irDowngraded = true;
+            continue;
+        }
+
+        $label = $metric === 'ir' ? 'Ir' : 'Psalm MB';
+        $reasons[] = sprintf('%s %s (limit +%d %%)', $label, fmtPct($m['delta_pct']), (int) $limit);
+    }
+
+    if ($reasons !== []) {
+        return finish($p, 'regression', $reasons);
+    }
+
+    if ($irDowngraded) {
+        return finish($p, 'inconclusive', [sprintf(
+            'Ir %s, but shared libraries differ (%s)',
+            fmtPct($p['metrics']['ir']['delta_pct']),
+            implode(', ', array_slice($p['env_differs'], 0, 5)),
+        )]);
+    }
+
+    return finish($p, 'compared', []);
+}
+
+/**
+ * @param array<string, mixed> $p
+ * @param array<string, mixed> $head ok result
+ * @param array<string, mixed> $exp
+ * @return array<string, mixed>
+ */
+function headOnlyOutcome(array $p, array $head, array $exp): array
+{
+    $mb = metricOf($head, 'psalm_mb');
+    if ($mb !== null && $mb > (float) ($exp['expected_mb'] ?? INF)) {
+        $p['warnings'][] = sprintf(
+            'Psalm MB %.0f exceeds expected_mb %.0f; update corpus.json',
+            $mb,
+            $exp['expected_mb'],
+        );
+    }
+
+    $expSeconds = (float) ($exp['expected_seconds'] ?? 0);
+    $predicted = predictedSlowestSeconds($head, $exp);
+    if ($expSeconds > 0 && $predicted !== null && $predicted > DRIFT_RATIO * $expSeconds) {
+        $p['warnings'][] = sprintf(
+            'drift: predicted slowest-CPU time %.0f s > 1.2 x expected %.0f s',
+            $predicted,
+            $expSeconds,
+        );
+    }
+
+    $p['near'] = nearLimitMarks('head', $head, $exp);
+    foreach (METRICS as $metric) {
+        if (metricOf($head, $metric) !== null) {
+            $p['metrics'][$metric] = ['base' => null, 'head' => metricOf($head, $metric), 'delta_pct' => null];
+        }
+    }
+
+    return finish($p, 'compared', []);
+}
+
+/**
+ * Everything compare knows about one project.
+ *
+ * @param array<string, mixed> $exp project entry of expected.json
+ * @param array{
+ *     headOnly: bool,
+ *     lockFailure: ?string,
+ *     baseDir: ?string,
+ *     headDir: ?string,
+ *     bundleDir: ?string,
+ *     locks: array<string, mixed>
+ * } $ctx
+ * @return array<string, mixed>
+ */
+function evaluateProject(string $name, array $exp, array $ctx): array
+{
+    $baseSource = (string) ($exp['revs']['base']['source'] ?? 'none');
+    $p = [
+        'outcome' => 'inconclusive',
+        'reasons' => [],
+        'warnings' => [],
+        'near' => [],
+        'mode' => $exp['mode'] ?? null,
+        'base_source' => $baseSource,
+        'status_base' => null,
+        'status_head' => null,
+        'base' => null,
+        'head' => null,
+        'metrics' => [],
+        'env_differs' => [],
+        'issues' => null,
+        'diff' => null,
+    ];
+
+    $head = loadSide($ctx['headDir'], $name, 'head', $exp, $ctx['locks']['head'] ?? null);
+    $p['head'] = $head['result'];
+    $p['status_head'] = $head['result']['status'] ?? null;
+
+    if ($ctx['lockFailure'] !== null) {
+        return finish($p, 'inconclusive', [$ctx['lockFailure']]);
+    }
+
+    if ($ctx['headOnly']) {
+        if ($head['result'] === null) {
+            return finish($p, 'inconclusive', ["head {$head['problem']}"]);
+        }
+
+        if ($p['status_head'] !== 'ok') {
+            return finish($p, 'inconclusive', ["head {$p['status_head']}: " . resultReason($head['result'])]);
+        }
+
+        return headOnlyOutcome($p, $head['result'], $exp);
+    }
+
+    $baseDir = match ($baseSource) {
+        'measured' => $ctx['baseDir'],
+        'cached' => $ctx['bundleDir'] === null ? null : rtrim($ctx['bundleDir'], '/') . '/results',
+        default => null,
+    };
+    $base = $baseSource === 'none'
+        ? ['result' => null, 'problem' => 'result not expected', 'issues' => null]
+        : loadSide($baseDir, $name, 'base', $exp, $ctx['locks']['base'] ?? null);
+    $p['base'] = $base['result'];
+    $p['status_base'] = $base['result']['status'] ?? null;
+
+    if (in_array($p['status_base'], ['crash', 'timeout'], true)) {
+        return finish($p, 'not_comparable', ["base {$p['status_base']}: " . resultReason($base['result'])]);
+    }
+
+    foreach (['base' => $base, 'head' => $head] as $side => $s) {
+        if ($s['result'] === null) {
+            return finish($p, 'inconclusive', ["{$side} {$s['problem']}"]);
+        }
+
+        if (in_array($s['result']['status'], ['setup-failed', 'inconclusive'], true)) {
+            return finish($p, 'inconclusive', ["{$side} {$s['result']['status']}: " . resultReason($s['result'])]);
+        }
+    }
+
+    return compareResults($p, $base, $head, $exp);
+}
+
+/**
+ * Both sides are valid; base is ok, head is anything but setup-failed/inconclusive.
+ *
+ * @param array<string, mixed> $p
+ * @param array{result: array<string, mixed>|null, issues: list<array<string, mixed>>|null} $base
+ * @param array{result: array<string, mixed>|null, issues: list<array<string, mixed>>|null} $head
+ * @param array<string, mixed> $exp
+ * @return array<string, mixed>
+ */
+function compareResults(array $p, array $base, array $head, array $exp): array
+{
+    $b = $base['result'];
+    $h = $head['result'];
+    $p['near'] = nearLimitMarks('base', $b, $exp);
+    $baseMb = metricOf($b, 'psalm_mb');
+    if ($baseMb !== null && $baseMb > (float) ($exp['expected_mb'] ?? INF)) {
+        $p['warnings'][] = sprintf(
+            'base Psalm MB %.0f exceeds expected_mb %.0f; update corpus.json',
+            $baseMb,
+            $exp['expected_mb'],
+        );
+    }
+
+    $baseFp = $b['env']['fingerprint'] ?? null;
+    $headFp = $h['env']['fingerprint'] ?? null;
+    $p['env_differs'] = softLibDiff($b, $h);
+
+    if ($h['status'] !== 'ok') {
+        if ($baseFp !== null && $headFp !== null && $baseFp !== $headFp) {
+            return finish($p, 'inconclusive', ["head {$h['status']}, and the environment fingerprint differs"]);
+        }
+
+        return headFailureOutcome($p, $b, $h, $exp);
+    }
+
+    $p['near'] = [...$p['near'], ...nearLimitMarks('head', $h, $exp)];
+    foreach (METRICS as $metric) {
+        $bv = metricOf($b, $metric);
+        $hv = metricOf($h, $metric);
+        if ($bv !== null && $hv !== null) {
+            $p['metrics'][$metric] = ['base' => $bv, 'head' => $hv, 'delta_pct' => deltaPct($bv, $hv)];
+        }
+    }
+
+    if ($base['issues'] !== null && $head['issues'] !== null) {
+        $diff = diffIssues($base['issues'], $head['issues']);
+        $p['diff'] = $diff;
+        $p['issues'] = [
+            'base' => count($base['issues']),
+            'head' => count($head['issues']),
+            'added' => count($diff['added']),
+            'removed' => count($diff['removed']),
+            'changed' => count($diff['changed']),
+            'by_type' => countByType($diff),
+        ];
+    }
+
+    if ($baseFp !== $headFp) {
+        return finish($p, 'inconclusive', ['environment fingerprint differs between base and head']);
+    }
+
+    return compareOutcome($p, $b, $h);
+}
+
+/** @param array<string, mixed> $r */
+function resultReason(array $r): string
+{
+    $reason = trim((string) ($r['reason'] ?? ''));
+    if ($reason !== '') {
+        return $reason;
+    }
+
+    $lines = array_values(array_filter(
+        array_map('trim', explode("\n", (string) ($r['log_tail'] ?? ''))),
+        static fn(string $l): bool => $l !== '',
+    ));
+    $fatal = array_values(array_filter(
+        $lines,
+        static fn(string $l): bool => preg_match('/Fatal|Allowed memory/i', $l) === 1,
+    ));
+
+    return $fatal[0] ?? $lines[count($lines) - 1] ?? 'no details';
 }
