@@ -153,9 +153,10 @@ write_config() {
 }
 
 # ------------------------------------------------------------------- one run
-# Psalm's "Checks took X seconds and used Y MB of memory" line: Y.
+# Psalm's "Checks took X seconds and used Y MB of memory" line: Y. grep -a: GNU grep reports a log with a NUL byte
+# (symfony issue messages) as "binary file matches" on stderr and prints no line.
 parse_psalm_mb() {
-    { grep -E 'Checks took .* seconds and used .*MB of memory' "$1" || true; } | tail -n 1 \
+    { grep -aE 'Checks took .* seconds and used .*MB of memory' "$1" || true; } | tail -n 1 \
         | sed -E 's/.*used ([0-9.,]+)MB.*/\1/' | tr -d ','
 }
 
@@ -177,7 +178,7 @@ parse_time() {
 # Fatal-error lines first, then the end of the log; ANSI colours stripped; at most 4000 bytes.
 log_tail() {
     {
-        { grep -E 'Fatal error|Allowed memory size|Hard memory limit' "$1" || true; } | sed -n '1,5p'
+        { grep -aE 'Fatal error|Allowed memory size|Hard memory limit' "$1" || true; } | sed -n '1,5p'
         tail -n 30 "$1"
     } | sed $'s/\033\\[[0-9;]*m//g' | cut -c1-300 | head -c 4000 || true
 }
@@ -190,7 +191,7 @@ classify() {
     if [ -n "$TIME_SIGNAL" ]; then code=$((128 + TIME_SIGNAL)); fi
     if [ "$rc" -ge 125 ] && [ "$rc" -le 127 ]; then
         RUN_STATUS=error
-        RUN_REASON="launcher failed with exit code $rc: $(grep -v '^[[:space:]]*$' "$log" | tail -n 1 | cut -c1-200)"
+        RUN_REASON="launcher failed with exit code $rc: $(grep -av '^[[:space:]]*$' "$log" | tail -n 1 | cut -c1-200)"
     elif [ "$rc" -eq 124 ] || { [ "$rc" -eq 137 ] && awk -v w="$wall" -v l="$TIMEOUT" 'BEGIN { exit !(w >= l) }'; }; then
         RUN_STATUS=timeout
         RUN_REASON="exceeded ${TIMEOUT}s"

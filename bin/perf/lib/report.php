@@ -13,9 +13,21 @@ function fmtPct(?float $pct): string
     return $pct === null ? 'n/a' : str_replace('-', '−', sprintf('%+.1f %%', $pct));
 }
 
+/** Integer with a non-breaking space as thousands separator, explicit sign, U+2212 minus. */
 function fmtSigned(int $n): string
 {
-    return str_replace('-', '−', sprintf('%+d', $n));
+    return ($n < 0 ? '−' : '+') . fmtInt(abs($n));
+}
+
+function fmtInt(int $n): string
+{
+    return number_format($n, 0, '', "\u{A0}");
+}
+
+/** Relative change with two decimals; '<0.01 %' for a non-zero change that rounds to zero. */
+function fmtPct2(float $pct): string
+{
+    return abs($pct) > 0.0 && abs($pct) < 0.005 ? '<0.01 %' : str_replace('-', '−', sprintf('%+.2f %%', $pct));
 }
 
 function inlineCode(string $text): string
@@ -71,15 +83,66 @@ function issuesCell(array $p): string
 }
 
 /**
- * Informational issue score "base → head (Δ)", "–" without issue lists.
+ * "base → head (Δ, Δ %)" of the weighted issues, "(=)" when unchanged, "–" without issue lists.
  *
  * @param array<string, mixed> $p
  */
-function scoreCell(array $p): string
+function weightedCell(array $p): string
 {
-    $s = $p['score'] ?? null;
+    $w = $p['weighted_issues'] ?? null;
 
-    return $s === null ? '–' : sprintf('%d → %d (%s)', $s['base'], $s['head'], fmtSigned($s['delta']));
+    return $w === null ? '–' : weightedSummary($w);
+}
+
+/**
+ * @param array{base: int, head: int, delta: int, delta_pct: ?float} $w
+ */
+function weightedSummary(array $w): string
+{
+    $change = $w['delta'] === 0
+        ? '='
+        : fmtSigned($w['delta']) . ($w['delta_pct'] === null ? '' : ', ' . fmtPct2($w['delta_pct']));
+
+    return sprintf('%s → %s (%s)', fmtInt($w['base']), fmtInt($w['head']), $change);
+}
+
+/**
+ * Pooled weighted issues over the projects compared on both sides (Σhead / Σbase, never a sum of percentages).
+ *
+ * @param array<string, mixed> $summary
+ */
+function corpusWeightedLine(array $summary): string
+{
+    $base = $head = $changed = $n = 0;
+    $largest = null;
+    foreach ($summary['projects'] as $name => $p) {
+        $w = $p['weighted_issues'] ?? null;
+        if ($w === null) {
+            continue;
+        }
+
+        $n++;
+        $base += $w['base'];
+        $head += $w['head'];
+        $changed += $w['delta'] !== 0 ? 1 : 0;
+        if ($w['delta_pct'] !== null && abs($w['delta_pct']) > abs($largest[1] ?? 0.0)) {
+            $largest = [$name, $w['delta_pct']];
+        }
+    }
+
+    if ($n === 0) {
+        return '';
+    }
+
+    $pooled = ['base' => $base, 'head' => $head, 'delta' => $head - $base, 'delta_pct' => pctDelta($base, $head)];
+
+    return sprintf(
+        "Σ %s · %d/%d projects changed%s\n\n",
+        weightedSummary($pooled),
+        $changed,
+        $n,
+        $largest === null ? '' : " · largest: {$largest[0]} " . fmtPct2($largest[1]),
+    );
 }
 
 /**
@@ -90,9 +153,9 @@ function scoreCell(array $p): string
 function levelDeltas(array $p): string
 {
     $deltas = [];
-    foreach ($p['score']['by_level'] ?? [] as $label => $l) {
+    foreach ($p['weighted_issues']['by_level'] ?? [] as $label => $l) {
         if ($l['delta'] !== 0) {
-            $deltas[] = "{$label} " . fmtSigned($l['delta']);
+            $deltas[] = str_replace('_', ' ', $label) . ' ' . fmtSigned($l['delta']);
         }
     }
 
@@ -119,7 +182,7 @@ function detailsFor(string $name, array $p): string
     $parts = [];
     $i = $p['issues'] ?? null;
     if (($levels = levelDeltas($p)) !== '') {
-        $parts[] = '**Score** ' . scoreCell($p) . ": {$levels}";
+        $parts[] = '**Weighted issues** ' . weightedCell($p) . ": {$levels}";
     }
 
     if ($i !== null && ($i['added'] > 0 || $i['removed'] > 0)) {
@@ -171,13 +234,8 @@ function renderReport(array $summary, ?string $runUrl): string
         comparedCount($summary),
         $total,
     );
-    $scores = array_filter(array_column($summary['projects'], 'score'));
-    if ($scores !== []) {
-        $out .= 'Issue score Δ ' . fmtSigned(array_sum(array_column($scores, 'delta')))
-            . " (informational, see the README)\n\n";
-    }
-
-    $out .= "| Project | Psalm MB | Wall | Issues | Score | Status |\n|---|---|---|---|---|---|\n";
+    $out .= corpusWeightedLine($summary);
+    $out .= "| Project | Psalm MB | Wall | Issues | Weighted issues | Status |\n|---|---|---|---|---|---|\n";
     foreach ($summary['projects'] as $name => $p) {
         $out .= sprintf(
             "| %s | %s | %s | %s | %s | %s |\n",
@@ -185,10 +243,14 @@ function renderReport(array $summary, ?string $runUrl): string
             metricCell($p, 'psalm_mb', '%.0f', $p['mb_delta']),
             wallCell($p),
             issuesCell($p),
-            scoreCell($p),
+            weightedCell($p),
             trim(VERDICT_ICONS[$p['verdict']] . ' ' . tableCell(implode('; ', $p['notes']))),
         );
     }
+
+    $out .= "\nWeighted issues = issues weighted by error level (levels 1–8 as is, always-errors 10, "
+        . "feature-specific and purity suggestions 0). The corpus code is pinned, so a change means Psalm reports "
+        . "more, fewer or differently serious issues. Informational; a rise is not necessarily a regression.\n";
 
     $out .= "\nMemory is Psalm's own peak figure (threads=1). Wall time is informational: base and head ran on the "
         . "same runner, expect ±10 % noise; \"re-run\" means a reversed second run was taken and the faster kept.\n";

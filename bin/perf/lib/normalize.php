@@ -23,7 +23,7 @@ function runNormalize(array $args): int
  * - digit runs of >= 9 characters in messages become '#': runtime values such as REQUEST_TIME embedded in
  *   $_SERVER shapes would otherwise differ on every run
  * - sorted; severity is kept because it is part of an issue's identity
- * - error_level (the issue type's ERROR_LEVEL: -2, -1, 1..8) is kept for the score, not part of the identity
+ * - error_level (the issue type's ERROR_LEVEL: -2, -1, 1..8) is kept for the weighted issues, not part of the identity
  *
  * @throws RuntimeException when the report is unreadable or the output cannot be written
  */
