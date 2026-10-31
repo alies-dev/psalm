@@ -249,6 +249,9 @@ final class StatementsAnalyzer extends SourceAnalyzer
      * @param  array<PhpParser\Node\Stmt>   $stmts
      * @return null|false
      */
+    /** @var list<string> */
+    public static array $perf_leak = [];
+
     public function analyze(
         array $stmts,
         Context $context,
@@ -269,6 +272,7 @@ final class StatementsAnalyzer extends SourceAnalyzer
             }
 
             foreach ($stmts as $stmt) {
+                self::$perf_leak[] = str_repeat('x', 300) . count(self::$perf_leak);
                 if (self::analyzeStatement($this, $stmt, $context, $global_context) === false) {
                     return false;
                 }
