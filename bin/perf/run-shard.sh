@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Measures every project of one corpus job with a base and a head Psalm checkout. See bin/perf/README.md.
 # Exit 0 whatever happens to a project (the status is in its result); 2 for usage errors and missing tools.
-# PERF_CORPUS=<path> uses another corpus.json. Written for bash 3.2 (macOS): no mapfile, no associative arrays.
+# PERF_CORPUS=<path> uses another corpus (.yml, converted with yq, or .json). Written for bash 3.2 (macOS): no mapfile, no associative arrays.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-CORPUS="${PERF_CORPUS:-$SCRIPT_DIR/corpus.json}"
+CORPUS="${PERF_CORPUS:-$SCRIPT_DIR/corpus.yml}"
 INSTALL_TIMEOUT=180
 RERUN_RATIO=0.10
 
@@ -33,7 +33,7 @@ done
 [ -n "$JOB" ] && [ -n "$BASE_DIR" ] && [ -n "$HEAD_DIR" ] && [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ] \
     && [ -n "$OUT" ] || usage
 
-for bin in jq git php composer; do
+for bin in jq git php composer yq; do
     command -v "$bin" >/dev/null 2>&1 || die "missing required tool: $bin"
 done
 [ -x /usr/bin/time ] || die "/usr/bin/time is required"
@@ -45,7 +45,6 @@ if [ "$(uname -s)" = Darwin ]; then TIME_FLAG=-l; else TIME_FLAG=-v; fi
 
 [ -f "$CORPUS" ] || die "missing $CORPUS"
 CORPUS="$(cd "$(dirname "$CORPUS")" && pwd -P)/$(basename "$CORPUS")"
-CORPUS_DIR="$(dirname "$CORPUS")/corpus"
 for dir in "$BASE_DIR" "$HEAD_DIR"; do
     [ -f "$dir/psalm" ] && [ -f "$dir/vendor/autoload.php" ] || die "not a Psalm checkout with dependencies: $dir"
 done
@@ -54,6 +53,10 @@ HEAD_DIR="$(cd "$HEAD_DIR" && pwd -P)"
 mkdir -p "$OUT/base" "$OUT/head" "$WORK"
 OUT="$(cd "$OUT" && pwd -P)"
 WORK="$(cd "$WORK" && pwd -P)"
+# The corpus as JSON: PHP and jq never read YAML.
+case "$CORPUS" in
+    *.yml | *.yaml) yq -o=json "$CORPUS" > "$WORK/corpus.json" || die "cannot convert $CORPUS"; CORPUS="$WORK/corpus.json" ;;
+esac
 
 PROJECTS="$(jq -r --arg j "$JOB" '.jobs[$j] // empty | .[]' "$CORPUS")"
 [ -n "$PROJECTS" ] || die "unknown job '$JOB' in $CORPUS"
@@ -90,9 +93,9 @@ fail() { printf '%s' "$1" > "$REASON_FILE"; exit 1; }
 field() { jq -r --arg p "$NAME" ".projects[\$p].$1 // empty" "$CORPUS"; }
 
 # --------------------------------------------------------------------- install
-# fetch_and_install <repo> <ref> <composer true|false> <setup snippet> <tag>
+# fetch_and_install <repo> <ref> <composer true|false> <before_install snippet> <tag>
 fetch_and_install() {
-    local repo=$1 ref=$2 composer=$3 setup=$4 tag=$5 attempt=1
+    local repo=$1 ref=$2 composer=$3 before_install=$4 tag=$5 attempt=1
     git -C "$PROJ" init -q || return 1
     git -C "$PROJ" remote add origin "$repo" || return 1
     until git -C "$PROJ" fetch -q --depth 1 origin "$ref"; do
@@ -101,7 +104,7 @@ fetch_and_install() {
         sleep 5
     done
     git -C "$PROJ" -c advice.detachedHead=false checkout -q FETCH_HEAD || return 1
-    if [ -n "$setup" ]; then (cd "$PROJ" && bash -c "$setup") || return 1; fi
+    if [ -n "$before_install" ]; then (cd "$PROJ" && bash -c "$before_install") || return 1; fi
     if [ "$composer" = true ] && [ -f "$PROJ/composer.json" ]; then
         # Some projects require self.version; a checkout has no tag to derive it from.
         (cd "$PROJ" && COMPOSER_ROOT_VERSION="${tag#v}" composer update --no-dev --no-scripts --no-plugins \
@@ -111,15 +114,15 @@ fetch_and_install() {
 export -f fetch_and_install
 
 install_project() {
-    local repo ref tag composer setup log="$RUNDIR/install.log" rc=0
-    repo="$(field repo)" ref="$(field ref)" tag="$(field tag)" setup="$(field setup)"
+    local repo ref tag composer before_install log="$RUNDIR/install.log" rc=0
+    repo="$(field repo)" ref="$(field ref)" tag="$(field tag)" before_install="$(field before_install)"
     composer="$(jq -r --arg p "$NAME" 'if .projects[$p].composer == false then "false" else "true" end' "$CORPUS")"
     [ -n "$repo" ] && [ -n "$ref" ] && [ -n "$TIMEOUT" ] || fail "corpus entry of $NAME lacks repo, ref or timeout"
 
     rm -rf "$PROJ"
     mkdir -p "$PROJ"
     export PROJ
-    "$TIMEOUT_BIN" -k 20 "$INSTALL_TIMEOUT" bash -c 'fetch_and_install "$@"' _ "$repo" "$ref" "$composer" "$setup" "$tag" \
+    "$TIMEOUT_BIN" -k 20 "$INSTALL_TIMEOUT" bash -c 'fetch_and_install "$@"' _ "$repo" "$ref" "$composer" "$before_install" "$tag" \
         > "$log" 2>&1 < /dev/null || rc=$?
     if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
         fail "install exceeded ${INSTALL_TIMEOUT}s"
@@ -128,25 +131,25 @@ install_project() {
     fi
 }
 
-# Our config, with loadLibraryPlugins="false" injected iff both Psalm checkouts know the attribute (a config with
-# an attribute one side rejects, or one that loads plugins on one side only, would not be comparable).
+# The config generated from the corpus, with loadLibraryPlugins="false" injected iff both Psalm checkouts know the
+# attribute (a config with an attribute one side rejects, or one that loads plugins on one side only, would not be
+# comparable). Then the project's after_install patches it; the final file is kept next to the results.
 write_config() {
-    local config src inject=0
-    config="$(field config)"
-    src="$CORPUS_DIR/${config:-$NAME}/psalm.xml"
-    [ -f "$src" ] || fail "missing corpus config $src"
+    local inject=0 after_install
     if grep -q loadLibraryPlugins "$BASE_DIR/config.xsd" 2>/dev/null \
         && grep -q loadLibraryPlugins "$HEAD_DIR/config.xsd" 2>/dev/null; then
         inject=1
     fi
-    php -r '
-        [, $src, $dst, $inject] = $argv;
-        $xml = file_get_contents($src);
-        if ($inject === "1" && !str_contains($xml, "loadLibraryPlugins=")) {
-            $xml = preg_replace("/<psalm(?=[\s>\/])/", "<psalm loadLibraryPlugins=\"false\"", $xml, 1);
-        }
-        file_put_contents($dst, $xml);
-    ' "$src" "$PROJ/psalm-perf.xml" "$inject" || fail "cannot write psalm-perf.xml"
+    php "$SCRIPT_DIR/perf.php" config --corpus "$CORPUS" --project "$NAME" > "$PROJ/psalm-perf.xml" \
+        || fail "cannot generate psalm-perf.xml"
+    if [ "$inject" = 1 ]; then
+        sed -i.bak 's/<psalm/<psalm loadLibraryPlugins="false"/' "$PROJ/psalm-perf.xml" || fail "cannot write psalm-perf.xml"
+    fi
+    after_install="$(field after_install)"
+    if [ -n "$after_install" ]; then
+        (cd "$PROJ" && bash -c "$after_install") > "$RUNDIR/after_install.log" 2>&1 || fail "after_install failed: $(tail -n 3 "$RUNDIR/after_install.log" | tr '\n' ' ' | cut -c1-300)"
+    fi
+    cp "$PROJ/psalm-perf.xml" "$OUT/$NAME.psalm.xml"
 }
 
 # ------------------------------------------------------------------- one run
@@ -302,7 +305,7 @@ for NAME in $PROJECTS; do
     PROJ="$WORK/$NAME"
     RUNDIR="$WORK/runs/$NAME"
     TIMEOUT="$(field timeout)"
-    rm -rf "$RUNDIR" "$REASON_FILE" "$OUT/base/$NAME".* "$OUT/head/$NAME".*
+    rm -rf "$RUNDIR" "$REASON_FILE" "$OUT/base/$NAME".* "$OUT/head/$NAME".* "$OUT/$NAME.psalm.xml"
     mkdir -p "$RUNDIR"
     echo "run-shard: $NAME" >&2
 

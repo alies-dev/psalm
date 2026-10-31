@@ -51,9 +51,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Read PHP version
+      # The corpus is YAML; everything downstream reads this JSON conversion.
+      - name: Read corpus
         id: php
-        run: echo "version=$(jq -r '.php' bin/perf/corpus.json)" >> "$GITHUB_OUTPUT"
+        run: |
+          mkdir -p "$RUNNER_TEMP/plan"
+          yq -o=json bin/perf/corpus.yml > "$RUNNER_TEMP/corpus.json"
+          echo "version=$(jq -r '.php' "$RUNNER_TEMP/corpus.json")" >> "$GITHUB_OUTPUT"
 
       - name: Set up PHP
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
@@ -80,8 +84,7 @@ jobs:
       - name: Plan jobs
         id: plan
         run: |
-          mkdir -p "$RUNNER_TEMP/plan"
-          php bin/perf/perf.php plan --corpus bin/perf/corpus.json > "$RUNNER_TEMP/plan/plan.json"
+          php bin/perf/perf.php plan --corpus "$RUNNER_TEMP/corpus.json" > "$RUNNER_TEMP/plan/plan.json"
           echo "matrix=$(jq -c '{include: .jobs}' "$RUNNER_TEMP/plan/plan.json")" >> "$GITHUB_OUTPUT"
 
       - name: Upload plan

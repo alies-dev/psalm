@@ -4,12 +4,14 @@
 declare(strict_types=1);
 
 /**
- * Perf CI toolbox: `plan` expands the corpus into workflow jobs, `normalize` turns a Psalm JSON report into a
- * comparable issue list, `compare` judges base against head and renders the PR report. See bin/perf/README.md.
+ * Perf CI toolbox: `plan` expands the corpus into workflow jobs, `config` prints a project's Psalm config,
+ * `normalize` turns a Psalm JSON report into a comparable issue list, `compare` judges base against head and
+ * renders the PR report. See bin/perf/README.md.
  */
 
 const USAGE = <<<'TXT'
 usage: php perf.php plan --corpus <file>
+       php perf.php config --corpus <file> --project <name>
        php perf.php normalize <report.json> <project root> <out.issues.json>
        php perf.php compare --plan <plan.json> --in <dir> --base-sha <sha> --head-sha <sha> --deps-changed 0|1
                             --out-md <file> --out-json <file> [--run-url <url>]
@@ -101,12 +103,13 @@ function writeJsonFile(string $path, array $data, bool $pretty = true): void
 }
 
 require __DIR__ . '/lib/plan.php';
+require __DIR__ . '/lib/config.php';
 require __DIR__ . '/lib/normalize.php';
 require __DIR__ . '/lib/compare.php';
 require __DIR__ . '/lib/report.php';
 
 $command = $argv[1] ?? '';
-$handlers = ['plan' => 'runPlan', 'normalize' => 'runNormalize', 'compare' => 'runCompare'];
+$handlers = ['plan' => 'runPlan', 'config' => 'runConfig', 'normalize' => 'runNormalize', 'compare' => 'runCompare'];
 if (!isset($handlers[$command])) {
     fwrite(STDERR, USAGE);
     exit(2);
