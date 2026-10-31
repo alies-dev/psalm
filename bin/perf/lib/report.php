@@ -8,9 +8,18 @@ const LOG_TAIL_LINES = 15;
 const LOG_TAIL_BYTES = 2_000;
 const VERDICT_ICONS = ['pass' => '✅', 'warn' => '⚠️', 'fail' => '❌', 'skip' => '➖'];
 
-function fmtPct(?float $pct): string
+/** Signed relative change, U+2212 minus; 'n/a' for null; '<0.01 %' style for a non-zero change that rounds to zero. */
+function fmtPct(?float $pct, int $precision = 1): string
 {
-    return $pct === null ? 'n/a' : str_replace('-', '−', sprintf('%+.1f %%', $pct));
+    if ($pct === null) {
+        return 'n/a';
+    }
+
+    $unit = 10 ** -$precision;
+
+    return abs($pct) > 0.0 && abs($pct) < $unit / 2
+        ? sprintf('<%s %%', number_format($unit, $precision))
+        : str_replace('-', '−', ($pct < 0 ? '' : '+') . number_format($pct, $precision, '.', '') . ' %');
 }
 
 /** Integer with a non-breaking space as thousands separator, explicit sign, U+2212 minus. */
@@ -22,12 +31,6 @@ function fmtSigned(int $n): string
 function fmtInt(int $n): string
 {
     return number_format($n, 0, '', "\u{A0}");
-}
-
-/** Relative change with two decimals; '<0.01 %' for a non-zero change that rounds to zero. */
-function fmtPct2(float $pct): string
-{
-    return abs($pct) > 0.0 && abs($pct) < 0.005 ? '<0.01 %' : str_replace('-', '−', sprintf('%+.2f %%', $pct));
 }
 
 function inlineCode(string $text): string
@@ -104,7 +107,7 @@ function weightedSummary(array $w): string
 {
     $change = $w['delta'] === 0
         ? '='
-        : fmtSigned($w['delta']) . ($w['delta_pct'] === null ? '' : ', ' . fmtPct2($w['delta_pct']));
+        : fmtSigned($w['delta']) . ($w['delta_pct'] === null ? '' : ', ' . fmtPct($w['delta_pct'], 2));
 
     return sprintf('%s → %s (%s)', fmtInt($w['base']), fmtInt($w['head']), $change);
 }
@@ -144,7 +147,7 @@ function corpusWeightedLine(array $summary): string
         weightedSummary($pooled),
         $changed,
         $n,
-        $largest === null ? '' : " · largest: {$largest[0]} " . fmtPct2($largest[1]),
+        $largest === null ? '' : " · largest: {$largest[0]} " . fmtPct($largest[1], 2),
     );
 }
 

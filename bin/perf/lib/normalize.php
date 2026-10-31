@@ -23,7 +23,8 @@ function runNormalize(array $args): int
  * - digit runs of >= 9 characters in messages become '#': runtime values such as REQUEST_TIME embedded in
  *   $_SERVER shapes would otherwise differ on every run
  * - sorted; severity is kept because it is part of an issue's identity
- * - error_level (the issue type's ERROR_LEVEL: -2, -1, 1..8) is kept for the weighted issues, not part of the identity
+ * - error_level (the issue type's ERROR_LEVEL: -2, -1, 1..8; 0, no weight, when a malformed report lacks it) is kept
+ *   for the weighted issues, not part of the identity
  *
  * @throws RuntimeException when the report is unreadable or the output cannot be written
  */
@@ -72,6 +73,6 @@ function normalizeIssue(array $issue, array $roots): array
         'line_from' => (int) ($issue['line_from'] ?? 0),
         'column_from' => (int) ($issue['column_from'] ?? 0),
         'message' => (string) preg_replace('/\d{9,}/', '#', $message),
-        'error_level' => (int) ($issue['error_level'] ?? -1),
+        'error_level' => (int) ($issue['error_level'] ?? 0),
     ];
 }

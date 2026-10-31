@@ -23,16 +23,20 @@
 #   psalm           what the generated psalm-perf.xml holds:
 #     dirs            projectFiles directories; globs allowed
 #     ignore          optional extra ignoreFiles directories (`vendor` is always ignored); globs allowed
-#     level           optional errorLevel (default 1: the level only changes error/info labels, not what is analysed or
-#                     reported, and level 1 keeps severities uniform so a reclassified issue type does not flip
-#                     thousands of issues)
+#     attributes      optional map of extra root <psalm> attributes (phpVersion, ensureOverrideAttribute, ...); also
+#                     overrides the fixed ones, e.g. errorLevel. errorLevel defaults to 1: the level only changes
+#                     error/info labels, not what is analysed or reported, and level 1 keeps severities uniform so a
+#                     reclassified issue type does not flip thousands of issues
+#     extensions      optional list of file extensions, written as <fileExtensions><extension name=".x"/>
 #   composer        optional; false skips `composer update`
+#
+# Escape hatch for what the fields above cannot express (prefer them; no project needs a hook today):
 #   before_install  optional shell, run in the project dir before `composer update` (install quirks)
 #   after_install   optional shell, run once in the project dir after `composer update` and after psalm-perf.xml is
-#                   generated, before the base and head runs; may patch psalm-perf.xml (phpVersion, fileExtensions, ...)
+#                   generated, before the base and head runs; may patch psalm-perf.xml
 #
-# Not configurable: findUnusedCode, findUnusedBaselineEntry and findUnusedIssueHandlerSuppression are false and
-# loadLibraryPlugins is false whenever both Psalm checkouts support it (patch the others in after_install).
+# Fixed: findUnusedCode, findUnusedBaselineEntry and findUnusedIssueHandlerSuppression are false (overridable through
+# attributes); loadLibraryPlugins is false whenever both Psalm checkouts support it.
 
 php: "8.5"
 memory_limit: 12G
@@ -82,7 +86,7 @@ projects:
         - src/Symfony/Component/Emoji/Resources/data
         - src/Symfony/*/*/Resources/views
         - src/Symfony/*/*/*/Resources/views
-    after_install: sed -i.bak 's/<psalm/<psalm ensureOverrideAttribute="false"/' psalm-perf.xml
+      attributes: {ensureOverrideAttribute: "false"}
 
   drupal:
     repo: https://github.com/drupal/drupal
@@ -96,10 +100,7 @@ projects:
         - core/modules/*/tests
         - core/modules/*/src/Tests
         - core/lib/Drupal/Component/*/Tests
-    after_install: |
-      exts=''
-      for e in php module inc install theme profile engine; do exts="$exts<extension name=\".$e\"/>"; done
-      sed -i.bak "s#</psalm>#<fileExtensions>$exts</fileExtensions></psalm>#" psalm-perf.xml
+      extensions: [.php, .module, .inc, .install, .theme, .profile, .engine]
 
   doctrine-orm:
     repo: https://github.com/doctrine/orm
@@ -118,7 +119,7 @@ projects:
     exercises: heavily templated functional library, 70+ packages, generics, conditional types, assertions
     psalm:
       dirs: [packages/*/src]
-    after_install: sed -i.bak 's/<psalm/<psalm phpVersion="8.4"/' psalm-perf.xml
+      attributes: {phpVersion: "8.4"}
 
   phpunit:
     repo: https://github.com/sebastianbergmann/phpunit
@@ -128,7 +129,7 @@ projects:
     exercises: large final-class codebase, readonly/immutable value objects, modern PHP 8.4 syntax, event system
     psalm:
       dirs: [src]
-    after_install: sed -i.bak 's/<psalm/<psalm phpVersion="8.4"/' psalm-perf.xml
+      attributes: {phpVersion: "8.4"}
 
   php-parser:
     repo: https://github.com/nikic/PHP-Parser
@@ -138,7 +139,7 @@ projects:
     exercises: large AST node class hierarchy, many untyped closures and arrays, visitor pattern
     psalm:
       dirs: [lib]
-    after_install: sed -i.bak 's/<psalm/<psalm phpVersion="7.4"/' psalm-perf.xml
+      attributes: {phpVersion: "7.4"}
 
   amphp-amp:
     repo: https://github.com/amphp/amp
@@ -148,7 +149,7 @@ projects:
     exercises: fibers, generics (Future<T>), closures templates, small and fast
     psalm:
       dirs: [src]
-    after_install: sed -i.bak 's/<psalm/<psalm phpVersion="8.1"/' psalm-perf.xml
+      attributes: {phpVersion: "8.1"}
 
   webmozarts-assert:
     repo: https://github.com/webmozarts/assert
@@ -158,4 +159,4 @@ projects:
     exercises: psalm-assert type narrowing, pure/immutable annotations, static-analysis fixture files
     psalm:
       dirs: [src, tests/static-analysis]
-    after_install: sed -i.bak 's/<psalm/<psalm phpVersion="8.2"/' psalm-perf.xml
+      attributes: {phpVersion: "8.2"}

@@ -95,21 +95,15 @@ Read +Δ as more or more serious issues reported, so new false positives or new 
      psalm:
        dirs: [src]            # projectFiles directories, globs allowed
        # ignore: [src/*/Tests]  # `vendor` is always ignored
-       # level: 1             # errorLevel, default 1
+       # attributes: {phpVersion: "8.4", ensureOverrideAttribute: "false"}  # extra root <psalm> attributes
+       # extensions: [.php, .module]  # fileExtensions
    ```
 
-   Optional project fields: `composer: false` (skip the install), `before_install` (shell, run in the project root before the install), `after_install` (shell, run once in the project root after `composer update` and after `psalm-perf.xml` is generated, before the base and head runs; may patch `psalm-perf.xml`).
+   Optional project field: `composer: false` (skip the install).
 
-3. `psalm-perf.xml` is generated from `psalm.dirs`, `psalm.ignore` and `psalm.level` (default 1: the level only changes error/info labels, not what is analysed or reported, and level 1 keeps severities uniform so a reclassified issue type does not flip thousands of issues), with fixed attributes (`resolveFromConfigFile`, `findUnusedCode`, `findUnusedBaselineEntry` and `findUnusedIssueHandlerSuppression` false). `loadLibraryPlugins="false"` is injected when both Psalm checkouts know the attribute. Anything else is patched in `after_install`; Drupal adds its file extensions:
+3. `psalm-perf.xml` is generated from `psalm.dirs`, `psalm.ignore`, `psalm.attributes` (map of root `<psalm>` attributes, XML-escaped) and `psalm.extensions` (list written as `<fileExtensions><extension name=…/>`). Fixed attributes: `errorLevel` 1 (the level only changes error/info labels, not what is analysed or reported, and level 1 keeps severities uniform so a reclassified issue type does not flip thousands of issues), `resolveFromConfigFile`, and `findUnusedCode`, `findUnusedBaselineEntry` and `findUnusedIssueHandlerSuppression` false; `psalm.attributes` may override any of them (for example `errorLevel`). `run-shard.sh` passes `--no-library-plugins` to `perf.php config` when both Psalm checkouts know `loadLibraryPlugins` in `config.xsd`, which adds `loadLibraryPlugins="false"`. The final config of every project is saved as `<out>/<project>.psalm.xml` and ends up in the job artifact.
 
-   ```yaml
-   after_install: |
-     exts=''
-     for e in php module inc install theme profile engine; do exts="$exts<extension name=\".$e\"/>"; done
-     sed -i.bak "s#</psalm>#<fileExtensions>$exts</fileExtensions></psalm>#" psalm-perf.xml
-   ```
-
-   The final config of every project is saved as `<out>/<project>.psalm.xml` and ends up in the job artifact.
+   Escape hatch for anything the fields above cannot express (no project needs it today): `before_install` (shell, run in the project root before the install) and `after_install` (shell, run once in the project root after `composer update` and after `psalm-perf.xml` is generated, before the base and head runs; may patch `psalm-perf.xml`).
 
 4. Set `timeout` to about twice the single-threaded analysis time on a GitHub runner. A bump of `ref` and `tag` needs nothing else, but check that the new version still installs without a lock.
 

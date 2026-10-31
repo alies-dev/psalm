@@ -50,6 +50,11 @@ function jobMinutes(array $members, array $projects): int
  */
 function buildPlan(array $corpus): array
 {
+    $problems = corpusProblems($corpus);
+    if ($problems !== []) {
+        throw new RuntimeException("invalid corpus:\n" . implode("\n", $problems));
+    }
+
     $jobs = [];
     foreach ($corpus['jobs'] as $job => $members) {
         $jobs[] = [
@@ -64,4 +69,40 @@ function buildPlan(array $corpus): array
         'timeouts' => array_map(static fn(array $p): int => $p['timeout'], $corpus['projects']),
         'jobs' => $jobs,
     ];
+}
+
+/**
+ * Only what would otherwise silently skip a project or crash: no format or sizing rules.
+ *
+ * @param array<mixed> $corpus
+ * @return list<string>
+ */
+function corpusProblems(array $corpus): array
+{
+    $problems = [];
+    $seen = [];
+    foreach ($corpus['jobs'] as $job => $members) {
+        foreach ($members as $name) {
+            if (!isset($corpus['projects'][$name])) {
+                $problems[] = "job {$job}: unknown project {$name}";
+            }
+            $seen[$name] = ($seen[$name] ?? 0) + 1;
+        }
+    }
+
+    foreach ($corpus['projects'] as $name => $project) {
+        if (($seen[$name] ?? 0) !== 1) {
+            $problems[] = "project {$name}: must be in exactly one job";
+        }
+        foreach (['repo', 'ref', 'timeout'] as $key) {
+            if (!isset($project[$key])) {
+                $problems[] = "project {$name}: missing {$key}";
+            }
+        }
+        if (($project['psalm']['dirs'] ?? []) === []) {
+            $problems[] = "project {$name}: missing psalm.dirs";
+        }
+    }
+
+    return $problems;
 }

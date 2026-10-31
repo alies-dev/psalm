@@ -38,7 +38,7 @@ jobs:
       contents: read
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
-      php_version: ${{ steps.php.outputs.version }}
+      php_version: ${{ steps.plan.outputs.php_version }}
       base_sha: ${{ steps.revisions.outputs.base_sha }}
       head_sha: ${{ steps.revisions.outputs.head_sha }}
       deps_changed: ${{ steps.revisions.outputs.deps_changed }}
@@ -50,22 +50,6 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
-
-      # The corpus is YAML; everything downstream reads this JSON conversion.
-      - name: Read corpus
-        id: php
-        run: |
-          mkdir -p "$RUNNER_TEMP/plan"
-          yq -o=json bin/perf/corpus.yml > "$RUNNER_TEMP/corpus.json"
-          echo "version=$(jq -r '.php' "$RUNNER_TEMP/corpus.json")" >> "$GITHUB_OUTPUT"
-
-      - name: Set up PHP
-        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
-        with:
-          php-version: ${{ steps.php.outputs.version }}
-          coverage: none
-        env:
-          fail-fast: true
 
       - name: Resolve revisions
         id: revisions
@@ -81,11 +65,15 @@ jobs:
             echo "deps_changed=$deps_changed"
           } >> "$GITHUB_OUTPUT"
 
+      # The corpus is YAML; everything downstream reads this JSON conversion. plan.php runs on the runner's own PHP.
       - name: Plan jobs
         id: plan
         run: |
+          mkdir -p "$RUNNER_TEMP/plan"
+          yq -o=json bin/perf/corpus.yml > "$RUNNER_TEMP/corpus.json"
           php bin/perf/perf.php plan --corpus "$RUNNER_TEMP/corpus.json" > "$RUNNER_TEMP/plan/plan.json"
           echo "matrix=$(jq -c '{include: .jobs}' "$RUNNER_TEMP/plan/plan.json")" >> "$GITHUB_OUTPUT"
+          echo "php_version=$(jq -r '.php' "$RUNNER_TEMP/corpus.json")" >> "$GITHUB_OUTPUT"
 
       - name: Upload plan
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

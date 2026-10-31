@@ -240,7 +240,7 @@ function withIssueDiff(array $judged, string $dir, string $name): array
 
     $weighted = weightedIssues($base, $head);
     if ($weighted['drift']) {
-        $judged['notes'][] = 'drift';
+        $judged['notes'][] = 'drift: same issue count, weight changed';
     }
 
     return $judged + ['issues' => diffIssues($base, $head), 'weighted_issues' => $weighted];
@@ -378,7 +378,7 @@ function surplus(array $from, array $against): array
 
     sort($keys);
 
-    return array_map(static fn(string $k): array => explode("\0", $k), $keys);
+    return array_map(static fn(string $k): array => explode("\0", $k, 6), $keys);
 }
 
 /**

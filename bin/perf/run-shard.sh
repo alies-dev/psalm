@@ -131,20 +131,18 @@ install_project() {
     fi
 }
 
-# The config generated from the corpus, with loadLibraryPlugins="false" injected iff both Psalm checkouts know the
-# attribute (a config with an attribute one side rejects, or one that loads plugins on one side only, would not be
-# comparable). Then the project's after_install patches it; the final file is kept next to the results.
+# The config generated from the corpus, with loadLibraryPlugins="false" iff both Psalm checkouts know the attribute
+# (a config with an attribute one side rejects, or one that loads plugins on one side only, would not be
+# comparable). Then the project's after_install (escape hatch) may patch it; the final file is kept next to the
+# results.
 write_config() {
-    local inject=0 after_install
+    local flag='' after_install
     if grep -q loadLibraryPlugins "$BASE_DIR/config.xsd" 2>/dev/null \
         && grep -q loadLibraryPlugins "$HEAD_DIR/config.xsd" 2>/dev/null; then
-        inject=1
+        flag=--no-library-plugins
     fi
-    php "$SCRIPT_DIR/perf.php" config --corpus "$CORPUS" --project "$NAME" > "$PROJ/psalm-perf.xml" \
+    php "$SCRIPT_DIR/perf.php" config --corpus "$CORPUS" --project "$NAME" $flag > "$PROJ/psalm-perf.xml" \
         || fail "cannot generate psalm-perf.xml"
-    if [ "$inject" = 1 ]; then
-        sed -i.bak 's/<psalm/<psalm loadLibraryPlugins="false"/' "$PROJ/psalm-perf.xml" || fail "cannot write psalm-perf.xml"
-    fi
     after_install="$(field after_install)"
     if [ -n "$after_install" ]; then
         (cd "$PROJ" && bash -c "$after_install") > "$RUNDIR/after_install.log" 2>&1 || fail "after_install failed: $(tail -n 3 "$RUNDIR/after_install.log" | tr '\n' ' ' | cut -c1-300)"
@@ -195,11 +193,11 @@ classify() {
     elif [ "$rc" -eq 124 ] || { [ "$rc" -eq 137 ] && awk -v w="$wall" -v l="$TIMEOUT" 'BEGIN { exit !(w >= l) }'; }; then
         RUN_STATUS=timeout
         RUN_REASON="exceeded ${TIMEOUT}s"
-    elif { [ "$code" -eq 0 ] || [ "$code" -eq 2 ]; } && grep -q 'Checks took' "$log" && [ -s "$report" ]; then
+    elif { [ "$code" -eq 0 ] || [ "$code" -eq 2 ]; } && grep -aq 'Checks took' "$log" && [ -s "$report" ]; then
         RUN_STATUS=ok
     else
         RUN_STATUS=crash
-        if grep -qE 'Allowed memory size|Hard memory limit' "$log"; then
+        if grep -aqE 'Allowed memory size|Hard memory limit' "$log"; then
             RUN_MEMORY_CRASH=true
             RUN_REASON="PHP memory limit exceeded"
         else

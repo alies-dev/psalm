@@ -11,7 +11,7 @@ declare(strict_types=1);
 
 const USAGE = <<<'TXT'
 usage: php perf.php plan --corpus <file>
-       php perf.php config --corpus <file> --project <name>
+       php perf.php config --corpus <file> --project <name> [--no-library-plugins]
        php perf.php normalize <report.json> <project root> <out.issues.json>
        php perf.php compare --plan <plan.json> --in <dir> --base-sha <sha> --head-sha <sha> --deps-changed 0|1
                             --out-md <file> --out-json <file> [--run-url <url>]

@@ -7,7 +7,8 @@ declare(strict_types=1);
  */
 function runConfig(array $args): int
 {
-    $options = parseOptions($args, ['corpus', 'project']);
+    $libraryPlugins = !in_array('--no-library-plugins', $args, true);
+    $options = parseOptions(array_values(array_diff($args, ['--no-library-plugins'])), ['corpus', 'project']);
     requireOptions($options, ['corpus', 'project']);
     $corpus = readJsonFile($options['corpus']);
     $project = $corpus['projects'][$options['project']] ?? null;
@@ -15,7 +16,7 @@ function runConfig(array $args): int
         throw new RuntimeException("unknown project '{$options['project']}'");
     }
 
-    echo buildConfig($project);
+    echo buildConfig($project, $libraryPlugins);
 
     return 0;
 }
@@ -26,13 +27,14 @@ function xmlAttr(string $value): string
 }
 
 /**
- * The project's psalm-perf.xml: fixed attributes plus the corpus `psalm.level`, `psalm.dirs` and `psalm.ignore`
- * (`vendor` always ignored).
+ * The project's psalm-perf.xml: fixed attributes (errorLevel 1 by default), then the corpus `psalm.attributes`
+ * (root attributes, may override the fixed ones), `psalm.dirs`, `psalm.ignore` (`vendor` always ignored) and
+ * `psalm.extensions` (fileExtensions). $libraryPlugins false adds loadLibraryPlugins="false".
  *
  * @param array<mixed> $project
  * @throws RuntimeException
  */
-function buildConfig(array $project): string
+function buildConfig(array $project, bool $libraryPlugins = true): string
 {
     $psalm = $project['psalm'] ?? null;
     if (!is_array($psalm) || !is_array($psalm['dirs'] ?? null) || $psalm['dirs'] === []) {
@@ -44,14 +46,27 @@ function buildConfig(array $project): string
         $dirs,
     ));
 
-    return "<?xml version=\"1.0\"?>\n"
-        . "<psalm\n"
-        . '    errorLevel="' . xmlAttr((string) ($psalm['level'] ?? 1)) . "\"\n"
-        . "    resolveFromConfigFile=\"true\"\n"
-        . "    findUnusedCode=\"false\"\n"
-        . "    findUnusedBaselineEntry=\"false\"\n"
-        . "    findUnusedIssueHandlerSuppression=\"false\"\n"
-        . "    xmlns=\"https://getpsalm.org/schema/config\"\n"
+    $attributes = [
+        'errorLevel' => '1',
+        'resolveFromConfigFile' => 'true',
+        'findUnusedCode' => 'false',
+        'findUnusedBaselineEntry' => 'false',
+        'findUnusedIssueHandlerSuppression' => 'false',
+        ...($psalm['attributes'] ?? []),
+        ...($libraryPlugins ? [] : ['loadLibraryPlugins' => 'false']),
+        'xmlns' => 'https://getpsalm.org/schema/config',
+    ];
+    $extensions = implode('', array_map(
+        static fn(string $ext): string => '        <extension name="' . xmlAttr($ext) . "\"/>\n",
+        $psalm['extensions'] ?? [],
+    ));
+
+    return "<?xml version=\"1.0\"?>\n<psalm\n"
+        . implode('', array_map(
+            static fn(string $name, mixed $value): string => "    {$name}=\"" . xmlAttr((string) $value) . "\"\n",
+            array_keys($attributes),
+            $attributes,
+        ))
         . ">\n"
         . "    <projectFiles>\n"
         . $directories($psalm['dirs'], '        ')
@@ -59,5 +74,6 @@ function buildConfig(array $project): string
         . $directories([...($psalm['ignore'] ?? []), 'vendor'], '            ')
         . "        </ignoreFiles>\n"
         . "    </projectFiles>\n"
+        . ($extensions === '' ? '' : "    <fileExtensions>\n{$extensions}    </fileExtensions>\n")
         . "</psalm>\n";
 }
