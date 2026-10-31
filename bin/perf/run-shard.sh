@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
-# Measure every project of one corpus job with a base and a head Psalm checkout. See bin/perf/README.md.
-#
-# usage: run-shard.sh --job <id> --base <psalm base dir> --head <psalm head dir> --base-sha <sha> --head-sha <sha>
-#                     --out <dir> [--work <dir>]
-#
-# Per project: clone and install once, run base then head, re-run in reverse order when the wall times differ
-# by more than 10 %, then write <out>/<rev>/<project>.json and <project>.issues.json.
+# Measures every project of one corpus job with a base and a head Psalm checkout. See bin/perf/README.md.
 # Exit 0 whatever happens to a project (the status is in its result); 2 for usage errors and missing tools.
-#
-# PERF_CORPUS=<path> uses another corpus.json (its corpus/<config>/psalm.xml files live next to it).
-# Written for bash 3.2 (macOS): no mapfile, no associative arrays, no empty-array expansion.
+# PERF_CORPUS=<path> uses another corpus.json. Written for bash 3.2 (macOS): no mapfile, no associative arrays.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -20,8 +12,7 @@ RERUN_RATIO=0.10
 die() { echo "run-shard: $*" >&2; exit 2; }
 
 usage() {
-    sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
-    exit 2
+    die "usage: run-shard.sh --job <id> --base <dir> --head <dir> --base-sha <sha> --head-sha <sha> --out <dir> [--work <dir>]"
 }
 
 JOB='' BASE_DIR='' HEAD_DIR='' BASE_SHA='' HEAD_SHA='' OUT='' WORK="${RUNNER_TEMP:-/tmp}/perf-work"
@@ -114,7 +105,7 @@ fetch_and_install() {
     if [ "$composer" = true ] && [ -f "$PROJ/composer.json" ]; then
         # Some projects require self.version; a checkout has no tag to derive it from.
         (cd "$PROJ" && COMPOSER_ROOT_VERSION="${tag#v}" composer update --no-dev --no-scripts --no-plugins \
-            --ignore-platform-reqs --no-interaction --quiet) || { echo "composer update failed" >&2; return 1; }
+            --ignore-platform-reqs --no-interaction --no-progress) || return 1
     fi
 }
 export -f fetch_and_install
@@ -130,10 +121,10 @@ install_project() {
     export PROJ
     "$TIMEOUT_BIN" -k 20 "$INSTALL_TIMEOUT" bash -c 'fetch_and_install "$@"' _ "$repo" "$ref" "$composer" "$setup" "$tag" \
         > "$log" 2>&1 < /dev/null || rc=$?
-    if [ "$rc" -eq 124 ]; then
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
         fail "install exceeded ${INSTALL_TIMEOUT}s"
     elif [ "$rc" -ne 0 ]; then
-        fail "install failed: $(grep -v '^[[:space:]]*$' "$log" | tail -n 1 | cut -c1-300)"
+        fail "install failed: $(grep -v '^[[:space:]]*$' "$log" | tail -n 3 | tr '\n' ' ' | cut -c1-300)"
     fi
 }
 
@@ -283,8 +274,7 @@ write_result() {
     result="$(aggregate "$rev" "$sha")"
     report="$RUNDIR/$rev-1.report.json"
     if [ "$(jq -r '.status' <<< "$result")" = ok ]; then
-        if count="$(jq 'length' "$report")" \
-            && php "$SCRIPT_DIR/perf.php" normalize "$report" "$PROJ" "$OUT/$rev/$NAME.issues.json" > /dev/null; then
+        if count="$(php "$SCRIPT_DIR/perf.php" normalize "$report" "$PROJ" "$OUT/$rev/$NAME.issues.json")"; then
             result="$(jq --argjson c "$count" '.issue_count = $c' <<< "$result")"
         else
             rm -f "$OUT/$rev/$NAME.issues.json"

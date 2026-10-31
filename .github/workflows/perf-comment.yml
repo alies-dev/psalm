@@ -3,7 +3,8 @@ name: Perf comment
 # Posts the sticky perf report on the pull request. Runs from the default branch with a write token, therefore it
 # never checks out or executes anything from the pull request: the `perf-report` artifact produced by the
 # unprivileged Perf workflow is untrusted data. It is validated against GitHub's own metadata, passed via files and
-# env, and never interpolated into a shell script. Of summary.json only the `verdict` enum is ever read.
+# env, and never interpolated into a shell script. Of summary.json only the `verdict` enum is ever read. A run
+# without a report gets a constant "report unavailable" comment on the open PR matching its head sha and repository.
 
 on:
   workflow_run:
@@ -45,17 +46,34 @@ jobs:
 
       - name: Validate report and build comment
         id: build
-        if: steps.download.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          RUN_HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           dir="$RUNNER_TEMP/perf-report"
+          marker='<!-- psalm-perf-report -->'
+          comment="$RUNNER_TEMP/comment.md"
           skip() { echo "::notice title=Perf comment::$1"; echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          ready() { echo "ready=true" >> "$GITHUB_OUTPUT"; echo "pr_number=$1" >> "$GITHUB_OUTPUT"; exit 0; }
 
-          [ -f "$dir/report.md" ] || skip "No report.md in the artifact (the Perf run failed before comparing)."
+          # The Perf run produced no report (it failed before comparing): post a constant message, but only on the
+          # open PR whose head is exactly the run's commit and repository.
+          if [ ! -f "$dir/report.md" ]; then
+            [[ "$RUN_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || skip "Triggering run has no valid head sha."
+            pr_number=$(
+              gh api -X GET "repos/${GITHUB_REPOSITORY}/pulls" -f state=open -f head="${RUN_HEAD_OWNER}:${RUN_HEAD_BRANCH}" \
+                | jq -r --arg sha "$RUN_HEAD_SHA" --arg repo "$RUN_HEAD_REPO" \
+                  '[.[] | select(.head.sha == $sha and .head.repo.full_name == $repo) | .number][0] // empty'
+            )
+            [[ "$pr_number" =~ ^[0-9]{1,9}$ ]] || skip "No report, and no open PR has head ${RUN_HEAD_SHA}."
+            # shellcheck disable=SC2016
+            { echo "$marker"; printf 'Perf report unavailable for `%s`, see the [workflow run](%s).\n' "${RUN_HEAD_SHA:0:12}" "$RUN_URL"; } > "$comment"
+            ready "$pr_number"
+          fi
 
           # Untrusted values: accept only exact shapes before using them anywhere.
           pr_number=$(head -c 20 "$dir/pr_number" 2>/dev/null || true)
@@ -79,9 +97,7 @@ jobs:
           # Marker and mention neutralisation (zero width space after every @) are applied here; the artifact never
           # supplies the marker. GitHub limits comments to 65536 characters; a larger report is replaced by a constant
           # text.
-          marker='<!-- psalm-perf-report -->'
           zwsp=$(printf '\342\200\213')
-          comment="$RUNNER_TEMP/comment.md"
           { echo "$marker"; iconv -f UTF-8 -t UTF-8 -c < "$dir/report.md" | sed "s/@/@${zwsp}/g"; } > "$comment"
           if [ "$(wc -c < "$comment")" -gt 60000 ]; then
             {
@@ -92,8 +108,7 @@ jobs:
             } > "$comment"
           fi
 
-          echo "ready=true" >> "$GITHUB_OUTPUT"
-          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          ready "$pr_number"
 
       - name: Upsert sticky comment
         if: steps.build.outputs.ready == 'true'

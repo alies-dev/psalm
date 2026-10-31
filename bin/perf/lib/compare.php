@@ -56,15 +56,68 @@ function loadResult(string $file): array
         return ['status' => 'missing', 'reason' => is_file($file) ? $e->getMessage() : 'no result file'];
     }
 
-    if (($r['schema'] ?? null) !== 1 || !in_array($r['status'] ?? null, STATUSES, true)) {
-        return ['status' => 'missing', 'reason' => 'invalid result (schema or status)'];
-    }
-
-    if ($r['status'] === 'ok' && !(is_numeric($r['psalm_mb'] ?? null) && is_numeric($r['wall'] ?? null))) {
-        return ['status' => 'missing', 'reason' => 'invalid result (ok without psalm_mb or wall)'];
+    if (($bad = invalidField($r)) !== null) {
+        return ['status' => 'missing', 'reason' => "invalid result ({$bad})"];
     }
 
     return $r;
+}
+
+/** Types of the result fields compare consumes ("?" allows absent or null). */
+const RESULT_FIELD_TYPES = [
+    'reason' => '?string',
+    'memory_crash' => '?bool',
+    'psalm_mb' => '?number',
+    'wall' => '?number',
+    'cpu' => '?number',
+    'exit_code' => '?int',
+    'issue_count' => '?int',
+    'log_tail' => '?string',
+];
+
+function isType(mixed $v, string $type): bool
+{
+    return ($v === null && $type[0] === '?') || match (ltrim($type, '?')) {
+        'int' => is_int($v),
+        'number' => is_int($v) || is_float($v),
+        'string' => is_string($v),
+        'bool' => is_bool($v),
+    };
+}
+
+/**
+ * Name of the first consumed field with the wrong type, or null for a usable result.
+ *
+ * @param array<mixed> $r
+ */
+function invalidField(array $r): ?string
+{
+    if (($r['schema'] ?? null) !== 1 || !in_array($r['status'] ?? null, STATUSES, true)) {
+        return 'schema or status';
+    }
+
+    foreach (RESULT_FIELD_TYPES as $key => $type) {
+        if (!isType($r[$key] ?? null, $type)) {
+            return $key;
+        }
+    }
+
+    $runs = $r['runs'] ?? [];
+    if (!is_array($runs) || !array_is_list($runs)) {
+        return 'runs';
+    }
+
+    foreach ($runs as $run) {
+        if (!is_array($run) || !isType($run['wall'] ?? null, 'number') || !isType($run['cpu'] ?? null, '?number')) {
+            return 'runs';
+        }
+    }
+
+    if ($r['status'] === 'ok' && !(isType($r['psalm_mb'] ?? null, 'number') && isType($r['wall'] ?? null, 'number'))) {
+        return 'ok without psalm_mb or wall';
+    }
+
+    return null;
 }
 
 /**
@@ -176,8 +229,8 @@ function pctDelta(float $base, float $head): ?float
 function withIssueDiff(array $judged, string $dir, string $name): array
 {
     try {
-        $base = readJsonFile("{$dir}/base/{$name}.issues.json");
-        $head = readJsonFile("{$dir}/head/{$name}.issues.json");
+        $base = readIssues("{$dir}/base/{$name}.issues.json");
+        $head = readIssues("{$dir}/head/{$name}.issues.json");
     } catch (RuntimeException $e) {
         $judged['verdict'] = $judged['verdict'] === 'fail' ? 'fail' : 'warn';
         $judged['notes'][] = 'issue lists unavailable: ' . $e->getMessage();
@@ -186,6 +239,26 @@ function withIssueDiff(array $judged, string $dir, string $name): array
     }
 
     return $judged + ['issues' => diffIssues($base, $head)];
+}
+
+/**
+ * @return list<array{type: string, severity: string, file: string, line_from: int, column_from: int, message: string}>
+ * @throws RuntimeException when the file is unreadable or not a list of normalised issues
+ */
+function readIssues(string $file): array
+{
+    $issues = readJsonFile($file);
+    $types = ['type' => 'string', 'severity' => 'string', 'file' => 'string', 'line_from' => 'int',
+        'column_from' => 'int', 'message' => 'string'];
+    $valid = array_is_list($issues);
+    foreach ($issues as $issue) {
+        $valid = $valid && is_array($issue);
+        foreach ($types as $key => $type) {
+            $valid = $valid && isType($issue[$key] ?? null, $type);
+        }
+    }
+
+    return $valid ? $issues : throw new RuntimeException("{$file} is not a list of issues");
 }
 
 /**
@@ -198,8 +271,10 @@ function tallyIssues(array $issues): array
 {
     $counts = [];
     foreach ($issues as $i) {
-        $key = implode("\0", [$i['file'] ?? '', $i['line_from'] ?? 0, $i['column_from'] ?? 0, $i['type'] ?? '?',
-            $i['severity'] ?? '', $i['message'] ?? '']);
+        $key = implode(
+            "\0",
+            [$i['file'], $i['line_from'], $i['column_from'], $i['type'], $i['severity'], $i['message']],
+        );
         $counts[$key] = ($counts[$key] ?? 0) + 1;
     }
 
