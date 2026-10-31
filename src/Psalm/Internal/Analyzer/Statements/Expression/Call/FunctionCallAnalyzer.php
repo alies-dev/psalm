@@ -29,6 +29,8 @@ use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Type\Comparator\CallableTypeComparator;
 use Psalm\Internal\Type\PurityWildcardPaths;
+use Psalm\Internal\Type\TemplateDefaultResolver;
+use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeCombiner;
 use Psalm\Issue\DeprecatedFunction;
@@ -227,6 +229,10 @@ final class FunctionCallAnalyzer extends CallAnalyzer
         if (!$is_first_class_callable) {
             if (isset($function_call_info->function_storage->template_types)) {
                 $template_result->template_types += $function_call_info->function_storage->template_types ?: [];
+                TemplateDefaultResolver::register(
+                    $template_result,
+                    $function_call_info->function_storage,
+                );
             }
 
             ArgumentsAnalyzer::analyze(
@@ -264,12 +270,12 @@ final class FunctionCallAnalyzer extends CallAnalyzer
             }
         }
 
-        $already_inferred_lower_bounds = $template_result->lower_bounds;
-
-        $template_result = new TemplateResult([], []);
 
         // do this here to allow closure param checks
-        if (!$is_first_class_callable && $function_call_info->function_params !== null) {
+        if (!$is_first_class_callable
+            && $function_call_info->function_params !== null
+            && !$function_call_info->has_template_callable
+        ) {
             CliOutput::markPrintedArgs($statements_analyzer, $function_call_info->function_id, $stmt->getArgs());
 
             ArgumentsAnalyzer::checkArgumentsMatch(
@@ -304,7 +310,48 @@ final class FunctionCallAnalyzer extends CallAnalyzer
             $function_call_info->function_id,
         );
 
-        $template_result->lower_bounds = [...$template_result->lower_bounds, ...$already_inferred_lower_bounds];
+        if (!$is_first_class_callable && $function_call_info->has_template_callable) {
+            $callable_return = null;
+            foreach ($function_call_info->template_callables as $callable) {
+                foreach ($callable->template_contexts ?: [null] as $declaration) {
+                    $callable_result = new TemplateResult(
+                        $declaration['bounds'] ?? [],
+                        $declaration['bindings'] ?? [],
+                    );
+                    $callable_result->template_defaults = $declaration['defaults'] ?? [];
+                    $callable_result->type_template_declarations = $declaration['declarations'] ?? [];
+                    $storage = new FunctionStorage();
+                    $storage->params = $callable->params ?? [];
+                    $storage->template_types = $declaration['bounds'] ?? [];
+                    ArgumentsAnalyzer::checkArgumentsMatch(
+                        $statements_analyzer,
+                        $stmt->getArgs(),
+                        null,
+                        $storage->params,
+                        $storage,
+                        null,
+                        $callable_result,
+                        $code_location,
+                        $context,
+                    );
+                    CallAnalyzer::checkTemplateResult(
+                        $statements_analyzer,
+                        $callable_result,
+                        $code_location,
+                        null,
+                    );
+                    $return = TemplateInferredTypeReplacer::replace(
+                        $callable->return_type ?? Type::getMixed(),
+                        $callable_result,
+                        $codebase,
+                    );
+                    $callable_return = Type::combineUnionTypes($callable_return, $return, $codebase);
+                }
+            }
+            if ($callable_return !== null) {
+                $statements_analyzer->node_data->setType($real_stmt, $callable_return);
+            }
+        }
 
         if ($function_name instanceof PhpParser\Node\Name && $function_call_info->function_id) {
             $stmt_type = FunctionCallReturnTypeFetcher::fetch(
@@ -1022,6 +1069,9 @@ final class FunctionCallAnalyzer extends CallAnalyzer
                     }
 
                     $function_call_info->function_params = $var_type_part->params;
+                    $function_call_info->template_callables[] = $var_type_part;
+                    $function_call_info->has_template_callable = $function_call_info->has_template_callable
+                        || $var_type_part->template_contexts !== [];
 
                     if (($stmt_type = $statements_analyzer->node_data->getType($real_stmt))
                         && $var_type_part->return_type

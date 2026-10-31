@@ -54,6 +54,9 @@ final class ClassLikeDocblockComment
      */
     public array $templates = [];
 
+    /** @var array<string, string> */
+    public array $template_defaults = [];
+
     /**
      * The names of the templates declared with `@psalm-purity-template`, whose values are
      * capability sets.

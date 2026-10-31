@@ -974,7 +974,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 $statements_analyzer->node_data->setType(
                     $this->function,
                     new Union([
-                        new TClosure(
+                        (new TClosure(
                             $closure_atomic->params,
                             $new_closure_return_type,
                             $closure_purity,
@@ -982,7 +982,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                             $closure_atomic->extra_types,
                             $closure_atomic->from_docblock,
                             $closure_atomic->callable_id,
-                        ),
+                        ))->withTemplateContextsFrom($closure_atomic),
                     ], ['reference_free' => true]),
                 );
             }
@@ -2917,13 +2917,13 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 $closure_return_type = Type::getMixed();
             }
 
-            $closure_type = new TClosure(
+            $closure_type = (new TClosure(
                 $storage->params,
                 $closure_return_type,
                 $storage->capabilities,
                 $storage instanceof FunctionStorage ? $storage->byref_uses : [],
                 callable_id: $this->getClosureId(),
-            );
+            ))->withTemplateContext($storage, null, $codebase);
 
             $type_provider->setType(
                 $this->function,

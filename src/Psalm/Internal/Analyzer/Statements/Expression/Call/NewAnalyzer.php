@@ -26,6 +26,7 @@ use Psalm\Internal\Codebase\ReceiverPropertyTaints;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Type\TemplateBound;
+use Psalm\Internal\Type\TemplateDefaultResolver;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
@@ -73,6 +74,8 @@ use Psalm\Type\Atomic\TUnknownClassString;
 use Psalm\Type\TaintKind;
 use Psalm\Type\Union;
 
+use function array_filter;
+use function array_keys;
 use function array_map;
 use function array_values;
 use function count;
@@ -421,6 +424,19 @@ final class NewAnalyzer extends CallAnalyzer
         ?TemplateResult $template_result = null,
     ): void {
         $storage = $codebase->classlike_storage_provider->get($fq_class_name);
+        $contextual_defaults = [];
+        if ($context->self === $fq_class_name
+            && $stmt->class instanceof PhpParser\Node\Name
+            && in_array(strtolower($stmt->class->getFirst()), ['self', 'static'], true)
+        ) {
+            foreach ($storage->template_defaults as $name => $_) {
+                if (!in_array($name, $storage->purity_templates, true)) {
+                    foreach ($storage->template_types[$name] ?? [] as $owner => $bound) {
+                        $contextual_defaults[$name] = new Union([new TTemplateParam($name, $bound, $owner)]);
+                    }
+                }
+            }
+        }
 
         if ($from_static) {
             if (!$storage->preserve_constructor_signature) {
@@ -621,6 +637,19 @@ final class NewAnalyzer extends CallAnalyzer
                 $unconstrainable_templates = null;
 
                 foreach ($storage->template_types as $template_name => $base_type) {
+                    $selected_default = false;
+                    if (isset($template_result->lower_bounds[$template_name][$fq_class_name])) {
+                        $evidence = array_values(array_filter(
+                            $template_result->lower_bounds[$template_name][$fq_class_name],
+                            static fn(TemplateBound $bound): bool
+                                => !$bound->from_constraint_fallback && !$bound->from_template_default,
+                        ));
+                        if ($evidence) {
+                            $template_result->lower_bounds[$template_name][$fq_class_name] = $evidence;
+                        } else {
+                            unset($template_result->lower_bounds[$template_name][$fq_class_name]);
+                        }
+                    }
                     if (isset($template_result->lower_bounds[$template_name][$fq_class_name])) {
                         $generic_param_type = TemplateStandinTypeReplacer::getMostSpecificTypeFromBounds(
                             $template_result->lower_bounds[$template_name][$fq_class_name],
@@ -684,6 +713,15 @@ final class NewAnalyzer extends CallAnalyzer
                                 $template_result->lower_bounds,
                             ),
                         );
+                    } elseif (isset($storage->template_defaults[$template_name])) {
+                        $selected_default = !isset($contextual_defaults[$template_name]);
+                        $generic_param_type = $contextual_defaults[$template_name] ?? TemplateDefaultResolver::substitute(
+                            isset($storage->invalid_template_defaults[$template_name])
+                                ? array_values($base_type)[0]
+                                : $storage->template_defaults[$template_name],
+                            $template_result,
+                            $codebase,
+                        );
                     } else {
                         $generic_param_type = array_values($base_type)[0];
 
@@ -721,9 +759,12 @@ final class NewAnalyzer extends CallAnalyzer
                             ]);
                         }
                     }
+                    $template_result->lower_bounds[$template_name][$fq_class_name] = [
+                        new TemplateBound($generic_param_type),
+                    ];
 
                     $generic_param_types[] = $generic_param_type->setProperties([
-                        'had_template' => true,
+                        'had_template' => !$selected_default,
                     ]);
                 }
 
@@ -765,14 +806,15 @@ final class NewAnalyzer extends CallAnalyzer
                 $statements_analyzer->getSuppressedIssues(),
             );
         } elseif ($storage->template_types) {
+            $parameters = TemplateDefaultResolver::complete($storage, [], true);
+            foreach (array_keys($storage->template_types) as $offset => $name) {
+                if (isset($contextual_defaults[$name])) {
+                    $parameters[$offset] = $contextual_defaults[$name];
+                }
+            }
             $result_atomic_type = new TGenericObject(
                 $fq_class_name,
-                array_values(
-                    array_map(
-                        static fn($map) => reset($map),
-                        $storage->template_types,
-                    ),
-                ),
+                $parameters,
                 false,
                 $from_static,
             );
@@ -1895,10 +1937,8 @@ final class NewAnalyzer extends CallAnalyzer
      */
     private static function hasTemplatesInferredByConstructor(Codebase $codebase, ClassLikeStorage $storage): bool
     {
-        // every purity template the class declares has a default (its upper bound without one),
-        // which tells it apart from a type template bounded by a type alias or a purity template
         foreach ($storage->template_types ?? [] as $template_name => $_) {
-            if (!isset($storage->template_defaults[$template_name])) {
+            if (!in_array($template_name, $storage->purity_templates, true)) {
                 return true;
             }
         }

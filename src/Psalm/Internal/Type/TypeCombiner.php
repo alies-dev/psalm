@@ -19,6 +19,7 @@ use Psalm\Type\Atomic\TCallableString;
 use Psalm\Type\Atomic\TCapabilities;
 use Psalm\Type\Atomic\TClassString;
 use Psalm\Type\Atomic\TClassStringMap;
+use Psalm\Type\Atomic\TClosure;
 use Psalm\Type\Atomic\TDecimalIntString;
 use Psalm\Type\Atomic\TEmptyMixed;
 use Psalm\Type\Atomic\TEnumCase;
@@ -521,6 +522,13 @@ final class TypeCombiner
         } else {
             $type_key = $type->getKey();
         }
+        if (($type instanceof TCallable || $type instanceof TClosure)
+            && (($existing = $combination->value_types[$type_key]
+                    ?? $combination->named_object_types[$type_key] ?? null) instanceof TCallable
+                || $existing instanceof TClosure)
+        ) {
+            $type = $type->withTemplateContextsFrom($existing);
+        }
 
         if ($type instanceof TIterable) {
             self::addIterablePurity($combination, $type->purity);
@@ -904,6 +912,9 @@ final class TypeCombiner
             }
 
             if (isset($combination->named_object_types[$type_key])) {
+                if ($type instanceof TClosure) {
+                    $combination->named_object_types[$type_key] = $type;
+                }
                 return null;
             }
 

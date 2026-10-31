@@ -17,6 +17,7 @@ use Psalm\Internal\Analyzer\Statements\Expression\Fetch\ConstFetchAnalyzer;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\PurityArguments;
 use Psalm\Internal\Type\TemplateBound;
+use Psalm\Internal\Type\TemplateDefaultResolver;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
@@ -305,13 +306,17 @@ final class TypeChecker extends TypeVisitor
 
         $template_type_count = count($expected_type_params);
         $template_param_count = count($atomic->type_params);
+        [$given_types] = PurityArguments::split($atomic->type_params);
 
-        // trailing purity templates with a default need not be given
-        if ($class_storage->getRequiredTemplateParamCount() > $template_param_count) {
+        $required_param_count = $class_storage->getRequiredTemplateParamCount();
+        if ($required_param_count > count($given_types)) {
+            $type_param_count = PurityArguments::countTypeTemplates($class_storage);
             IssueBuffer::maybeAdd(
                 new MissingTemplateParam(
                     $atomic->value . ' has missing template params, expecting '
-                        . $template_type_count,
+                        . ($required_param_count === $type_param_count
+                            ? $type_param_count
+                            : 'at least ' . $required_param_count . ' of ' . $type_param_count . ' type arguments'),
                     $this->code_location,
                 ),
                 $this->suppressed_issues,
@@ -330,10 +335,15 @@ final class TypeChecker extends TypeVisitor
         }
 
         $expected_type_param_keys = array_keys($expected_type_params);
+        $effective_params = TemplateDefaultResolver::complete(
+            $class_storage,
+            $atomic->type_params,
+            false,
+            true,
+        );
         $template_result = new TemplateResult($expected_type_params, []);
 
-        // the bounds of type templates may use purity templates, which come after them
-        foreach ($atomic->type_params as $i => $type_param) {
+        foreach ($effective_params as $i => $type_param) {
             $expected_template_name = $expected_type_param_keys[$i] ?? null;
 
             if ($expected_template_name === null || !Capabilities::isPurityType($type_param)) {
@@ -348,22 +358,16 @@ final class TypeChecker extends TypeVisitor
             }
         }
 
-        // an omitted trailing purity template takes its default, also in the bounds of the type templates
-        foreach (array_slice($expected_type_param_keys, $template_param_count) as $expected_template_name) {
-            $default = $class_storage->template_defaults[$expected_template_name] ?? null;
-
-            if ($default === null || !Capabilities::isPurityType($default)) {
-                continue;
-            }
-
-            foreach ($expected_type_params[$expected_template_name] as $defining_class => $_) {
-                $template_result->lower_bounds[$expected_template_name][$defining_class][]
-                    = new TemplateBound($default);
+        foreach ($effective_params as $i => $type_param) {
+            $name = $expected_type_param_keys[$i] ?? null;
+            if ($name !== null) {
+                foreach ($expected_type_params[$name] as $owner => $_) {
+                    $template_result->lower_bounds[$name][$owner] = [new TemplateBound($type_param)];
+                }
             }
         }
-      
         $prevents_covariance = [];
-        foreach ($atomic->type_params as $i => $type_param) {
+        foreach ($effective_params as $i => $type_param) {
             // a covariant type param is in the position of the type (null): an invariant one is in neither
             $prevents_covariance[$i] = empty($expected_param_covariants[$i])
                 ? $this->source instanceof MethodAnalyzer && $this->source->getMethodName() !== '__construct'
@@ -394,8 +398,14 @@ final class TypeChecker extends TypeVisitor
                     );
 
                     $lower_bound = $class_storage->template_lower_bounds[$expected_template_name] ?? null;
+                    $same_template = $type_param->isSingle()
+                        && ($parameter = $type_param->getSingleAtomic()) instanceof TTemplateParam
+                        && $parameter->param_name === $expected_template_name
+                        && $parameter->defining_class === $defining_class;
 
-                    if (!UnionTypeComparator::isContainedBy($codebase, $type_param, $expected_type_param)) {
+                    if (!$same_template
+                        && !UnionTypeComparator::isContainedBy($codebase, $type_param, $expected_type_param)
+                    ) {
                         IssueBuffer::maybeAdd(
                             new InvalidTemplateParam(
                                 'Extended template param ' . $expected_template_name

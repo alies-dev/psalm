@@ -37,6 +37,7 @@ use Psalm\Type\Atomic\TValueOf;
 use Psalm\Type\Union;
 use UnexpectedValueException;
 
+use function array_any;
 use function array_merge;
 use function array_shift;
 use function array_values;
@@ -279,7 +280,13 @@ final class TemplateInferredTypeReplacer
         if ($traversed_type) {
             $template_type = $traversed_type;
 
-            if ($template_type->isMixed() && !$atomic_type->as->isMixed()) {
+            if ($template_type->isMixed() && !$atomic_type->as->isMixed()
+                && !array_any(
+                    $inferred_lower_bounds[$atomic_type->param_name][$atomic_type->defining_class] ?? [],
+                    static fn(TemplateBound $bound): bool
+                        => !$bound->from_constraint_fallback && !$bound->from_template_default,
+                )
+            ) {
                 $template_type = $atomic_type->as;
             }
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Psalm\Internal\Analyzer\Statements\Expression\Call;
 
+use Psalm\Internal\Type\TemplateDefaultResolver;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Storage\ClassLikeStorage;
 use Psalm\Storage\FunctionLikeStorage;
@@ -43,7 +44,9 @@ final class HighOrderFunctionArgInfo
             ? [...$this->function_storage->template_types ?? [], ...$this->class_storage->template_types ?? []]
             : $this->function_storage->template_types ?? [];
 
-        return new TemplateResult($templates, []);
+        $result = new TemplateResult($templates, []);
+        TemplateDefaultResolver::register($result, $this->function_storage);
+        return $result;
     }
 
     public function getType(): string

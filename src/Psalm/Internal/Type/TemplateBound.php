@@ -63,6 +63,8 @@ final class TemplateBound
      */
     public bool $from_constraint_fallback = false;
 
+    public bool $from_template_default = false;
+
     /**
      * True for an upper bound imposed by a declared return type on a returned
      * value.

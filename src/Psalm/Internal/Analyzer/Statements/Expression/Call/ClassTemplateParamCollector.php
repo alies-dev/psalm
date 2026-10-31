@@ -6,6 +6,7 @@ namespace Psalm\Internal\Analyzer\Statements\Expression\Call;
 
 use AssertionError;
 use Psalm\Codebase;
+use Psalm\Internal\Type\TemplateDefaultResolver;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
 use Psalm\Storage\ClassLikeStorage;
@@ -96,16 +97,17 @@ final class ClassTemplateParamCollector
 
         if ($lhs_type_part instanceof TGenericObject) {
             if ($class_storage === $static_class_storage && $class_storage->template_types) {
+                $arguments = TemplateDefaultResolver::complete(
+                    $class_storage,
+                    $lhs_type_part->type_params,
+                    false,
+                    true,
+                );
                 $i = 0;
 
                 foreach ($class_storage->template_types as $type_name => $_) {
-                    if (isset($lhs_type_part->type_params[$i])) {
-                        $class_template_params[$type_name][$class_storage->name]
-                            = $lhs_type_part->type_params[$i];
-                    } elseif (isset($class_storage->template_defaults[$type_name])) {
-                        // a purity template left out (`Box<int>`) has its default
-                        $class_template_params[$type_name][$class_storage->name]
-                            = $class_storage->template_defaults[$type_name];
+                    if (isset($arguments[$i])) {
+                        $class_template_params[$type_name][$class_storage->name] = $arguments[$i];
                     }
 
                     $i++;
@@ -156,7 +158,10 @@ final class ClassTemplateParamCollector
             }
         }
 
+        $effective = TemplateDefaultResolver::complete($class_storage, [], true);
+        $effective_offset = 0;
         foreach ($template_types as $type_name => $type_map) {
+            $effective_type = $effective[$effective_offset++] ?? reset($type_map);
             foreach ($type_map as $type) {
                 foreach ($candidate_class_storages as $candidate_class_storage) {
                     if ($candidate_class_storage !== $static_class_storage
@@ -177,7 +182,7 @@ final class ClassTemplateParamCollector
 
                 if (!$self_call) {
                     if (!isset($class_template_params[$type_name])) {
-                        $class_template_params[$type_name][$class_storage->name] = $type;
+                        $class_template_params[$type_name][$class_storage->name] = $effective_type;
                     }
                 }
             }

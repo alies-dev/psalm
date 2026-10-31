@@ -80,13 +80,13 @@ final class TCallable extends Atomic
         if (!$replaced) {
             return $this;
         }
-        return new static(
+        return (new static(
             $replaced[0],
             $replaced[1],
             $replaced[2],
             $this->from_docblock,
             $this->callable_id,
-        );
+        ))->withTemplateContextsFrom($this);
     }
     /**
      * @return static
@@ -119,13 +119,13 @@ final class TCallable extends Atomic
         if (!$replaced) {
             return $this;
         }
-        return new static(
+        return (new static(
             $replaced[0],
             $replaced[1],
             $replaced[2],
             $this->from_docblock,
             $this->callable_id,
-        );
+        ))->withTemplateContextsFrom($this);
     }
 
     #[Override]

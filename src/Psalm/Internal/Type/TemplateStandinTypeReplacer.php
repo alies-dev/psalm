@@ -124,7 +124,7 @@ final class TemplateStandinTypeReplacer
         // here we want to subtract atomic types from the input type
         // when they're also in the union type, so those shared atomic
         // types will never be inferred as part of the generic type
-        if ($input_type && !$input_type->isSingle()) {
+        if ($input_type && count($original_atomic_types) > 1) {
             $new_input_type = $input_type->getBuilder();
 
             foreach ($original_atomic_types as $key => $_) {
@@ -896,6 +896,11 @@ final class TemplateStandinTypeReplacer
                     $has_matching_lower_bound = false;
 
                     foreach ($existing_lower_bounds as $existing_lower_bound) {
+                        if ($existing_lower_bound->from_constraint_fallback
+                            || $existing_lower_bound->from_template_default
+                        ) {
+                            continue;
+                        }
                         $existing_depth = $existing_lower_bound->appearance_depth;
                         $existing_arg_offset = $existing_lower_bound->arg_offset ?? $input_arg_offset;
 
@@ -1347,19 +1352,13 @@ final class TemplateStandinTypeReplacer
         if ($input_type_part instanceof TGenericObject || $input_type_part instanceof TIterable) {
             $input_type_params = $input_type_part->type_params;
 
-            // a purity template left out (`Iterator<int, int>`) is bound to its default, never to mixed
             if ($input_type_part instanceof TGenericObject
                 && $codebase->classlike_storage_provider->has($input_type_part->value)
             ) {
-                $input_class_storage = $codebase->classlike_storage_provider->get($input_type_part->value);
-
-                foreach (array_keys($input_class_storage->template_types ?? []) as $i => $template_name) {
-                    if ($i >= count($input_type_params)
-                        && isset($input_class_storage->template_defaults[$template_name])
-                    ) {
-                        $input_type_params[] = $input_class_storage->template_defaults[$template_name];
-                    }
-                }
+                $input_type_params = TemplateDefaultResolver::complete(
+                    $codebase->classlike_storage_provider->get($input_type_part->value),
+                    $input_type_params,
+                );
             }
         } elseif ($codebase->classlike_storage_provider->has($input_type_part->value)) {
             $class_storage = $codebase->classlike_storage_provider->get($input_type_part->value);
@@ -1367,7 +1366,7 @@ final class TemplateStandinTypeReplacer
             $container_class = $container_type_part->value;
 
             if (strtolower($input_type_part->value) === strtolower($container_type_part->value)) {
-                $input_type_params = $class_storage->getClassTemplateTypes();
+                $input_type_params = TemplateDefaultResolver::complete($class_storage, [], true);
             } elseif (!empty($class_storage->template_extended_params[$container_class])) {
                 // the params of the container are mapped below from those of the class, which an
                 // object without type params leaves at its templates

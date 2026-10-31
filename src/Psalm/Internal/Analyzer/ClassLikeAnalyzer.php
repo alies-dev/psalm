@@ -771,11 +771,21 @@ abstract class ClassLikeAnalyzer extends SourceAnalyzer
             ? 0
             : count($parent_storage->template_types);
 
-        if ($parent_storage->getRequiredTemplateParamCount() > $given_param_count) {
+        if (isset($storage->template_extended_offsets[$parent_storage->name])) {
+            [$given_types] = PurityArguments::split($storage->template_extended_offsets[$parent_storage->name]);
+            $given_type_count = count($given_types);
+        } else {
+            $given_type_count = 0;
+        }
+        $required_param_count = $parent_storage->getRequiredTemplateParamCount();
+        if ($required_param_count > $given_type_count) {
+            $type_param_count = PurityArguments::countTypeTemplates($parent_storage);
             IssueBuffer::maybeAdd(
                 new MissingTemplateParam(
                     $storage->name . ' has missing template params when extending ' . $parent_storage->name
-                        . ', expecting ' . $expected_param_count,
+                        . ', expecting ' . ($required_param_count === $type_param_count
+                            ? $type_param_count
+                            : 'at least ' . $required_param_count . ' of ' . $type_param_count . ' type arguments'),
                     $code_location,
                 ),
                 $storage->suppressed_issues + $this->getSuppressedIssues(),

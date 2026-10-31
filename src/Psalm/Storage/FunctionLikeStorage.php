@@ -108,6 +108,18 @@ abstract class FunctionLikeStorage implements HasAttributesInterface, Stringable
      */
     public ?array $template_types = null;
 
+    /** @var array<string, Union> */
+    public array $template_defaults = [];
+
+    /** @var array<string, CodeLocation> */
+    public array $template_default_locations = [];
+
+    /** @var list<string> */
+    public array $purity_templates = [];
+
+    /** @var array<string, true> */
+    public array $invalid_template_defaults = [];
+
     /**
      * @var array<int, Possibilities>
      */

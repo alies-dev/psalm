@@ -583,10 +583,9 @@ final class TKeyedArray extends Atomic
         bool $add_lower_bound = false,
         int $depth = 0,
     ): self|TArray {
-        if ($input_type instanceof TKeyedArray
-            && $input_type->is_list
-            && $input_type->isSealed()
-            && $this->isGenericList()
+        if ($this->isGenericList()
+            && (($input_type instanceof TKeyedArray && $input_type->is_list && $input_type->isSealed())
+                || ($input_type instanceof TArray && $input_type->isEmptyArray()))
         ) {
             $replaced_list_type = $this
                 ->getGenericArrayType()
@@ -594,7 +593,7 @@ final class TKeyedArray extends Atomic
                     $template_result,
                     $codebase,
                     $statements_analyzer,
-                    $input_type->getGenericArrayType(),
+                    $input_type instanceof TKeyedArray ? $input_type->getGenericArrayType() : $input_type,
                     $input_arg_offset,
                     $calling_class,
                     $calling_function,

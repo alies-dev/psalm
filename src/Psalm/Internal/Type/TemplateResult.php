@@ -6,8 +6,6 @@ namespace Psalm\Internal\Type;
 
 use Psalm\Type\Union;
 
-use function array_replace_recursive;
-
 /**
  * This class captures the result of running Psalm's argument analysis with
  * regard to generic parameters.
@@ -36,6 +34,12 @@ final class TemplateResult
      * @var array<string, array<string, TemplateBound>>
      */
     public array $upper_bounds = [];
+
+    /** @var array<string, array<string, Union>> */
+    public array $template_defaults = [];
+
+    /** @var array<string, array<string, true>> */
+    public array $type_template_declarations = [];
 
     /**
      * If set to true then we shouldn't update the template bounds
@@ -71,10 +75,26 @@ final class TemplateResult
         }
 
         $instance = clone $this;
-        /** @var array<string, array<string, non-empty-list<TemplateBound>>> $lower_bounds */
-        $lower_bounds = array_replace_recursive($instance->lower_bounds, $result->lower_bounds);
-        $instance->lower_bounds = $lower_bounds;
-        $instance->template_types = [...$instance->template_types, ...$result->template_types];
+        foreach ($result->lower_bounds as $name => $owners) {
+            foreach ($owners as $owner => $bounds) {
+                $instance->lower_bounds[$name][$owner] = [
+                    ...($instance->lower_bounds[$name][$owner] ?? []),
+                    ...$bounds,
+                ];
+            }
+        }
+        foreach ($result->template_types as $name => $owners) {
+            $instance->template_types[$name] = ($instance->template_types[$name] ?? []) + $owners;
+        }
+        foreach ($result->template_defaults as $name => $owners) {
+            $instance->template_defaults[$name] = ($instance->template_defaults[$name] ?? []) + $owners;
+        }
+        foreach ($result->type_template_declarations as $name => $owners) {
+            $instance->type_template_declarations[$name] = ($instance->type_template_declarations[$name] ?? []) + $owners;
+        }
+        foreach ($result->upper_bounds as $name => $owners) {
+            $instance->upper_bounds[$name] = ($instance->upper_bounds[$name] ?? []) + $owners;
+        }
 
         return $instance;
     }

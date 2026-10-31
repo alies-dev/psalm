@@ -416,17 +416,6 @@ final class FunctionLikeNodeScanner
                         + $docblock_info->since_php_minor_version * 100;
                 }
 
-                if ($stmt instanceof PhpParser\Node\Expr\Closure
-                    || $stmt instanceof PhpParser\Node\Expr\ArrowFunction
-                ) {
-                    if ($docblock_info->templates !== []) {
-                        $docblock_info->templates = [];
-                        $storage->docblock_issues[] = new InvalidDocblock(
-                            'Templated closures are not supported',
-                            new CodeLocation($this->file_scanner, $stmt, null, true),
-                        );
-                    }
-                }
 
                 FunctionLikeDocblockScanner::addDocblockInfo(
                     $this->codebase,

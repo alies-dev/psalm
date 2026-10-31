@@ -79,11 +79,19 @@ final class MethodCallReturnTypeFetcher
 
         if ($stmt->isFirstClassCallable()) {
             if ($method_storage) {
-                return new Union([new TClosure(
+                if (!$method_storage->has_docblock_param_types
+                    && isset($class_storage->documenting_method_ids[$method_name])
+                ) {
+                    $documenting = $codebase->methods->getStorage($class_storage->documenting_method_ids[$method_name]);
+                    if ($documenting->template_types) {
+                        $method_storage = $documenting;
+                    }
+                }
+                return new Union([(new TClosure(
                     $method_storage->params,
                     $method_storage->return_type,
                     $method_storage->capabilities,
-                )]);
+                ))->withTemplateContext($method_storage, $template_result, $codebase)]);
             }
 
             return Type::getClosure();
@@ -888,7 +896,7 @@ final class MethodCallReturnTypeFetcher
                     } else {
                         $template_result->lower_bounds[$template_type->param_name] = [
                             ($template_type->defining_class) => [
-                                new TemplateBound(Type::getNever()),
+                                new TemplateBound($template_type->as),
                             ],
                         ];
                     }

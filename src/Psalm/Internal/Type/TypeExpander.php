@@ -757,19 +757,15 @@ final class TypeExpander
             );
 
             if ($container_class_storage->template_types
-                && array_any(
+                && !TemplateDefaultResolver::hasRecursiveBound($container_class_storage)
+                && ($container_class_storage->template_defaults || array_any(
                     $container_class_storage->template_types,
                     static fn($type_map): bool => !reset($type_map)->hasMixed(),
-                )
+                ))
             ) {
                 $return_type = new TGenericObject(
                     $return_type->value,
-                    array_values(
-                        array_map(
-                            static fn($type_map) => PurityArguments::getOmittedArgument(reset($type_map)),
-                            $container_class_storage->template_types,
-                        ),
-                    ),
+                    TemplateDefaultResolver::complete($container_class_storage, [], true),
                 );
 
                 // we don't want to expand generic types recursively

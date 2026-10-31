@@ -328,11 +328,11 @@ final class CallableTypeComparator
                 ->template_types ?? [];
 
             $callable = self::withoutPurityTemplates(
-                new TCallable(
+                (new TCallable(
                     $method_storage->params,
                     $converted_return_type,
                     self::getCallableCapabilities($method_storage, $class_template_types),
-                ),
+                ))->withTemplateContext($method_storage),
                 ($method_storage->template_types ?? []) + $class_template_types,
                 $codebase,
             );
@@ -409,7 +409,7 @@ final class CallableTypeComparator
                     strtolower($input_type_part->value),
                 );
 
-                if ($expand_callable) {
+                if ($expand_callable && !$function_storage->template_types) {
                     $params = [];
 
                     foreach ($function_storage->params as $param) {
@@ -467,11 +467,11 @@ final class CallableTypeComparator
                     : self::getCallableCapabilities($function_storage);
 
                 return self::withoutPurityTemplates(
-                    new TCallable(
+                    (new TCallable(
                         $params,
                         $return_type,
                         $purity,
-                    ),
+                    ))->withTemplateContext($function_storage),
                     $function_storage->template_types ?? [],
                     $codebase,
                 );
@@ -585,7 +585,7 @@ final class CallableTypeComparator
                         );
                     }
 
-                    $callable = new TCallable(
+                    $callable = (new TCallable(
                         $method_storage->params,
                         $converted_return_type,
                         self::getCallableCapabilities(
@@ -594,7 +594,7 @@ final class CallableTypeComparator
                                 ->template_types ?? [],
                             $template_result,
                         ),
-                    );
+                    ))->withTemplateContext($method_storage, $template_result, $codebase);
 
                     if ($template_result) {
                         $callable = TemplateInferredTypeReplacer::replace(

@@ -174,6 +174,9 @@ final class FunctionDocblockComment
      */
     public array $templates = [];
 
+    /** @var array<string, string> */
+    public array $template_defaults = [];
+
     /**
      * @var array<int, array{type: string, param_name: string}>
      */

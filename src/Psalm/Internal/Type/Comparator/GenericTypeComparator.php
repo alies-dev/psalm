@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Psalm\Internal\Type\Comparator;
 
 use Psalm\Codebase;
+use Psalm\Internal\Type\TemplateDefaultResolver;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
 use Psalm\Type\Atomic;
 use Psalm\Type\Atomic\TGenericObject;
@@ -55,6 +56,16 @@ final class GenericTypeComparator
             return false;
         }
 
+        if ($container_type_part instanceof TGenericObject
+            && $codebase->classlike_storage_provider->has($container_type_part->value)
+        ) {
+            $container_type_part = $container_type_part->setTypeParams(
+                TemplateDefaultResolver::complete(
+                    $codebase->classlike_storage_provider->get($container_type_part->value),
+                    $container_type_part->type_params,
+                ),
+            );
+        }
         $container_type_params_covariant = [];
 
         $input_type_params = TemplateStandinTypeReplacer::getMappedGenericTypeParams(

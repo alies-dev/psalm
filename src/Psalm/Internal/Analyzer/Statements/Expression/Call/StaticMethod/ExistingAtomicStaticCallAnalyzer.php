@@ -768,7 +768,7 @@ final class ExistingAtomicStaticCallAnalyzer
 
         return [
             ($template_type->defining_class) => [
-                new TemplateBound(Type::getNever()),
+                new TemplateBound($template_type->as),
             ],
         ];
     }

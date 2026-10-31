@@ -29,6 +29,7 @@ use Psalm\Internal\Codebase\VariableUseGraph;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\MethodIdentifier;
+use Psalm\Internal\Type\TemplateDefaultResolver;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
@@ -730,7 +731,7 @@ final class AtomicPropertyFetchAnalyzer
                     $class_storage->parent_class,
                 );
 
-                if (count($template_types = $class_storage->getClassTemplateTypes()) !== 0) {
+                if (count($template_types = TemplateDefaultResolver::complete($class_storage, [], true)) !== 0) {
                     if (!$lhs_type_part instanceof TGenericObject) {
                         $lhs_type_part = new TGenericObject($lhs_type_part->value, $template_types);
                     }
@@ -867,6 +868,14 @@ final class AtomicPropertyFetchAnalyzer
         $extended_types = $property_class_storage->template_extended_params;
 
         if ($template_types) {
+            $lhs_type_part = $lhs_type_part->setTypeParams(
+                TemplateDefaultResolver::complete(
+                    $property_class_storage,
+                    $lhs_type_part->type_params,
+                    false,
+                    true,
+                ),
+            );
             if ($property_class_storage->template_types) {
                 foreach ($lhs_type_part->type_params as $param_offset => $lhs_param_type) {
                     $i = -1;
@@ -1439,7 +1448,7 @@ final class AtomicPropertyFetchAnalyzer
         ) {
             $stmt_type = $class_storage->pseudo_property_get_types['$' . $prop_name];
 
-            if (count($template_types = $class_storage->getClassTemplateTypes()) !== 0) {
+            if (count($template_types = TemplateDefaultResolver::complete($class_storage, [], true)) !== 0) {
                 if (!$lhs_type_part instanceof TGenericObject) {
                     $lhs_type_part = new TGenericObject($lhs_type_part->value, $template_types);
                 }
@@ -1539,7 +1548,7 @@ final class AtomicPropertyFetchAnalyzer
                 $declaring_class_storage->parent_class,
             );
 
-            if (count($template_types = $declaring_class_storage->getClassTemplateTypes()) !== 0) {
+            if (count($template_types = TemplateDefaultResolver::complete($declaring_class_storage, [], true)) !== 0) {
                 if (!$lhs_type_part instanceof TGenericObject) {
                     $lhs_type_part = new TGenericObject($lhs_type_part->value, $template_types);
                 }

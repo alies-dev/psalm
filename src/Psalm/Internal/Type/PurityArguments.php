@@ -11,6 +11,7 @@ use Psalm\Type\Union;
 use function array_slice;
 use function array_values;
 use function count;
+use function in_array;
 use function reset;
 
 /**
@@ -51,14 +52,11 @@ final class PurityArguments
     {
         $count = 0;
 
-        foreach ($storage->template_types ?? [] as $type_map) {
-            $bound = reset($type_map);
-
-            if (!Capabilities::isPurityType($bound)) {
+        foreach ($storage->template_types ?? [] as $name => $_) {
+            if (!in_array($name, $storage->purity_templates, true)) {
                 $count++;
             }
         }
-
         return $count;
     }
 
@@ -106,37 +104,8 @@ final class PurityArguments
      */
     public static function align(array $type_params, ClassLikeStorage $storage): array
     {
-        [$type_args, $purity_args] = self::split($type_params);
-
-        if ($purity_args === []) {
-            return $type_params;
-        }
-
-        $type_template_count = self::countTypeTemplates($storage);
-
-        if (count($type_args) >= $type_template_count
-            || count($purity_args) > count($storage->template_types ?? []) - $type_template_count
-        ) {
-            return $type_params;
-        }
-
-        $i = 0;
-
-        foreach ($storage->template_types ?? [] as $type_map) {
-            if ($i++ < count($type_args)) {
-                continue;
-            }
-
-            $bound = reset($type_map);
-
-            if (Capabilities::isPurityType($bound)) {
-                break;
-            }
-
-            $type_args[] = self::getOmittedArgument($bound);
-        }
-
-        return [...$type_args, ...$purity_args];
+        [$types] = self::split($type_params);
+        return TemplateDefaultResolver::complete($storage, $type_params, $types === []);
     }
 
     /**

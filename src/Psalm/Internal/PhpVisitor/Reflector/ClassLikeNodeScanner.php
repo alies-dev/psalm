@@ -456,6 +456,7 @@ final class ClassLikeNodeScanner
                 // purity templates come after the type templates, whatever their order in the
                 // docblock: their arguments are written apart (`Foo[pure]<int>`) and appended
                 $purity_templates = $docblock_info->purity_templates;
+                $storage->purity_templates = $purity_templates;
                 usort(
                     $docblock_info->templates,
                     /**
@@ -493,6 +494,10 @@ final class ClassLikeNodeScanner
                     }
                 }
 
+                foreach ($docblock_info->templates as $template_map) {
+                    $storage->template_types[$template_map[0]] = $purity_template_types[$template_map[0]]
+                        ?? [$fq_classlike_name => Type::getMixed()];
+                }
                 foreach ($docblock_info->templates as $i => $template_map) {
                     $template_name = $template_map[0];
 
@@ -546,6 +551,17 @@ final class ClassLikeNodeScanner
 
                     $storage->template_covariants[$i] = $template_map[3];
                 }
+
+                TemplateDefaultScanner::scan(
+                    $storage,
+                    $docblock_info->template_defaults,
+                    $storage->template_types,
+                    $this->aliases,
+                    $this->type_aliases,
+                    $name_location ?? $class_location,
+                    $this->codebase,
+                    $this->file_storage,
+                );
 
                 $this->class_template_types = $storage->template_types;
 

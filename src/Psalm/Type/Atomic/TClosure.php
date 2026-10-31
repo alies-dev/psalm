@@ -87,7 +87,7 @@ final class TClosure extends TNamedObject
         if (!$replaced && !$intersection) {
             return $this;
         }
-        return new static(
+        return (new static(
             $replaced[0] ?? $this->params,
             $replaced[1] ?? $this->return_type,
             $replaced[2] ?? $this->purity,
@@ -95,7 +95,7 @@ final class TClosure extends TNamedObject
             $intersection ?? $this->extra_types,
             $this->from_docblock,
             $this->callable_id,
-        );
+        ))->withTemplateContextsFrom($this);
     }
 
     /**
@@ -141,7 +141,7 @@ final class TClosure extends TNamedObject
         if (!$replaced && !$intersection) {
             return $this;
         }
-        return new static(
+        return (new static(
             $replaced[0] ?? $this->params,
             $replaced[1] ?? $this->return_type,
             $replaced[2] ?? $this->purity,
@@ -149,7 +149,7 @@ final class TClosure extends TNamedObject
             $intersection ?? $this->extra_types,
             $this->from_docblock,
             $this->callable_id,
-        );
+        ))->withTemplateContextsFrom($this);
     }
 
     #[Override]

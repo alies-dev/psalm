@@ -106,12 +106,12 @@ final class FunctionCallReturnTypeFetcher
             );
 
             if ($candidate_callable) {
-                $stmt_type = new Union([new TClosure(
+                $stmt_type = new Union([(new TClosure(
                     $candidate_callable->params,
                     $candidate_callable->return_type,
                     $candidate_callable->purity,
                     callable_id: strtolower($function_id),
-                )]);
+                ))->withTemplateContextsFrom($candidate_callable)]);
             } else {
                 $stmt_type = Type::getClosure();
             }
@@ -154,14 +154,6 @@ final class FunctionCallReturnTypeFetcher
                                                 false,
                                                 $codebase->analysis_php_version_id,
                                             ),
-                                        ),
-                                    ],
-                                ];
-                            } else {
-                                $template_result->lower_bounds[$template_name] = [
-                                    'fn-' . $function_id => [
-                                        new TemplateBound(
-                                            Type::getNever(),
                                         ),
                                     ],
                                 ];

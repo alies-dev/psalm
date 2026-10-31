@@ -7,16 +7,21 @@ namespace Psalm\Type\Atomic;
 use Override;
 use Psalm\Codebase;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
+use Psalm\Internal\Type\TemplateDefaultResolver;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
 use Psalm\Storage\Capabilities;
 use Psalm\Storage\FunctionLikeParameter;
+use Psalm\Storage\FunctionLikeStorage;
+use Psalm\Type;
 use Psalm\Type\Atomic;
 use Psalm\Type\Union;
 
 use function count;
+use function hash;
 use function implode;
+use function serialize;
 
 /**
  * @psalm-immutable
@@ -38,6 +43,63 @@ trait CallableTrait
      * the closure actually passed at each call site.
      */
     public Union $purity;
+
+    /**
+     * @var array<string, array{
+     *     bounds: array<string, array<string, Union>>,
+     *     defaults: array<string, array<string, Union>>,
+     *     declarations: array<string, array<string, true>>,
+     *     bindings: array<string, array<string, Union>>
+     * }>
+     */
+    public array $template_contexts = [];
+
+    /**
+     * @psalm-external-mutation-free
+     * @return static
+     */
+    public function withTemplateContext(
+        FunctionLikeStorage $storage,
+        ?TemplateResult $receiver = null,
+        ?Codebase $codebase = null,
+    ): self {
+        if (!$storage->template_types) {
+            return $this;
+        }
+        $result = new TemplateResult([], []);
+        TemplateDefaultResolver::register($result, $storage);
+        if (!$result->type_template_declarations) {
+            return $this;
+        }
+        $bindings = [];
+        foreach ($receiver?->lower_bounds ?? [] as $name => $owners) {
+            foreach ($owners as $owner => $bounds) {
+                if (!isset($result->type_template_declarations[$name][$owner])) {
+                    $bindings[$name][$owner] = TemplateStandinTypeReplacer::getMostSpecificTypeFromBounds($bounds, $codebase);
+                }
+            }
+        }
+        $context = [
+            'bounds' => $result->template_types,
+            'defaults' => $result->template_defaults,
+            'declarations' => $result->type_template_declarations,
+            'bindings' => $bindings,
+        ];
+        $cloned = clone $this;
+        $cloned->template_contexts[hash('sha256', serialize($context))] = $context;
+        return $cloned;
+    }
+
+    /** @return static */
+    public function withTemplateContextsFrom(TCallable|TClosure $source): self
+    {
+        if (!$source->template_contexts) {
+            return $this;
+        }
+        $cloned = clone $this;
+        $cloned->template_contexts += $source->template_contexts;
+        return $cloned;
+    }
 
 
     /**
@@ -318,7 +380,7 @@ trait CallableTrait
                 $codebase,
                 $statements_analyzer,
                 $input_type instanceof TCallable || $input_type instanceof TClosure
-                    ? $input_type->return_type
+                    ? ($input_type->return_type ?? Type::getMixed())
                     : null,
                 $input_arg_offset,
                 $calling_class,

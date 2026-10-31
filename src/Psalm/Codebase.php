@@ -205,6 +205,14 @@ final class Codebase
      */
     public ?array $constructor_argument_starts = null;
 
+    /** @var array<ClassLikeStorage> */
+    private array $pending_template_default_classes = [];
+
+    /** @var array<FileStorage> */
+    private array $pending_template_default_files = [];
+
+    private bool $template_defaults_ready = false;
+
     /**
      * The types of the global constants matching each wildcard expanded since the files were last scanned, by name
      * (see ConstFetchAnalyzer::getGlobalConstTypesByWildcard())
@@ -917,7 +925,18 @@ final class Codebase
 
         // the classes scanned again may make other `new`
         $this->constructor_argument_starts = null;
+        $this->pending_template_default_classes = [
+            ...$this->pending_template_default_classes,
+            ...$this->classlike_storage_provider->getNew(),
+        ];
+        $this->pending_template_default_files = [
+            ...$this->pending_template_default_files,
+            ...$this->file_storage_provider->getNew(),
+        ];
         $this->populator->populateCodebase();
+        if ($this->template_defaults_ready && !$this->register_stub_files) {
+            $this->checkTemplateDefaults();
+        }
         // the files scanned again may declare other constants
         $this->global_constant_types_by_wildcard = [];
     }
@@ -985,10 +1004,32 @@ final class Codebase
         if ($has_changes) {
             // the classes scanned again may make other `new`
             $this->constructor_argument_starts = null;
+            $this->pending_template_default_classes = [
+                ...$this->pending_template_default_classes,
+                ...$this->classlike_storage_provider->getNew(),
+            ];
+            $this->pending_template_default_files = [
+                ...$this->pending_template_default_files,
+                ...$this->file_storage_provider->getNew(),
+            ];
             $this->populator->populateCodebase();
+            if ($this->template_defaults_ready && !$this->register_stub_files) {
+                $this->checkTemplateDefaults();
+            }
             // the files scanned again may declare other constants
             $this->global_constant_types_by_wildcard = [];
         }
+    }
+
+    /** @internal */
+    public function checkTemplateDefaults(): void
+    {
+        $this->template_defaults_ready = true;
+        $classes = $this->pending_template_default_classes;
+        $files = $this->pending_template_default_files;
+        $this->pending_template_default_classes = [];
+        $this->pending_template_default_files = [];
+        Internal\Type\TemplateDefaultChecker::check($this, $classes, $files);
     }
 
     /**

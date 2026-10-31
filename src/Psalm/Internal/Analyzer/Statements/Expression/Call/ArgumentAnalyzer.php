@@ -166,6 +166,9 @@ final class ArgumentAnalyzer
         bool $in_call_map,
     ): ?bool {
         $codebase = $statements_analyzer->getCodebase();
+        if ($arg->unpack && $arg_value_type?->isEmptyArray()) {
+            return null;
+        }
 
         if (!$arg_value_type) {
             if ($function_param && !$function_param->by_ref) {

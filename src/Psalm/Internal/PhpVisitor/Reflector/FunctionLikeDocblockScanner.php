@@ -276,6 +276,17 @@ final class FunctionLikeDocblockScanner
                 $stmt,
                 $cased_function_id,
             );
+            $storage->purity_templates = $docblock_info->purity_templates;
+            TemplateDefaultScanner::scan(
+                $storage,
+                $docblock_info->template_defaults,
+                $function_template_types,
+                $aliases,
+                $type_aliases,
+                new CodeLocation($file_scanner, $stmt, null, true),
+                $codebase,
+                $file_storage,
+            );
 
             foreach ($docblock_info->purity_templates as $purity_template) {
                 foreach ($storage->template_types[$purity_template] ?? [] as $bound) {
@@ -1057,6 +1068,7 @@ final class FunctionLikeDocblockScanner
                 $wildcard_bound = new Union([new TCapabilities(Capabilities::ALL)]);
 
                 $storage->template_types[$wildcard_template] = [$defining_id => $wildcard_bound];
+                $storage->purity_templates[] = $wildcard_template;
                 $function_template_types[$wildcard_template] = [$defining_id => $wildcard_bound];
 
                 if (!in_array($wildcard_template, $storage->purity_from_templates, true)) {
@@ -1967,6 +1979,11 @@ final class FunctionLikeDocblockScanner
         string $cased_function_id,
     ): array {
         $storage->template_types = [];
+        foreach ($docblock_info->templates as $template_map) {
+            $storage->template_types[$template_map[0]] = [
+                'fn-' . strtolower($cased_function_id) => Type::getMixed(),
+            ];
+        }
 
         foreach ($docblock_info->templates as $template_map) {
             $template_name = $template_map[0];

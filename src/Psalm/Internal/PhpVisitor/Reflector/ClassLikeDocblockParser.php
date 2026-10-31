@@ -71,6 +71,7 @@ final class ClassLikeDocblockParser
         $info = new ClassLikeDocblockComment();
 
         $templates = [];
+        $template_defaults = [];
 
         if (isset($parsed_docblock->tags['psalm-purity-template'])) {
             // a purity template is a covariant template whose values are capability sets
@@ -98,16 +99,7 @@ final class ClassLikeDocblockParser
 
         if (isset($parsed_docblock->combined_tags['template'])) {
             foreach ($parsed_docblock->combined_tags['template'] as $offset => $template_line) {
-                $template_type = preg_split('/[\s]+/', CommentAnalyzer::sanitizeDocblockType($template_line));
-                if ($template_type === false) {
-                    throw new IncorrectDocblockException('Invalid @template tag: '.preg_last_error_msg());
-                }
-
-                $template_name = array_shift($template_type);
-
-                if (!$template_name) {
-                    throw new IncorrectDocblockException('Empty @template tag');
-                }
+                [$template_name, $modifier, $bound, $default] = TemplateTagParser::parse($template_line);
 
                 $source_prefix = 'none';
                 if (isset($parsed_docblock->tags['psalm-template'][$offset])) {
@@ -116,41 +108,20 @@ final class ClassLikeDocblockParser
                     $source_prefix = 'phpstan';
                 }
 
-                if (count($template_type) > 1
-                    && in_array(strtolower($template_type[0]), ['as', 'super', 'of'], true)
-                ) {
-                    $template_modifier = strtolower(array_shift($template_type));
-                    $templates[$template_name][$source_prefix] = [
-                        $template_name,
-                        $template_modifier,
-                        implode(' ', $template_type),
-                        false,
-                        $offset - $comment->getStartFilePos(),
-                    ];
-                } else {
-                    $templates[$template_name][$source_prefix] = [
-                        $template_name,
-                        null,
-                        null,
-                        false,
-                        $offset - $comment->getStartFilePos(),
-                    ];
-                }
+                $templates[$template_name][$source_prefix] = [
+                    $template_name,
+                    $modifier,
+                    $bound,
+                    false,
+                    $offset - $comment->getStartFilePos(),
+                ];
+                $template_defaults[$template_name][$source_prefix] = $default;
             }
         }
 
         if (isset($parsed_docblock->combined_tags['template-covariant'])) {
             foreach ($parsed_docblock->combined_tags['template-covariant'] as $offset => $template_line) {
-                $template_type = preg_split('/[\s]+/', CommentAnalyzer::sanitizeDocblockType($template_line));
-                if ($template_type === false) {
-                    throw new IncorrectDocblockException('Invalid @template-covariant tag: '.preg_last_error_msg());
-                }
-
-                $template_name = array_shift($template_type);
-
-                if (!$template_name) {
-                    throw new IncorrectDocblockException('Empty @template-covariant tag');
-                }
+                [$template_name, $modifier, $bound, $default] = TemplateTagParser::parse($template_line);
 
                 $source_prefix = 'none';
                 if (isset($parsed_docblock->tags['psalm-template-covariant'][$offset])) {
@@ -159,26 +130,14 @@ final class ClassLikeDocblockParser
                     $source_prefix = 'phpstan';
                 }
 
-                if (count($template_type) > 1
-                    && in_array(strtolower($template_type[0]), ['as', 'super', 'of'], true)
-                ) {
-                    $template_modifier = strtolower(array_shift($template_type));
-                    $templates[$template_name][$source_prefix] = [
-                        $template_name,
-                        $template_modifier,
-                        implode(' ', $template_type),
-                        true,
-                        $offset - $comment->getStartFilePos(),
-                    ];
-                } else {
-                    $templates[$template_name][$source_prefix] = [
-                        $template_name,
-                        null,
-                        null,
-                        true,
-                        $offset - $comment->getStartFilePos(),
-                    ];
-                }
+                $templates[$template_name][$source_prefix] = [
+                    $template_name,
+                    $modifier,
+                    $bound,
+                    true,
+                    $offset - $comment->getStartFilePos(),
+                ];
+                $template_defaults[$template_name][$source_prefix] = $default;
             }
         }
 
@@ -186,6 +145,10 @@ final class ClassLikeDocblockParser
             foreach (['psalm', 'phpstan', 'none'] as $source_prefix) {
                 if (isset($template_entries[$source_prefix])) {
                     $info->templates[] = $template_entries[$source_prefix];
+                    $name = $template_entries[$source_prefix][0];
+                    if (isset($template_defaults[$name][$source_prefix])) {
+                        $info->template_defaults[$name] = $template_defaults[$name][$source_prefix];
+                    }
                     break;
                 }
             }

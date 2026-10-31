@@ -9,6 +9,7 @@ use Psalm\CodeLocation;
 use Psalm\Context;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
 use Psalm\Internal\MethodIdentifier;
+use Psalm\Internal\Type\TemplateDefaultResolver;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
@@ -131,6 +132,10 @@ final class HighOrderFunctionArgHandler
             return;
         }
 
+        TemplateDefaultResolver::finalize(
+            $high_order_template_result,
+            $statements_analyzer->getCodebase(),
+        );
         $fully_inferred_callable_type = TemplateInferredTypeReplacer::replace(
             $high_order_callable_info->getFunctionType(),
             $high_order_template_result,

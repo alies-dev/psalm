@@ -23,6 +23,7 @@ use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Type\Comparator\TypeComparisonResult;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\TemplateBound;
+use Psalm\Internal\Type\TemplateDefaultResolver;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
@@ -31,6 +32,7 @@ use Psalm\Issue\ArgumentTypeCoercion;
 use Psalm\Issue\InvalidArgument;
 use Psalm\Issue\InvalidDocblock;
 use Psalm\Issue\InvalidScalarArgument;
+use Psalm\Issue\InvalidTemplateParam;
 use Psalm\Issue\MixedArgumentTypeCoercion;
 use Psalm\Issue\TypeDoesNotContainType;
 use Psalm\Issue\UndefinedFunction;
@@ -1025,6 +1027,30 @@ abstract class CallAnalyzer
         CodeLocation $code_location,
         ?string $function_id,
     ): void {
+        TemplateDefaultResolver::finalize($template_result, $statements_analyzer->getCodebase());
+        foreach ($template_result->template_defaults as $name => $owners) {
+            foreach ($owners as $owner => $_) {
+                $selected = $template_result->lower_bounds[$name][$owner][0] ?? null;
+                if ($selected === null || !$selected->from_template_default) {
+                    continue;
+                }
+                $bound = TemplateDefaultResolver::substitute(
+                    $template_result->template_types[$name][$owner],
+                    $template_result,
+                    $statements_analyzer->getCodebase(),
+                );
+                if (!UnionTypeComparator::isContainedBy($statements_analyzer->getCodebase(), $selected->type, $bound)) {
+                    IssueBuffer::maybeAdd(
+                        new InvalidTemplateParam(
+                            'Default for ' . $name . ' in ' . ($function_id ?? 'callable')
+                                . ' expects ' . $bound->getId() . ', ' . $selected->type->getId() . ' given',
+                            $code_location,
+                        ),
+                        $statements_analyzer->getSuppressedIssues(),
+                    );
+                }
+            }
+        }
         if ($template_result->lower_bounds && $template_result->upper_bounds) {
             foreach ($template_result->upper_bounds as $template_name => $defining_map) {
                 foreach ($defining_map as $defining_id => $upper_bound) {

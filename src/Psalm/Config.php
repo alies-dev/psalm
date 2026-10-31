@@ -2821,6 +2821,7 @@ final class Config
         $progress->debug('Finished registering stub files' . "\n");
 
         $codebase->register_stub_files = false;
+        $codebase->checkTemplateDefaults();
 
         self::reportStubDocblockIssues($codebase, $user_stub_paths);
     }

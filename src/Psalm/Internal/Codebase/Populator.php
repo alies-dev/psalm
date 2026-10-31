@@ -13,7 +13,9 @@ use Psalm\Internal\Provider\ClassLikeStorageProvider;
 use Psalm\Internal\Provider\FileReferenceProvider;
 use Psalm\Internal\Provider\FileStorageProvider;
 use Psalm\Internal\Type\IterationPurity;
-use Psalm\Internal\Type\PurityArguments;
+use Psalm\Internal\Type\TemplateDefaultResolver;
+use Psalm\Internal\Type\TemplateInferredTypeReplacer;
+use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeAlias\ClassTypeAlias;
 use Psalm\Issue\CircularReference;
 use Psalm\Issue\UndefinedTrait;
@@ -175,6 +177,9 @@ final class Populator
         }
 
         $storage->template_types = $template_types;
+        foreach ($storage->template_defaults as $name => $default) {
+            $storage->template_defaults[$name] = $this->resolveTypeAliases($default) ?? $default;
+        }
     }
 
     /**
@@ -907,31 +912,17 @@ final class Populator
         Union $type,
         ClassLikeStorage $storage,
     ): Union {
-        $extended_types = [];
-
-        foreach ($type->getAtomicTypes() as $atomic_type) {
-            if ($atomic_type instanceof TTemplateParam) {
-                $referenced_type
-                    = $storage->template_extended_params[$atomic_type->defining_class][$atomic_type->param_name]
-                        ?? null;
-
-                if ($referenced_type) {
-                    foreach ($referenced_type->getAtomicTypes() as $atomic_referenced_type) {
-                        if (!$atomic_referenced_type instanceof TTemplateParam) {
-                            $extended_types[] = $atomic_referenced_type;
-                        } else {
-                            $extended_types[] = $atomic_type;
-                        }
-                    }
-                } else {
-                    $extended_types[] = $atomic_type;
-                }
-            } else {
-                $extended_types[] = $atomic_type;
+        $bindings = [];
+        foreach ($storage->template_extended_params ?? [] as $owner => $types) {
+            foreach ($types as $name => $argument) {
+                $bindings[$name][$owner] = $argument;
             }
         }
-
-        return new Union($extended_types);
+        return TemplateInferredTypeReplacer::replace(
+            $type,
+            new TemplateResult([], $bindings),
+            null,
+        );
     }
 
     private function populateDataFromParentClass(
@@ -1177,13 +1168,14 @@ final class Populator
             $storage->template_extended_params[$parent_storage->name] = [];
 
             if (isset($storage->template_extended_offsets[$parent_storage->name])) {
-                // `@extends Foo[pure]` for a class with type templates
-                $storage->template_extended_offsets[$parent_storage->name] = PurityArguments::align(
-                    array_values($storage->template_extended_offsets[$parent_storage->name]),
+                $arguments = TemplateDefaultResolver::complete(
                     $parent_storage,
+                    array_values($storage->template_extended_offsets[$parent_storage->name]),
+                    false,
+                    true,
                 );
 
-                foreach ($storage->template_extended_offsets[$parent_storage->name] as $i => $type) {
+                foreach ($arguments as $i => $type) {
                     $parent_template_type_names = array_keys($parent_storage->template_types);
 
                     $mapped_name = $parent_template_type_names[$i] ?? null;
@@ -1194,16 +1186,6 @@ final class Populator
                     }
                 }
 
-                // trailing purity templates left out are bound to their default
-                foreach ($parent_storage->template_types as $template_name => $_) {
-                    if (!isset($storage->template_extended_params[$parent_storage->name][$template_name])
-                        && isset($parent_storage->template_defaults[$template_name])
-                    ) {
-                        $storage->template_extended_params[$parent_storage->name][$template_name]
-                            = $parent_storage->template_defaults[$template_name]
-                                ->setProperties(['from_docblock' => false]);
-                    }
-                }
 
                 if ($parent_storage->template_extended_params) {
                     foreach ($parent_storage->template_extended_params as $t_storage_class => $type_map) {
@@ -1216,13 +1198,10 @@ final class Populator
                     }
                 }
             } else {
-                foreach ($parent_storage->template_types as $template_name => $template_type_map) {
-                    foreach ($template_type_map as $template_type) {
-                        // a purity template with a default is bound to it, others to their bound
-                        $default_param = ($parent_storage->template_defaults[$template_name] ?? $template_type)
-                            ->setProperties(['from_docblock' => false]);
-                        $storage->template_extended_params[$parent_storage->name][$template_name] = $default_param;
-                    }
+                foreach (TemplateDefaultResolver::complete($parent_storage, [], true) as $i => $type) {
+                    $names = array_keys($parent_storage->template_types);
+                    $storage->template_extended_params[$parent_storage->name][$names[$i]]
+                        = $type->setProperties(['from_docblock' => false]);
                 }
 
                 if ($from_direct_parent) {

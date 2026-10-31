@@ -7,6 +7,8 @@ namespace Psalm\Internal\Analyzer\Statements\Expression\Call;
 use PhpParser;
 use Psalm\Storage\FunctionLikeParameter;
 use Psalm\Storage\FunctionLikeStorage;
+use Psalm\Type\Atomic\TCallable;
+use Psalm\Type\Atomic\TClosure;
 use Psalm\Type\Union;
 
 /**
@@ -53,6 +55,11 @@ final class FunctionCallInfo
      * @var array<non-empty-lowercase-string, true>
      */
     public array $callable_ids = [];
+
+    /** @var list<TCallable|TClosure> */
+    public array $template_callables = [];
+
+    public bool $has_template_callable = false;
 
     public bool $allow_named_args = true;
 

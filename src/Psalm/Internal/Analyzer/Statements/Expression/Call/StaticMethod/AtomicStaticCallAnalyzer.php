@@ -16,6 +16,7 @@ use Psalm\Internal\Analyzer\NamespaceAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\Call\ArgumentMapPopulator;
 use Psalm\Internal\Analyzer\Statements\Expression\Call\ArgumentsAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\Call\CallPurityResolver;
+use Psalm\Internal\Analyzer\Statements\Expression\Call\ClassTemplateParamCollector;
 use Psalm\Internal\Analyzer\Statements\Expression\Call\Method\MethodVisibilityAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\Call\MethodCallAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\Call\NewAnalyzer;
@@ -494,11 +495,11 @@ final class AtomicStaticCallAnalyzer
             if ($found_method_and_class_storage) {
                 [ $method_storage ] = $found_method_and_class_storage;
 
-                $return_type_candidate = new Union([new TClosure(
+                $return_type_candidate = new Union([(new TClosure(
                     $method_storage->params,
                     $method_storage->return_type,
                     $method_storage->capabilities,
-                )]);
+                ))->withTemplateContext($method_storage)]);
             } else {
                 $method_exists = $naive_method_exists
                     || $fake_method_exists
@@ -507,12 +508,24 @@ final class AtomicStaticCallAnalyzer
 
                 if ($method_exists) {
                     $declaring_method_id = $codebase->methods->getDeclaringMethodId($method_id) ?? $method_id;
+                    $capture_storage = $codebase->methods->getStorage($declaring_method_id);
+                    $capture_class = $codebase->methods->getClassLikeStorageForMethod($declaring_method_id);
+                    $capture_result = new TemplateResult(
+                        [],
+                        ClassTemplateParamCollector::collect(
+                            $codebase,
+                            $capture_class,
+                            $class_storage,
+                            $method_name_lc,
+                            new TNamedObject($fq_class_name),
+                        ) ?? [],
+                    );
 
-                    $return_type_candidate = new Union([new TClosure(
+                    $return_type_candidate = new Union([(new TClosure(
                         array_values($codebase->getMethodParams($method_id)),
                         $codebase->getMethodReturnType($method_id, $fq_class_name),
                         $codebase->methods->getStorage($declaring_method_id)->capabilities,
-                    )]);
+                    ))->withTemplateContext($capture_storage, $capture_result, $codebase)]);
                 } elseif ($stmt->class instanceof PhpParser\Node\Name && $stmt->class->getFirst() === 'parent'
                     && !$statements_analyzer->isStatic()
                     && isset($class_storage->pseudo_methods[$method_name_lc])
