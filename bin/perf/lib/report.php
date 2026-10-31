@@ -13,6 +13,11 @@ function fmtPct(?float $pct): string
     return $pct === null ? 'n/a' : str_replace('-', '−', sprintf('%+.1f %%', $pct));
 }
 
+function fmtSigned(int $n): string
+{
+    return str_replace('-', '−', sprintf('%+d', $n));
+}
+
 function inlineCode(string $text): string
 {
     return '`' . str_replace('`', "'", $text) . '`';
@@ -66,6 +71,35 @@ function issuesCell(array $p): string
 }
 
 /**
+ * Informational issue score "base → head (Δ)", "–" without issue lists.
+ *
+ * @param array<string, mixed> $p
+ */
+function scoreCell(array $p): string
+{
+    $s = $p['score'] ?? null;
+
+    return $s === null ? '–' : sprintf('%d → %d (%s)', $s['base'], $s['head'], fmtSigned($s['delta']));
+}
+
+/**
+ * Non-zero per-level issue count deltas, e.g. "L1 +100 · always +2", or '' when none.
+ *
+ * @param array<string, mixed> $p
+ */
+function levelDeltas(array $p): string
+{
+    $deltas = [];
+    foreach ($p['score']['by_level'] ?? [] as $label => $l) {
+        if ($l['delta'] !== 0) {
+            $deltas[] = "{$label} " . fmtSigned($l['delta']);
+        }
+    }
+
+    return implode(' · ', $deltas);
+}
+
+/**
  * @param array<string, mixed> $summary
  */
 function comparedCount(array $summary): int
@@ -84,6 +118,10 @@ function detailsFor(string $name, array $p): string
 {
     $parts = [];
     $i = $p['issues'] ?? null;
+    if (($levels = levelDeltas($p)) !== '') {
+        $parts[] = '**Score** ' . scoreCell($p) . ": {$levels}";
+    }
+
     if ($i !== null && ($i['added'] > 0 || $i['removed'] > 0)) {
         $rows = ["| Issue type | added | removed |", '|---|---|---|'];
         foreach ($i['types'] as $type => $n) {
@@ -133,14 +171,21 @@ function renderReport(array $summary, ?string $runUrl): string
         comparedCount($summary),
         $total,
     );
-    $out .= "| Project | Psalm MB | Wall | Issues | Status |\n|---|---|---|---|---|\n";
+    $scores = array_filter(array_column($summary['projects'], 'score'));
+    if ($scores !== []) {
+        $out .= 'Issue score Δ ' . fmtSigned(array_sum(array_column($scores, 'delta')))
+            . " (informational, see the README)\n\n";
+    }
+
+    $out .= "| Project | Psalm MB | Wall | Issues | Score | Status |\n|---|---|---|---|---|---|\n";
     foreach ($summary['projects'] as $name => $p) {
         $out .= sprintf(
-            "| %s | %s | %s | %s | %s |\n",
+            "| %s | %s | %s | %s | %s | %s |\n",
             $name,
             metricCell($p, 'psalm_mb', '%.0f', $p['mb_delta']),
             wallCell($p),
             issuesCell($p),
+            scoreCell($p),
             trim(VERDICT_ICONS[$p['verdict']] . ' ' . tableCell(implode('; ', $p['notes']))),
         );
     }

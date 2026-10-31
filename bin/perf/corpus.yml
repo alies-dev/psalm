@@ -23,7 +23,9 @@
 #   psalm           what the generated psalm-perf.xml holds:
 #     dirs            projectFiles directories; globs allowed
 #     ignore          optional extra ignoreFiles directories (`vendor` is always ignored); globs allowed
-#     level           optional errorLevel (default 4)
+#     level           optional errorLevel (default 1: the level only changes error/info labels, not what is analysed or
+#                     reported, and level 1 keeps severities uniform so a reclassified issue type does not flip
+#                     thousands of issues)
 #   composer        optional; false skips `composer update`
 #   before_install  optional shell, run in the project dir before `composer update` (install quirks)
 #   after_install   optional shell, run once in the project dir after `composer update` and after psalm-perf.xml is
@@ -106,7 +108,6 @@ projects:
     timeout: 120
     exercises: deep class hierarchies, class-string<T> repositories, attributes metadata
     psalm:
-      level: 3
       dirs: [src]
 
   psl:
@@ -116,7 +117,6 @@ projects:
     timeout: 120
     exercises: heavily templated functional library, 70+ packages, generics, conditional types, assertions
     psalm:
-      level: 3
       dirs: [packages/*/src]
     after_install: sed -i.bak 's/<psalm/<psalm phpVersion="8.4"/' psalm-perf.xml
 
@@ -127,7 +127,6 @@ projects:
     timeout: 120
     exercises: large final-class codebase, readonly/immutable value objects, modern PHP 8.4 syntax, event system
     psalm:
-      level: 3
       dirs: [src]
     after_install: sed -i.bak 's/<psalm/<psalm phpVersion="8.4"/' psalm-perf.xml
 
@@ -138,7 +137,6 @@ projects:
     timeout: 120
     exercises: large AST node class hierarchy, many untyped closures and arrays, visitor pattern
     psalm:
-      level: 3
       dirs: [lib]
     after_install: sed -i.bak 's/<psalm/<psalm phpVersion="7.4"/' psalm-perf.xml
 
@@ -149,7 +147,6 @@ projects:
     timeout: 60
     exercises: fibers, generics (Future<T>), closures templates, small and fast
     psalm:
-      level: 3
       dirs: [src]
     after_install: sed -i.bak 's/<psalm/<psalm phpVersion="8.1"/' psalm-perf.xml
 
@@ -160,6 +157,5 @@ projects:
     timeout: 90
     exercises: psalm-assert type narrowing, pure/immutable annotations, static-analysis fixture files
     psalm:
-      level: 3
       dirs: [src, tests/static-analysis]
     after_install: sed -i.bak 's/<psalm/<psalm phpVersion="8.2"/' psalm-perf.xml

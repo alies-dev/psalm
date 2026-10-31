@@ -49,6 +49,12 @@ Timing is informational: both sides share a runner, but shared runners still sho
 
 Issues are compared as a multiset of file, line, column, type, severity and message (digit runs of 9 or more in messages are masked). The report lists at most 10 added and 10 removed issues per project, per-type counts, and stays under 60 000 bytes.
 
+## Issue score
+
+Informational only, it never changes a verdict. Per project and side, score = sum over all issues of a weight taken from the issue type's `error_level` (kept in `<project>.issues.json`, not part of the diff identity): the level itself for 1 to 8, 10 for always-error issues (-1), 0 for feature-specific ones (-2: unused code, opinionated checks). The report shows `base → head (Δ)` per project, the per-level issue count deltas in the details (`L1 +100 · L6 −11 · always +2 · feature −3`, non-zero levels only), the corpus total Δ under the verdict line, and `summary.json` holds `score` (`base`, `head`, `delta`, `by_level`).
+
+Read +Δ as more or more serious issues reported, so new false positives or new true positives; −Δ as fewer or less serious ones, so fixed false positives or lost detection. The per-type table and examples tell which.
+
 ## Result files
 
 `run-shard.sh` writes `<out>/<rev>/<project>.json` and, for an ok run, `<project>.issues.json`:
@@ -87,12 +93,12 @@ Issues are compared as a multiset of file, line, column, type, severity and mess
      psalm:
        dirs: [src]            # projectFiles directories, globs allowed
        # ignore: [src/*/Tests]  # `vendor` is always ignored
-       # level: 4             # errorLevel, default 4
+       # level: 1             # errorLevel, default 1
    ```
 
    Optional project fields: `composer: false` (skip the install), `before_install` (shell, run in the project root before the install), `after_install` (shell, run once in the project root after `composer update` and after `psalm-perf.xml` is generated, before the base and head runs; may patch `psalm-perf.xml`).
 
-3. `psalm-perf.xml` is generated from `psalm.dirs`, `psalm.ignore` and `psalm.level`, with fixed attributes (`resolveFromConfigFile`, `findUnusedCode`, `findUnusedBaselineEntry` and `findUnusedIssueHandlerSuppression` false). `loadLibraryPlugins="false"` is injected when both Psalm checkouts know the attribute. Anything else is patched in `after_install`; Drupal adds its file extensions:
+3. `psalm-perf.xml` is generated from `psalm.dirs`, `psalm.ignore` and `psalm.level` (default 1: the level only changes error/info labels, not what is analysed or reported, and level 1 keeps severities uniform so a reclassified issue type does not flip thousands of issues), with fixed attributes (`resolveFromConfigFile`, `findUnusedCode`, `findUnusedBaselineEntry` and `findUnusedIssueHandlerSuppression` false). `loadLibraryPlugins="false"` is injected when both Psalm checkouts know the attribute. Anything else is patched in `after_install`; Drupal adds its file extensions:
 
    ```yaml
    after_install: |
