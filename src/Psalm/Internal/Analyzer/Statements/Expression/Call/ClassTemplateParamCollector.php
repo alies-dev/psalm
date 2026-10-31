@@ -6,6 +6,7 @@ namespace Psalm\Internal\Analyzer\Statements\Expression\Call;
 
 use AssertionError;
 use Psalm\Codebase;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
 use Psalm\Storage\ClassLikeStorage;
@@ -16,6 +17,7 @@ use Psalm\Type\Atomic\TGenericObject;
 use Psalm\Type\Atomic\TTemplateParam;
 use Psalm\Type\Union;
 
+use function array_combine;
 use function array_keys;
 use function array_merge;
 use function array_search;
@@ -97,11 +99,16 @@ final class ClassTemplateParamCollector
         if ($lhs_type_part instanceof TGenericObject) {
             if ($class_storage === $static_class_storage && $class_storage->template_types) {
                 $i = 0;
+                // the templates left out with a default (`Foo<int>`) have it
+                $type_params = TemplateDefaults::completeTypeParams(
+                    $class_storage,
+                    $lhs_type_part->type_params,
+                    $codebase,
+                );
 
                 foreach ($class_storage->template_types as $type_name => $_) {
-                    if (isset($lhs_type_part->type_params[$i])) {
-                        $class_template_params[$type_name][$class_storage->name]
-                            = $lhs_type_part->type_params[$i];
+                    if (isset($type_params[$i])) {
+                        $class_template_params[$type_name][$class_storage->name] = $type_params[$i];
                     } elseif (isset($class_storage->template_defaults[$type_name])) {
                         // a purity template left out (`Box<int>`) has its default
                         $class_template_params[$type_name][$class_storage->name]
@@ -175,8 +182,17 @@ final class ClassTemplateParamCollector
                     }
                 }
 
-                if (!$self_call) {
-                    if (!isset($class_template_params[$type_name])) {
+                // a receiver without type arguments has the defaults of its class's type templates
+                if (!$self_call && !isset($class_template_params[$type_name])) {
+                    if (isset($class_storage->template_defaults[$type_name], $class_storage->template_types[$type_name])
+                        && !isset($class_storage->purity_templates[$type_name])
+                    ) {
+                        $bare_type_params ??= array_combine(
+                            array_keys($class_storage->template_types),
+                            TemplateDefaults::allArguments($class_storage, $codebase),
+                        );
+                        $class_template_params[$type_name][$class_storage->name] = $bare_type_params[$type_name];
+                    } else {
                         $class_template_params[$type_name][$class_storage->name] = $type;
                     }
                 }

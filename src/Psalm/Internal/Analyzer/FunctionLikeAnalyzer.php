@@ -458,6 +458,19 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             $template_types = array_merge($template_types ?: [], $appearing_class_storage->template_types);
         }
 
+        if ($storage->template_defaults !== [] && $cased_method_id !== null) {
+            ClassLikeAnalyzer::checkTemplateDefaults(
+                $this,
+                $template_types ?: [],
+                $storage->template_defaults,
+                [],
+                $context->self,
+                $cased_method_id,
+                new CodeLocation($this, $this->function),
+                $this->getSuppressedIssues(),
+            );
+        }
+
         $params = $storage->params;
 
         if ($codebase->alter_code) {

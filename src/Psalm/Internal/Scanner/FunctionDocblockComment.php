@@ -170,7 +170,10 @@ final class FunctionDocblockComment
     public array $throws = [];
 
     /**
-     * @var array<int, array{string, ?string, ?string, bool}>
+     * Each `@template`: name, `of`/`as`/`super` modifier, bound, whether covariant, and the default
+     * (`@template T of int = 5`), bound and default as written
+     *
+     * @var array<int, array{string, ?string, ?string, bool, ?string}>
      */
     public array $templates = [];
 

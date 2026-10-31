@@ -26,6 +26,7 @@ use Psalm\Internal\Codebase\ReceiverPropertyTaints;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Type\TemplateBound;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
@@ -80,7 +81,6 @@ use function in_array;
 use function is_int;
 use function ltrim;
 use function preg_match;
-use function reset;
 use function strtolower;
 
 /**
@@ -621,7 +621,13 @@ final class NewAnalyzer extends CallAnalyzer
                 $unconstrainable_templates = null;
 
                 foreach ($storage->template_types as $template_name => $base_type) {
-                    if (isset($template_result->lower_bounds[$template_name][$fq_class_name])) {
+                    $has_default = isset($storage->template_defaults[$template_name])
+                        && !isset($storage->purity_templates[$template_name]);
+
+                    if (isset($template_result->lower_bounds[$template_name][$fq_class_name])
+                        && !($has_default
+                            && TemplateDefaults::isUnresolved($template_result, $template_name, $fq_class_name))
+                    ) {
                         $generic_param_type = TemplateStandinTypeReplacer::getMostSpecificTypeFromBounds(
                             $template_result->lower_bounds[$template_name][$fq_class_name],
                             $codebase,
@@ -683,6 +689,14 @@ final class NewAnalyzer extends CallAnalyzer
                                 ),
                                 $template_result->lower_bounds,
                             ),
+                        );
+                    } elseif ($has_default) {
+                        // the constructor arguments did not bind this template: it resolves to its
+                        // default, which may name the class's other templates
+                        $generic_param_type = TemplateInferredTypeReplacer::replace(
+                            $storage->template_defaults[$template_name],
+                            $template_result,
+                            $codebase,
                         );
                     } else {
                         $generic_param_type = array_values($base_type)[0];
@@ -767,12 +781,7 @@ final class NewAnalyzer extends CallAnalyzer
         } elseif ($storage->template_types) {
             $result_atomic_type = new TGenericObject(
                 $fq_class_name,
-                array_values(
-                    array_map(
-                        static fn($map) => reset($map),
-                        $storage->template_types,
-                    ),
-                ),
+                TemplateDefaults::allArguments($storage, $codebase),
                 false,
                 $from_static,
             );
@@ -1895,10 +1904,8 @@ final class NewAnalyzer extends CallAnalyzer
      */
     private static function hasTemplatesInferredByConstructor(Codebase $codebase, ClassLikeStorage $storage): bool
     {
-        // every purity template the class declares has a default (its upper bound without one),
-        // which tells it apart from a type template bounded by a type alias or a purity template
         foreach ($storage->template_types ?? [] as $template_name => $_) {
-            if (!isset($storage->template_defaults[$template_name])) {
+            if (!isset($storage->purity_templates[$template_name])) {
                 return true;
             }
         }

@@ -15,6 +15,8 @@ use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\Provider\NodeDataProvider;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\PurityArguments;
+use Psalm\Internal\Type\TemplateBound;
+use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
 use Psalm\Internal\Type\TypeExpander;
@@ -760,6 +762,75 @@ abstract class ClassLikeAnalyzer extends SourceAnalyzer
         return $emit_issues ? null : true;
     }
 
+    /**
+     * Reports the defaults of the templates of a class-like or function-like (`@template T of int = 5`)
+     * that are invalid types or not within their bound, a default naming another template compared
+     * with that template's bound.
+     *
+     * @param array<string, non-empty-array<string, Union>> $template_types those the defaults may name too
+     * @param array<string, Union> $template_defaults
+     * @param array<string, true> $purity_templates whose defaults the scanner checks
+     * @param array<string> $suppressed_issues
+     */
+    public static function checkTemplateDefaults(
+        StatementsSource $source,
+        array $template_types,
+        array $template_defaults,
+        array $purity_templates,
+        ?string $self_class,
+        string $declaration_name,
+        CodeLocation $code_location,
+        array $suppressed_issues,
+    ): void {
+        $codebase = $source->getCodebase();
+        $bounds_result = null;
+
+        foreach ($template_defaults as $template_name => $default) {
+            if (isset($purity_templates[$template_name]) || !isset($template_types[$template_name])) {
+                continue;
+            }
+
+            $default = TypeExpander::expandUnion($codebase, $default, $self_class, null, null);
+
+            /** @psalm-suppress UnusedMethodCall This call actually has the side effect of creating issues */
+            $default->check($source, $code_location, $suppressed_issues, [], false);
+
+            foreach ($template_types[$template_name] as $defining_class => $bound) {
+                if ($bound->isMixed()) {
+                    continue;
+                }
+
+                if ($bounds_result === null) {
+                    $bounds_result = new TemplateResult([], []);
+
+                    foreach ($template_types as $other_name => $other_map) {
+                        foreach ($other_map as $other_class => $other_bound) {
+                            $bounds_result->lower_bounds[$other_name][$other_class] = [new TemplateBound($other_bound)];
+                        }
+                    }
+                }
+
+                $bound = TemplateInferredTypeReplacer::replace(
+                    TypeExpander::expandUnion($codebase, $bound, $self_class, null, null),
+                    $bounds_result,
+                    $codebase,
+                );
+                $resolved_default = TemplateInferredTypeReplacer::replace($default, $bounds_result, $codebase);
+
+                if (!UnionTypeComparator::isContainedBy($codebase, $resolved_default, $bound)) {
+                    IssueBuffer::maybeAdd(
+                        new InvalidTemplateParam(
+                            'Default type ' . $default->getId() . ' of template ' . $template_name . ' of '
+                                . $declaration_name . ' is not within its bound ' . $bound->getId(),
+                            $code_location,
+                        ),
+                        $suppressed_issues,
+                    );
+                }
+            }
+        }
+    }
+
     protected function checkTemplateParams(
         Codebase $codebase,
         ClassLikeStorage $storage,
@@ -771,11 +842,14 @@ abstract class ClassLikeAnalyzer extends SourceAnalyzer
             ? 0
             : count($parent_storage->template_types);
 
-        if ($parent_storage->getRequiredTemplateParamCount() > $given_param_count) {
+        $required_param_count = $parent_storage->getRequiredTemplateParamCount();
+
+        if ($required_param_count > $given_param_count) {
             IssueBuffer::maybeAdd(
                 new MissingTemplateParam(
                     $storage->name . ' has missing template params when extending ' . $parent_storage->name
-                        . ', expecting ' . $expected_param_count,
+                        . ', expecting ' . ($required_param_count < $expected_param_count ? 'at least ' : '')
+                        . $required_param_count,
                     $code_location,
                 ),
                 $storage->suppressed_issues + $this->getSuppressedIssues(),

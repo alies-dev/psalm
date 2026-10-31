@@ -37,17 +37,13 @@ use function array_shift;
 use function count;
 use function explode;
 use function implode;
-use function in_array;
-use function preg_last_error_msg;
 use function preg_match;
 use function preg_replace;
-use function preg_split;
 use function reset;
 use function str_contains;
 use function str_replace;
 use function strlen;
 use function strpos;
-use function strtolower;
 use function substr;
 use function substr_count;
 use function trim;
@@ -82,6 +78,7 @@ final class ClassLikeDocblockParser
                         $purity_template['bound'],
                         true,
                         $offset - $comment->getStartFilePos(),
+                        null,
                     ];
                     $info->purity_templates[] = $purity_template['name'];
 
@@ -96,89 +93,25 @@ final class ClassLikeDocblockParser
             }
         }
 
-        if (isset($parsed_docblock->combined_tags['template'])) {
-            foreach ($parsed_docblock->combined_tags['template'] as $offset => $template_line) {
-                $template_type = preg_split('/[\s]+/', CommentAnalyzer::sanitizeDocblockType($template_line));
-                if ($template_type === false) {
-                    throw new IncorrectDocblockException('Invalid @template tag: '.preg_last_error_msg());
-                }
-
-                $template_name = array_shift($template_type);
-
-                if (!$template_name) {
-                    throw new IncorrectDocblockException('Empty @template tag');
-                }
+        foreach (['template' => false, 'template-covariant' => true] as $tag_name => $covariant) {
+            foreach ($parsed_docblock->combined_tags[$tag_name] ?? [] as $offset => $template_line) {
+                $template = TemplateTagParser::parse($template_line, $tag_name);
 
                 $source_prefix = 'none';
-                if (isset($parsed_docblock->tags['psalm-template'][$offset])) {
+                if (isset($parsed_docblock->tags['psalm-' . $tag_name][$offset])) {
                     $source_prefix = 'psalm';
-                } elseif (isset($parsed_docblock->tags['phpstan-template'][$offset])) {
+                } elseif (isset($parsed_docblock->tags['phpstan-' . $tag_name][$offset])) {
                     $source_prefix = 'phpstan';
                 }
 
-                if (count($template_type) > 1
-                    && in_array(strtolower($template_type[0]), ['as', 'super', 'of'], true)
-                ) {
-                    $template_modifier = strtolower(array_shift($template_type));
-                    $templates[$template_name][$source_prefix] = [
-                        $template_name,
-                        $template_modifier,
-                        implode(' ', $template_type),
-                        false,
-                        $offset - $comment->getStartFilePos(),
-                    ];
-                } else {
-                    $templates[$template_name][$source_prefix] = [
-                        $template_name,
-                        null,
-                        null,
-                        false,
-                        $offset - $comment->getStartFilePos(),
-                    ];
-                }
-            }
-        }
-
-        if (isset($parsed_docblock->combined_tags['template-covariant'])) {
-            foreach ($parsed_docblock->combined_tags['template-covariant'] as $offset => $template_line) {
-                $template_type = preg_split('/[\s]+/', CommentAnalyzer::sanitizeDocblockType($template_line));
-                if ($template_type === false) {
-                    throw new IncorrectDocblockException('Invalid @template-covariant tag: '.preg_last_error_msg());
-                }
-
-                $template_name = array_shift($template_type);
-
-                if (!$template_name) {
-                    throw new IncorrectDocblockException('Empty @template-covariant tag');
-                }
-
-                $source_prefix = 'none';
-                if (isset($parsed_docblock->tags['psalm-template-covariant'][$offset])) {
-                    $source_prefix = 'psalm';
-                } elseif (isset($parsed_docblock->tags['phpstan-template-covariant'][$offset])) {
-                    $source_prefix = 'phpstan';
-                }
-
-                if (count($template_type) > 1
-                    && in_array(strtolower($template_type[0]), ['as', 'super', 'of'], true)
-                ) {
-                    $template_modifier = strtolower(array_shift($template_type));
-                    $templates[$template_name][$source_prefix] = [
-                        $template_name,
-                        $template_modifier,
-                        implode(' ', $template_type),
-                        true,
-                        $offset - $comment->getStartFilePos(),
-                    ];
-                } else {
-                    $templates[$template_name][$source_prefix] = [
-                        $template_name,
-                        null,
-                        null,
-                        true,
-                        $offset - $comment->getStartFilePos(),
-                    ];
-                }
+                $templates[$template['name']][$source_prefix] = [
+                    $template['name'],
+                    $template['modifier'],
+                    $template['bound'],
+                    $covariant,
+                    $offset - $comment->getStartFilePos(),
+                    $template['default'],
+                ];
             }
         }
 

@@ -50,7 +50,10 @@ final class ClassLikeDocblockComment
     public array $mixins = [];
 
     /**
-     * @var array<int, array{string, ?string, ?string, bool, int}>
+     * Each `@template`: name, `of`/`as`/`super` modifier, bound, whether covariant, offset in the
+     * docblock, and the default (`@template T of int = 5`), bound and default as written
+     *
+     * @var array<int, array{string, ?string, ?string, bool, int, ?string}>
      */
     public array $templates = [];
 

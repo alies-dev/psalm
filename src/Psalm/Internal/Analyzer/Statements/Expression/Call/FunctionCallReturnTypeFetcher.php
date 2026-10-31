@@ -28,6 +28,7 @@ use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Type\Comparator\CallableTypeComparator;
 use Psalm\Internal\Type\TemplateBound;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
@@ -128,6 +129,11 @@ final class FunctionCallReturnTypeFetcher
         if (!$stmt_type) {
             if (!$in_call_map || $is_stubbed) {
                 if ($function_storage && $function_storage->template_types) {
+                    // the templates with a default that the arguments bound nothing to resolve to it
+                    if ($function_storage->template_defaults !== []) {
+                        TemplateDefaults::bindUnresolvedFunctionTemplates($function_storage, $template_result, $codebase);
+                    }
+
                     foreach ($function_storage->template_types as $template_name => $_) {
                         if (!isset($template_result->lower_bounds[$template_name])) {
                             if ($template_name === 'TFunctionArgCount') {

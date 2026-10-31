@@ -555,13 +555,15 @@ final class TypeExpander
                 $type_params[0] = ArrayAnalyzer::castArrayKeyType($type_params[0]);
             }
 
-            // `Foo[pure]` for a class with type templates
+            // `Foo[pure]` for a class with type templates, and `Foo<int>` leaving out templates with defaults
             if ($return_type instanceof TGenericObject
                 && $codebase->classlike_storage_provider->has($return_type->value)
             ) {
-                $type_params = PurityArguments::align(
-                    $type_params,
-                    $codebase->classlike_storage_provider->get($return_type->value),
+                $container_class_storage = $codebase->classlike_storage_provider->get($return_type->value);
+                $type_params = TemplateDefaults::completeTypeParams(
+                    $container_class_storage,
+                    PurityArguments::align($type_params, $container_class_storage, $codebase),
+                    $codebase,
                 );
             }
 
@@ -759,17 +761,13 @@ final class TypeExpander
             if ($container_class_storage->template_types
                 && array_any(
                     $container_class_storage->template_types,
-                    static fn($type_map): bool => !reset($type_map)->hasMixed(),
+                    static fn($type_map, $template_name): bool => !reset($type_map)->hasMixed()
+                        || isset($container_class_storage->template_defaults[$template_name]),
                 )
             ) {
                 $return_type = new TGenericObject(
                     $return_type->value,
-                    array_values(
-                        array_map(
-                            static fn($type_map) => PurityArguments::getOmittedArgument(reset($type_map)),
-                            $container_class_storage->template_types,
-                        ),
-                    ),
+                    TemplateDefaults::allArguments($container_class_storage, $codebase),
                 );
 
                 // we don't want to expand generic types recursively

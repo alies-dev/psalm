@@ -124,6 +124,19 @@ final class InterfaceAnalyzer extends ClassLikeAnalyzer
             }
         }
 
+        if ($class_storage->template_types) {
+            self::checkTemplateDefaults(
+                $this,
+                $class_storage->template_types,
+                $class_storage->template_defaults,
+                $class_storage->purity_templates,
+                $fq_interface_name,
+                $fq_interface_name,
+                new CodeLocation($this, $this->class),
+                $class_storage->suppressed_issues + $this->getSuppressedIssues(),
+            );
+        }
+
         $class_union = new Union([new TNamedObject($fq_interface_name)]);
         foreach ($class_storage->direct_interface_parents as $parent_interface) {
             $parent_storage = $codebase->classlikes->getStorageFor($parent_interface);

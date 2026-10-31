@@ -25,7 +25,6 @@ use function array_unique;
 use function count;
 use function explode;
 use function implode;
-use function in_array;
 use function pathinfo;
 use function preg_last_error_msg;
 use function preg_match;
@@ -292,7 +291,7 @@ final class FunctionLikeDocblockParser
                     }
 
                     $templates[$purity_template['name']]['psalm']
-                        = [$purity_template['name'], 'of', $purity_template['bound'], false];
+                        = [$purity_template['name'], 'of', $purity_template['bound'], false, null];
                     $info->purity_templates[] = $purity_template['name'];
                 }
             }
@@ -300,16 +299,7 @@ final class FunctionLikeDocblockParser
 
         if (isset($parsed_docblock->combined_tags['template'])) {
             foreach ($parsed_docblock->combined_tags['template'] as $offset => $template_line) {
-                $template_type = preg_split('/[\s]+/', CommentAnalyzer::sanitizeDocblockType($template_line));
-                if ($template_type === false) {
-                    throw new AssertionError(preg_last_error_msg());
-                }
-
-                $template_name = array_shift($template_type);
-
-                if (!$template_name) {
-                    throw new IncorrectDocblockException('Empty @template tag');
-                }
+                $template = TemplateTagParser::parse($template_line, 'template');
 
                 $source_prefix = 'none';
                 if (isset($parsed_docblock->tags['psalm-template'][$offset])) {
@@ -318,19 +308,13 @@ final class FunctionLikeDocblockParser
                     $source_prefix = 'phpstan';
                 }
 
-                if (count($template_type) > 1
-                    && in_array(strtolower($template_type[0]), ['as', 'super', 'of'], true)
-                ) {
-                    $template_modifier = strtolower(array_shift($template_type));
-                    $templates[$template_name][$source_prefix] = [
-                        $template_name,
-                        $template_modifier,
-                        implode(' ', $template_type),
-                        false,
-                    ];
-                } else {
-                    $templates[$template_name][$source_prefix] = [$template_name, null, null, false];
-                }
+                $templates[$template['name']][$source_prefix] = [
+                    $template['name'],
+                    $template['modifier'],
+                    $template['bound'],
+                    false,
+                    $template['default'],
+                ];
             }
         }
 

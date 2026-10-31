@@ -8,6 +8,7 @@ use Attribute;
 use Override;
 use PhpParser\Node\Stmt\Trait_;
 use Psalm\Aliases;
+use Psalm\CodeLocation;
 use Psalm\Context;
 use Psalm\IssueBuffer;
 use Psalm\Type;
@@ -93,6 +94,19 @@ final class TraitAnalyzer extends ClassLikeAnalyzer
             Attribute::TARGET_CLASS,
             $storage->suppressed_issues + $statements_analyzer->getSuppressedIssues(),
         );
+
+        if ($storage->template_types) {
+            ClassLikeAnalyzer::checkTemplateDefaults(
+                $statements_analyzer,
+                $storage->template_types,
+                $storage->template_defaults,
+                $storage->purity_templates,
+                $fq_trait_name,
+                $fq_trait_name,
+                new CodeLocation($statements_analyzer, $stmt),
+                $storage->suppressed_issues + $statements_analyzer->getSuppressedIssues(),
+            );
+        }
 
         foreach ($storage->docblock_issues as $docblock_issue) {
             IssueBuffer::maybeAdd($docblock_issue);

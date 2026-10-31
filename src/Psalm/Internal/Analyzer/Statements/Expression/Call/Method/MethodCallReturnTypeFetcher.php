@@ -25,6 +25,7 @@ use Psalm\Internal\Codebase\TaintStore;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Type\TemplateBound;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
@@ -847,6 +848,9 @@ final class MethodCallReturnTypeFetcher
         int $arg_count,
         Codebase $codebase,
     ): Union {
+        // the templates with a default that the arguments bound nothing to resolve to it
+        TemplateDefaults::bindUnresolvedMethodTemplates($codebase, $method_id, $template_result);
+
         if ($template_result->template_types) {
             $bindable_template_types = $return_type_candidate->getTemplateTypes();
 

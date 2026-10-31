@@ -363,12 +363,21 @@ final class ClassLikeStorage implements HasAttributesInterface
     public ?array $template_covariants = null;
 
     /**
-     * The default value of each purity template that has one (`@psalm-purity-template C(pure) <= io`):
-     * what a subclass that does not bind the template gets.
+     * The default of each template that has one: what an omitted trailing type argument (`Foo<int>`
+     * for `@template T @template U = string`), a subclass that does not bind the template and a use
+     * without type arguments get. A purity template without a default has its upper bound here (so
+     * it is always omittable); a type template without a default has no entry (it is required).
      *
      * @var array<string, Union>
      */
     public array $template_defaults = [];
+
+    /**
+     * The names of the templates declared with `@psalm-purity-template`, whose values are capability sets
+     *
+     * @var array<string, true>
+     */
+    public array $purity_templates = [];
 
     /**
      * The lower bound of each purity template that has one (`@psalm-purity-template write-props <= C`):
@@ -550,7 +559,7 @@ final class ClassLikeStorage implements HasAttributesInterface
     }
 
     /**
-     * How many template params a use of this class must give: all of them, except trailing purity
+     * How many template params a use of this class must give: all of them, except the trailing
      * templates with a default, which need not be given.
      *
      * @psalm-mutation-free

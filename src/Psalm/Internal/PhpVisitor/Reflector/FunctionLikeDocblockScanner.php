@@ -57,8 +57,10 @@ use Psalm\Type\Atomic\TTemplateParam;
 use Psalm\Type\Union;
 
 use function array_any;
+use function array_column;
 use function array_filter;
 use function array_merge;
+use function array_slice;
 use function array_values;
 use function count;
 use function explode;
@@ -275,6 +277,8 @@ final class FunctionLikeDocblockScanner
                 $file_scanner,
                 $stmt,
                 $cased_function_id,
+                $codebase,
+                $file_storage,
             );
 
             foreach ($docblock_info->purity_templates as $purity_template) {
@@ -1965,11 +1969,17 @@ final class FunctionLikeDocblockScanner
         FileScanner $file_scanner,
         PhpParser\Node\FunctionLike $stmt,
         string $cased_function_id,
+        Codebase $codebase,
+        FileStorage $file_storage,
     ): array {
         $storage->template_types = [];
+        $template_names = array_column($docblock_info->templates, 0);
 
-        foreach ($docblock_info->templates as $template_map) {
+        foreach ($docblock_info->templates as $i => $template_map) {
             $template_name = $template_map[0];
+            // the templates of the class and those declared before this one, which its bound and
+            // default may name
+            $earlier_template_types = $storage->template_types + ($template_types ?: []);
 
             if ($template_map[1] !== null && $template_map[2] !== null) {
                 if (trim($template_map[2])) {
@@ -1985,11 +1995,11 @@ final class FunctionLikeDocblockScanner
                             TypeTokenizer::getFullyQualifiedTokens(
                                 $type_string,
                                 $aliases,
-                                $storage->template_types + ($template_types ?: []),
+                                $earlier_template_types,
                                 $type_aliases,
                             ),
                             null,
-                            $storage->template_types + ($template_types ?: []),
+                            $earlier_template_types,
                             $type_aliases,
                         );
                     } catch (TypeParseTreeException $e) {
@@ -2018,11 +2028,60 @@ final class FunctionLikeDocblockScanner
                     . $cased_function_id,
                     new CodeLocation($file_scanner, $stmt, null, true),
                 );
-            } else {
-                $storage->template_types[$template_name] = [
-                    'fn-' . strtolower($cased_function_id) => $template_type,
-                ];
+
+                continue;
             }
+
+            $storage->template_types[$template_name] = [
+                'fn-' . strtolower($cased_function_id) => $template_type,
+            ];
+
+            if ($template_map[4] === null) {
+                continue;
+            }
+
+            try {
+                $default = TypeParser::parseTokens(
+                    TypeTokenizer::getFullyQualifiedTokens(
+                        CommentAnalyzer::sanitizeDocblockType(CommentAnalyzer::splitDocLine($template_map[4])[0]),
+                        $aliases,
+                        $earlier_template_types,
+                        $type_aliases,
+                    ),
+                    null,
+                    $earlier_template_types,
+                    $type_aliases,
+                )->setFromDocblock();
+            } catch (DocblockParseException | TypeParseTreeException $e) {
+                $storage->docblock_issues[] = new InvalidDocblock(
+                    'The default of template ' . $template_name . ' is invalid: ' . $e->getMessage()
+                        . ' in docblock for ' . $cased_function_id,
+                    new CodeLocation($file_scanner, $stmt, null, true),
+                );
+
+                continue;
+            }
+
+            $forward_reference = TemplateTagParser::findForwardReference(
+                $default,
+                array_slice($template_names, $i),
+                $aliases,
+            );
+
+            if ($forward_reference !== null) {
+                $storage->docblock_issues[] = new InvalidDocblock(
+                    'The default of template ' . $template_name . ' may only name templates declared before it, '
+                        . $forward_reference . ' given, in docblock for ' . $cased_function_id,
+                    new CodeLocation($file_scanner, $stmt, null, true),
+                );
+
+                continue;
+            }
+
+            /** @psalm-suppress UnusedMethodCall */
+            $default->queueClassLikesForScanning($codebase, $file_storage, $earlier_template_types);
+
+            $storage->template_defaults[$template_name] = $default;
         }
 
         return array_merge($template_types ?: [], $storage->template_types);

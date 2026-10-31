@@ -1347,16 +1347,24 @@ final class TemplateStandinTypeReplacer
         if ($input_type_part instanceof TGenericObject || $input_type_part instanceof TIterable) {
             $input_type_params = $input_type_part->type_params;
 
-            // a purity template left out (`Iterator<int, int>`) is bound to its default, never to mixed
+            // a template left out is bound to its default (`Foo<int>` for `@template T @template U = string`,
+            // a purity template left out of `Iterator<int, int>`), never to mixed
             if ($input_type_part instanceof TGenericObject
                 && $codebase->classlike_storage_provider->has($input_type_part->value)
             ) {
                 $input_class_storage = $codebase->classlike_storage_provider->get($input_type_part->value);
+                $input_type_params = TemplateDefaults::completeTypeParams(
+                    $input_class_storage,
+                    $input_type_params,
+                    $codebase,
+                );
 
                 foreach (array_keys($input_class_storage->template_types ?? []) as $i => $template_name) {
-                    if ($i >= count($input_type_params)
-                        && isset($input_class_storage->template_defaults[$template_name])
-                    ) {
+                    if ($i >= count($input_type_params)) {
+                        if (!isset($input_class_storage->template_defaults[$template_name])) {
+                            break;
+                        }
+
                         $input_type_params[] = $input_class_storage->template_defaults[$template_name];
                     }
                 }
@@ -1367,7 +1375,7 @@ final class TemplateStandinTypeReplacer
             $container_class = $container_type_part->value;
 
             if (strtolower($input_type_part->value) === strtolower($container_type_part->value)) {
-                $input_type_params = $class_storage->getClassTemplateTypes();
+                $input_type_params = TemplateDefaults::allArguments($class_storage, $codebase);
             } elseif (!empty($class_storage->template_extended_params[$container_class])) {
                 // the params of the container are mapped below from those of the class, which an
                 // object without type params leaves at its templates

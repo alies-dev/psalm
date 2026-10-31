@@ -75,10 +75,13 @@ use Psalm\Type\Atomic\TTemplateParam;
 use Psalm\Type\Union;
 use UnexpectedValueException;
 
+use function array_column;
 use function array_diff_key;
+use function array_fill_keys;
 use function array_merge;
 use function array_pop;
 use function array_shift;
+use function array_slice;
 use function array_values;
 use function assert;
 use function count;
@@ -459,8 +462,8 @@ final class ClassLikeNodeScanner
                 usort(
                     $docblock_info->templates,
                     /**
-                     * @param array{string, ?string, ?string, bool, int} $l
-                     * @param array{string, ?string, ?string, bool, int} $r
+                     * @param array{string, ?string, ?string, bool, int, ?string} $l
+                     * @param array{string, ?string, ?string, bool, int, ?string} $r
                      */
                     static fn(array $l, array $r): int
                         => [in_array($l[0], $purity_templates, true), $l[4]]
@@ -493,8 +496,12 @@ final class ClassLikeNodeScanner
                     }
                 }
 
+                $template_names = array_column($docblock_info->templates, 0);
+
                 foreach ($docblock_info->templates as $i => $template_map) {
                     $template_name = $template_map[0];
+                    // the templates declared before this one, which its bound and default may name
+                    $earlier_template_types = $storage->template_types + $purity_template_types;
 
                     if ($template_map[1] !== null && $template_map[2] !== null) {
                         if (trim($template_map[2])) {
@@ -514,11 +521,11 @@ final class ClassLikeNodeScanner
                                     TypeTokenizer::getFullyQualifiedTokens(
                                         $type_string,
                                         $this->aliases,
-                                        $storage->template_types + $purity_template_types,
+                                        $earlier_template_types,
                                         $this->type_aliases,
                                     ),
                                     null,
-                                    $storage->template_types + $purity_template_types,
+                                    $earlier_template_types,
                                     $this->type_aliases,
                                 );
                             } catch (TypeParseTreeException $e) {
@@ -545,7 +552,24 @@ final class ClassLikeNodeScanner
                     }
 
                     $storage->template_covariants[$i] = $template_map[3];
+
+                    if ($template_map[5] !== null) {
+                        $default = $this->parseTemplateDefault(
+                            $storage,
+                            $template_name,
+                            $template_map[5],
+                            $earlier_template_types,
+                            array_slice($template_names, $i),
+                            $name_location ?? $class_location,
+                        );
+
+                        if ($default !== null) {
+                            $storage->template_defaults[$template_name] = $default;
+                        }
+                    }
                 }
+
+                $storage->purity_templates = array_fill_keys($purity_templates, true);
 
                 $this->class_template_types = $storage->template_types;
 
@@ -1216,6 +1240,60 @@ final class ClassLikeNodeScanner
                 );
             }
         }
+    }
+
+    /**
+     * The default of a template (`@template T of int = 5`) parsed, or null when it is invalid (reported)
+     *
+     * @param array<string, non-empty-array<string, Union>> $earlier_template_types the templates declared before it
+     * @param list<string> $unavailable_templates the template itself and those declared after it
+     */
+    private function parseTemplateDefault(
+        ClassLikeStorage $storage,
+        string $template_name,
+        string $default_string,
+        array $earlier_template_types,
+        array $unavailable_templates,
+        CodeLocation $location,
+    ): ?Union {
+        try {
+            $default = TypeParser::parseTokens(
+                TypeTokenizer::getFullyQualifiedTokens(
+                    CommentAnalyzer::sanitizeDocblockType(CommentAnalyzer::splitDocLine($default_string)[0]),
+                    $this->aliases,
+                    $earlier_template_types,
+                    $this->type_aliases,
+                ),
+                null,
+                $earlier_template_types,
+                $this->type_aliases,
+            )->setFromDocblock();
+        } catch (DocblockParseException | TypeParseTreeException $e) {
+            $storage->docblock_issues[] = new InvalidDocblock(
+                'The default of template ' . $template_name . ' is invalid: ' . $e->getMessage()
+                    . ' in docblock for ' . $storage->name,
+                $location,
+            );
+
+            return null;
+        }
+
+        $forward_reference = TemplateTagParser::findForwardReference($default, $unavailable_templates, $this->aliases);
+
+        if ($forward_reference !== null) {
+            $storage->docblock_issues[] = new InvalidDocblock(
+                'The default of template ' . $template_name . ' may only name templates declared before it, '
+                    . $forward_reference . ' given, in docblock for ' . $storage->name,
+                $location,
+            );
+
+            return null;
+        }
+
+        /** @psalm-suppress UnusedMethodCall */
+        $default->queueClassLikesForScanning($this->codebase, $this->file_storage, $earlier_template_types);
+
+        return $default;
     }
 
     private function extendTemplatedType(

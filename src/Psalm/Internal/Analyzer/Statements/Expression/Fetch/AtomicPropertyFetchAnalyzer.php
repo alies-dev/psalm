@@ -29,6 +29,7 @@ use Psalm\Internal\Codebase\VariableUseGraph;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\MethodIdentifier;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
@@ -730,7 +731,7 @@ final class AtomicPropertyFetchAnalyzer
                     $class_storage->parent_class,
                 );
 
-                if (count($template_types = $class_storage->getClassTemplateTypes()) !== 0) {
+                if (count($template_types = TemplateDefaults::allArguments($class_storage, $codebase)) !== 0) {
                     if (!$lhs_type_part instanceof TGenericObject) {
                         $lhs_type_part = new TGenericObject($lhs_type_part->value, $template_types);
                     }
@@ -1439,7 +1440,7 @@ final class AtomicPropertyFetchAnalyzer
         ) {
             $stmt_type = $class_storage->pseudo_property_get_types['$' . $prop_name];
 
-            if (count($template_types = $class_storage->getClassTemplateTypes()) !== 0) {
+            if (count($template_types = TemplateDefaults::allArguments($class_storage, $codebase)) !== 0) {
                 if (!$lhs_type_part instanceof TGenericObject) {
                     $lhs_type_part = new TGenericObject($lhs_type_part->value, $template_types);
                 }
@@ -1539,7 +1540,7 @@ final class AtomicPropertyFetchAnalyzer
                 $declaring_class_storage->parent_class,
             );
 
-            if (count($template_types = $declaring_class_storage->getClassTemplateTypes()) !== 0) {
+            if (count($template_types = TemplateDefaults::allArguments($declaring_class_storage, $codebase)) !== 0) {
                 if (!$lhs_type_part instanceof TGenericObject) {
                     $lhs_type_part = new TGenericObject($lhs_type_part->value, $template_types);
                 }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Psalm\Internal\Type;
 
+use Psalm\Codebase;
 use Psalm\Storage\Capabilities;
 use Psalm\Storage\ClassLikeStorage;
 use Psalm\Type\Union;
@@ -19,7 +20,6 @@ use function reset;
  * parameters (`Traversable[pure]<int, string>`) and stored after them.
  *
  * @internal
- * @psalm-immutable
  */
 final class PurityArguments
 {
@@ -97,14 +97,13 @@ final class PurityArguments
 
     /**
      * The type parameters of a use of the class, with the purity arguments in the positions of the
-     * purity templates: `Foo[pure]`, for a class with type templates, gives them their bounds.
-     * Parameters that do not fit the templates are left alone, for the checks to report them.
+     * purity templates: `Foo[pure]`, for a class with type templates, gives them their defaults or
+     * bounds. Parameters that do not fit the templates are left alone, for the checks to report them.
      *
      * @param list<Union> $type_params
      * @return list<Union>
-     * @psalm-mutation-free
      */
-    public static function align(array $type_params, ClassLikeStorage $storage): array
+    public static function align(array $type_params, ClassLikeStorage $storage, ?Codebase $codebase = null): array
     {
         [$type_args, $purity_args] = self::split($type_params);
 
@@ -120,31 +119,16 @@ final class PurityArguments
             return $type_params;
         }
 
-        $i = 0;
-
-        foreach ($storage->template_types ?? [] as $type_map) {
-            if ($i++ < count($type_args)) {
-                continue;
-            }
-
-            $bound = reset($type_map);
-
-            if (Capabilities::isPurityType($bound)) {
-                break;
-            }
-
-            $type_args[] = self::getOmittedArgument($bound);
-        }
-
-        return [...$type_args, ...$purity_args];
+        return [...TemplateDefaults::fillTypeArguments($storage, $type_args, $codebase), ...$purity_args];
     }
 
     /**
-     * What a template argument left out of a use of the class stands for: its bound. A use of a
-     * class whose templates have no bounds but purity bounds is no more specific than a use without
-     * arguments, which any instance fits: those bounds stand for whatever the instance binds the
-     * templates to, and are not compared invariantly. The bound of a bounded type template
-     * (`@template T as object`) is still the argument, as it is without purity templates.
+     * What a template argument left out of a use of the class stands for when the template has no
+     * default: its bound. A use of a class whose templates have no bounds but purity bounds is no
+     * more specific than a use without arguments, which any instance fits: those bounds stand for
+     * whatever the instance binds the templates to, and are not compared invariantly. The bound of
+     * a bounded type template (`@template T as object`) is still the argument, as it is without
+     * purity templates.
      *
      * @psalm-mutation-free
      */

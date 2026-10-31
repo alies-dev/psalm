@@ -334,6 +334,17 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
                     );
                 }
             }
+
+            self::checkTemplateDefaults(
+                $this,
+                $storage->template_types,
+                $storage->template_defaults,
+                $storage->purity_templates,
+                $fq_class_name,
+                $fq_class_name,
+                new CodeLocation($this, $this->class),
+                $storage->suppressed_issues + $this->getSuppressedIssues(),
+            );
         }
 
         if (($storage->templatedMixins || $storage->namedMixins)
