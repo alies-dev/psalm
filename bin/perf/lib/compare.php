@@ -235,21 +235,67 @@ function withIssueDiff(array $judged, string $dir, string $name): array
         $judged['verdict'] = $judged['verdict'] === 'fail' ? 'fail' : 'warn';
         $judged['notes'][] = 'issue lists unavailable: ' . $e->getMessage();
 
-        return $judged + ['issues' => null];
+        return $judged + ['issues' => null, 'score' => null];
     }
 
-    return $judged + ['issues' => diffIssues($base, $head)];
+    return $judged + ['issues' => diffIssues($base, $head), 'score' => scoreIssues($base, $head)];
+}
+
+/** Score weight of one issue: its error level for 1..8, 10 for always-error issues (-1), 0 for feature-specific (-2). */
+function issueWeight(int $level): int
+{
+    return match (true) {
+        $level === -1 => 10,
+        $level < 0 => 0,
+        default => $level,
+    };
 }
 
 /**
- * @return list<array{type: string, severity: string, file: string, line_from: int, column_from: int, message: string}>
+ * Informational issue score per side (sum of issueWeight) and the issue count per level, labelled L1..L8, always
+ * (-1) and feature (-2), most serious last. Never feeds a verdict.
+ *
+ * @param list<array<string, mixed>> $base
+ * @param list<array<string, mixed>> $head
+ * @return array{base: int, head: int, delta: int, by_level: array<string, array{base: int, head: int, delta: int}>}
+ */
+function scoreIssues(array $base, array $head): array
+{
+    $counts = static fn(array $issues): array => array_count_values(array_column($issues, 'error_level'));
+    $score = static fn(array $counts): int => array_sum(array_map(
+        static fn(int $level, int $n): int => issueWeight($level) * $n,
+        array_keys($counts),
+        $counts,
+    ));
+    [$baseCounts, $headCounts] = [$counts($base), $counts($head)];
+    $levels = array_keys($baseCounts + $headCounts);
+    usort($levels, static fn(int $a, int $b): int => ($a < 0 ? 10 - $a : $a) <=> ($b < 0 ? 10 - $b : $b));
+    $byLevel = [];
+    foreach ($levels as $level) {
+        $label = match ($level) {
+            -1 => 'always',
+            -2 => 'feature',
+            default => "L{$level}",
+        };
+        $b = $baseCounts[$level] ?? 0;
+        $h = $headCounts[$level] ?? 0;
+        $byLevel[$label] = ['base' => $b, 'head' => $h, 'delta' => $h - $b];
+    }
+
+    return ['base' => $score($baseCounts), 'head' => $score($headCounts),
+        'delta' => $score($headCounts) - $score($baseCounts), 'by_level' => $byLevel];
+}
+
+/**
+ * @return list<array{type: string, severity: string, file: string, line_from: int, column_from: int, message: string,
+ *     error_level: int}>
  * @throws RuntimeException when the file is unreadable or not a list of normalised issues
  */
 function readIssues(string $file): array
 {
     $issues = readJsonFile($file);
     $types = ['type' => 'string', 'severity' => 'string', 'file' => 'string', 'line_from' => 'int',
-        'column_from' => 'int', 'message' => 'string'];
+        'column_from' => 'int', 'message' => 'string', 'error_level' => 'int'];
     $valid = array_is_list($issues);
     foreach ($issues as $issue) {
         $valid = $valid && is_array($issue);

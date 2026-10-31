@@ -46,7 +46,7 @@ function buildConfig(array $project): string
 
     return "<?xml version=\"1.0\"?>\n"
         . "<psalm\n"
-        . '    errorLevel="' . xmlAttr((string) ($psalm['level'] ?? 4)) . "\"\n"
+        . '    errorLevel="' . xmlAttr((string) ($psalm['level'] ?? 1)) . "\"\n"
         . "    resolveFromConfigFile=\"true\"\n"
         . "    findUnusedCode=\"false\"\n"
         . "    findUnusedBaselineEntry=\"false\"\n"
