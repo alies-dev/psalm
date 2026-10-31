@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 namespace Psalm\Internal\Codebase;
+// perf e2e: comment-only change
 
 use Override;
 use Psalm\CodeLocation;
