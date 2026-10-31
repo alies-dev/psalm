@@ -17,12 +17,11 @@ perf-comment.yml (workflow_run, default branch) posts perf-report as the sticky 
 
 | File | Purpose |
 |---|---|
-| `corpus.json` | PHP version, php.ini settings, memory limit, jobs, projects pinned by commit SHA |
-| `corpus/<name>/psalm.xml` | Our Psalm config for that project |
-| `perf.php` | `plan`, `normalize` and `compare` (code in `lib/`) |
+| `corpus.yml` | PHP version, php.ini settings, memory limit, jobs, projects pinned by commit SHA, the fields their Psalm config is generated from |
+| `perf.php` | `plan`, `config`, `normalize` and `compare` (code in `lib/`) |
 | `run-shard.sh` | Measures all projects of one job for base and head |
 
-Per project, `run-shard.sh` clones the pinned commit once, runs `composer update --no-dev --no-scripts --no-plugins --ignore-platform-reqs` once (no lock files, base and head share the result), then runs Psalm for base and for head with `--no-cache --no-progress --ignore-baseline --threads=1` and the corpus memory limit, under `timeout`. If both runs are ok and the wall times differ by more than 10 %, both run again in reverse order (head, then base). Each side keeps the minimum wall and cpu of its runs.
+Per project, `run-shard.sh` clones the pinned commit once, runs `before_install` if set, runs `composer update --no-dev --no-scripts --no-plugins --ignore-platform-reqs` once (no lock files, base and head share the result), then generates `psalm-perf.xml` (`perf.php config`), runs `after_install` if set and runs Psalm for base and for head with `--no-cache --no-progress --ignore-baseline --threads=1` and the corpus memory limit, under `timeout`. If both runs are ok and the wall times differ by more than 10 %, both run again in reverse order (head, then base). Each side keeps the minimum wall and cpu of its runs.
 
 Psalm's own dependencies are resolved once per job in the base checkout. The head reuses that `composer.lock`, unless the PR changes `composer.json`; then it resolves its own and memory and time deltas become informational.
 
@@ -76,21 +75,33 @@ Issues are compared as a multiset of file, line, column, type, severity and mess
    gh api repos/doctrine/orm/commits/3.7.6 --jq .sha
    ```
 
-2. Add the project to `projects` and to exactly one entry of `jobs` in `corpus.json`:
+2. Add the project to `projects` and to exactly one entry of `jobs` in `corpus.yml` (the file header documents every field):
 
-   ```json
-   "doctrine-orm": {
-     "repo": "https://github.com/doctrine/orm",
-     "ref": "4487f850401c0e1f27891cce5897fa90b3055c2a",
-     "tag": "3.7.6",
-     "timeout": 120,
-     "exercises": "deep class hierarchies, class-string<T> repositories"
-   }
+   ```yaml
+   laravel:
+     repo: https://github.com/laravel/framework
+     ref: "d52c3b3129e4c8e213c97cdc68f94b0b7d27f181" # v13.39.0
+     tag: v13.39.0
+     timeout: 300
+     exercises: magic __call/macros, Eloquent generics, large Collection type surface
+     psalm:
+       dirs: [src]            # projectFiles directories, globs allowed
+       # ignore: [src/*/Tests]  # `vendor` is always ignored
+       # level: 4             # errorLevel, default 4
    ```
 
-   Optional fields: `"composer": false` (skip the install), `"setup": "<shell, run in the project root before the install>"`, `"config": "<dir under corpus/>"` (default: the project name).
+   Optional project fields: `composer: false` (skip the install), `before_install` (shell, run in the project root before the install), `after_install` (shell, run once in the project root after `composer update` and after `psalm-perf.xml` is generated, before the base and head runs; may patch `psalm-perf.xml`).
 
-3. Create `corpus/<name>/psalm.xml`. Paths resolve against the project root. Do not set `loadLibraryPlugins`: it is injected as `false` when both Psalm checkouts know the attribute.
+3. `psalm-perf.xml` is generated from `psalm.dirs`, `psalm.ignore` and `psalm.level`, with fixed attributes (`resolveFromConfigFile`, `findUnusedCode`, `findUnusedBaselineEntry` and `findUnusedIssueHandlerSuppression` false). `loadLibraryPlugins="false"` is injected when both Psalm checkouts know the attribute. Anything else is patched in `after_install`; Drupal adds its file extensions:
+
+   ```yaml
+   after_install: |
+     exts=''
+     for e in php module inc install theme profile engine; do exts="$exts<extension name=\".$e\"/>"; done
+     sed -i.bak "s#</psalm>#<fileExtensions>$exts</fileExtensions></psalm>#" psalm-perf.xml
+   ```
+
+   The final config of every project is saved as `<out>/<project>.psalm.xml` and ends up in the job artifact.
 
 4. Set `timeout` to about twice the single-threaded analysis time on a GitHub runner. A bump of `ref` and `tag` needs nothing else, but check that the new version still installs without a lock.
 
@@ -105,7 +116,7 @@ bin/perf/run-shard.sh --job small --base ../psalm-base --head "$PWD" \
 jq '{project, status, psalm_mb, wall, issue_count}' /tmp/perf-out/*/*.json
 ```
 
-macOS works with `gtimeout` (`brew install coreutils`). `PERF_CORPUS=<corpus.json>` uses another corpus, for example one tiny project with `"composer": false`; its `psalm.xml` lives in `corpus/<name>/` next to that file. Render a report from results with `php bin/perf/perf.php compare` (see `perf.php` for the flags).
+macOS needs `gtimeout` (`brew install coreutils`) and `yq` (`brew install yq`, mikefarah v4). `PERF_CORPUS=<corpus.yml or corpus.json>` uses another corpus, for example one tiny project with `composer: false`; a `.yml` is converted with `yq -o=json`, PHP and `jq` only ever read the JSON. Render a report from results with `php bin/perf/perf.php compare` (see `perf.php` for the flags).
 
 ## Security model
 
