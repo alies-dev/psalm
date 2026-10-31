@@ -14,6 +14,8 @@ pull_request / push / workflow_dispatch
         |                                               ──> artifacts perf-<shard>
    measure-extra (push/dispatch only: post-merge shards, threads=4 runs)
         |                                               ──> artifacts perf-extra-<shard>
+   extra-summary (push/dispatch only) ── sizing table in the job summary, no secret, no environment
+        |
    report ── compare.php, job summary, verdict          ──> artifact perf-report
         |     (push only: save the base bundle)
    publish (push/dispatch only) ── results/<branch>/<sha>.json in psalm/perf-data
@@ -66,7 +68,7 @@ The extra-results summary and the `perf-data` record only accept a file as a res
 The base of a PR is its merge-base with the target branch. Measuring it on every PR would double the cost, so a push run on the branch saves a base bundle (all PR-tier head results plus the Psalm lock) under the cache key `perf-base-<branch>-<sha>`. Prepare walks up to 30 first-parent commits from the merge-base and uses the nearest bundle. It reads the cache listing page by page until it is exhausted (safety cap: 50 pages) and takes the nearest ancestor present in it. If the listing failed or hit the cap, every ancestor nearer than the best listed one (all of them when none was listed) is looked up by its exact key first.
 
 * A bundle from an ancestor A of the merge-base provides results only if nothing outside `docs`, `*.md`, `.github`, `.circleci`, `tests` and `bin/perf` changed between A and the merge-base. Its lock is always the starting point for locking.
-* A cached result is reused per project when its status is `ok`, `crash` or `timeout` and its environment fingerprint equals the one prepare computed for the head. Everything else is measured fresh. A shard measures its base only if at least one of its projects needs it, and then only those projects.
+* A cached result is reused per project when its status is `ok`, `crash` or `timeout`, its environment fingerprint equals the one prepare computed for the head, and the base's resolved Psalm lock equals the bundle's lock (a `minimal` or `fresh` base lock therefore re-measures every base). Everything else is measured fresh. A shard measures its base only if at least one of its projects needs it, and then only those projects.
 * Only push runs on protected branches (`master`) save bundles. Pull request and dispatch runs never do.
 * Every project's base has exactly one source (bundle or fresh), shown in `summary.json` as `base_source`.
 
@@ -89,7 +91,9 @@ Per project:
 | regression | `Ir` more than +3 % or Psalm MiB more than +5 % (both runs `ok`, same environment); head `crash` where base was `ok`; head `timeout` where base was `ok` and comfortably inside its timeout |
 | compared | both `ok` and the environment fingerprints are equal |
 | not comparable | base `crash` or `timeout`; listed, excluded from `N` |
-| inconclusive | `setup-failed`, `inconclusive`, missing or invalid result on either side; environment fingerprint mismatch; a timeout on a CPU model that was never measured; dependency resolution failed |
+| inconclusive | `setup-failed`, `inconclusive`, missing or invalid result on either side; environment fingerprint mismatch; a timeout on a CPU model that was never measured; dependency resolution failed; a harness or infrastructure failure (full disk, missing summary, failed normalisation) |
+
+Only Psalm's own crash (a non-zero exit or a signal of the measured Psalm process) is ❌. Harness and infrastructure failures are ⚠️: they never fail a PR. A failed or timed out `Run shard` step does not colour the `measure` job either (`continue-on-error`): the stub step records the outcome per project and the verdict in `report` decides the check.
 
 Downgrades to inconclusive, so that noise never fails a PR:
 
@@ -188,7 +192,7 @@ To size a disabled project without enabling it, dispatch the workflow with `incl
 gh workflow run perf.yml --ref master -f include_disabled=wordpress
 ```
 
-The project runs in the extra tier (memory rule skipped) and never saves a base. Its measured MiB appear in the job summary of the `publish` job only: disabled projects are not written to `psalm/perf-data`. A project with a slow install needs its own `install_timeout` first.
+The project runs in the extra tier (memory rule skipped) and never saves a base. Its measured MiB appear in the job summary of the `extra-summary` job (which needs no environment, so it also works for dispatches from other branches): disabled projects are not written to `psalm/perf-data`. A project with a slow install needs its own `install_timeout` first.
 
 A dispatch may only measure commits that are already part of the selected branch (`ref` defaults to its tip). `prepare` rejects any other ref, including `refs/pull/<n>/head`, because dispatched code runs with the branch's cache scope. A dispatch never overwrites a `results/<branch>/<sha>.json` that already exists in `psalm/perf-data`.
 

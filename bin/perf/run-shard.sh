@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Measure every project of one shard against one Psalm checkout.
 # See bin/perf/README.md. Exit 0 even when a project crashes (the status is
-# recorded in <out>/<project>.json); non-zero only for harness/usage errors.
+# recorded in <out>/<project>.json); non-zero for harness/usage errors, and after the last project when the
+# result of some project could not be written at all (so the workflow's stub step runs).
 #
 # usage: run-shard.sh --shard <id> --psalm <psalm checkout> --sha <psalm sha> --out <dir>
 #                     [--projects <csv>] [--work <dir>] [--threads4]
@@ -166,6 +167,7 @@ VM_RAM_KB="$(vm_ram_kb)"
 NAME='' PROJ='' PJ='' STATUS='' REASON='' LOG_TAIL='' T4_JSON=''
 IR='' MB='' WALL1='' CPU1='' RSS1='' WALL4='' RSS4='' MB4='' ISSUE_COUNT='' ISSUES_FILE=''
 EXIT_CODE='' SIGNAL='' OOM_KILLED='' ELAPSED_INSTALL='' ELAPSED_ANALYSIS=''
+RESULTS_UNWRITTEN=0
 
 # Failure excerpt of a log (fatal-error lines first, then the tail; <= 50 lines): lib/result.php, the same
 # function write-stubs.php uses.
@@ -420,7 +422,7 @@ fail_run() {
 
 # The work of one project: setup of its variables, its env file, install, analysis, result. Returns 0 once a result
 # is recorded; a failure of the harness itself (jq, a full disk, ...) is a non-zero exit under `set -e` that
-# measure_guarded turns into a crash record for this project.
+# measure_guarded turns into a setup-failed/inconclusive record for this project.
 measure_project_body() {
     local t0 t1 log="$OUT/$NAME.log"
     PJ="$(printf '%s' "$INFO" | jq -c --arg n "$NAME" '.projects[] | select(.name == $n)')"
@@ -471,7 +473,8 @@ measure_project_body() {
     if [ "$MODE" = cachegrind ]; then
         IR="$(awk '/^summary:/ {print $2; exit}' "$res/cachegrind.out" 2>/dev/null || true)"
         if [ -z "$IR" ]; then
-            STATUS=crash REASON="cachegrind produced no summary"
+            # Valgrind ran but left no usable output: a harness problem, not a Psalm failure.
+            STATUS=inconclusive REASON="harness error: cachegrind produced no summary"
             LOG_TAIL="$(log_tail_of "$log")"
         fi
     fi
@@ -480,7 +483,7 @@ measure_project_body() {
         if ISSUE_COUNT="$("$PHP_BIN" "$SCRIPT_DIR/normalize-issues.php" "$res/report.json" "$PROJ" "$OUT/$NAME.issues.json" 2> "$res/normalize.log")"; then
             ISSUES_FILE="$NAME.issues.json"
         else
-            STATUS=crash ISSUE_COUNT='' REASON="normalize-issues failed"
+            STATUS=inconclusive ISSUE_COUNT='' REASON="harness error: normalize-issues failed"
             LOG_TAIL="$(log_tail_of "$res/normalize.log")"
         fi
     fi
@@ -500,8 +503,10 @@ harness_trap() {
     printf '%s failed with exit code %s' "${cmd:0:60}" "$rc" > "$WORK/$NAME.harness-error"
 }
 
-# Last resort for a project whose measurement died of a harness error: a crash record (unless the body had already
-# written the result, which then stands) so the next project still runs and the comparator sees a reason.
+# Last resort for a project whose measurement died of a harness error: a setup-failed record when the analysis had
+# not started yet (the install phase never completed), else inconclusive; `crash` is reserved for the measured Psalm
+# process. A result the body had already written stands. The next project still runs. When not even this record
+# can be written, RESULTS_UNWRITTEN makes the shard exit non-zero at the end.
 record_harness_error() {
     local detail
     detail="$(cat "$WORK/$NAME.harness-error" 2>/dev/null)" || detail="exit $1"
@@ -513,10 +518,12 @@ record_harness_error() {
     fi
 
     rm -f "$OUT/$NAME.issues.json" || true
-    STATUS=crash REASON="harness error: $detail" ELAPSED_ANALYSIS=0
+    if [ -f "$OUT/$NAME.started" ]; then STATUS=inconclusive; else STATUS=setup-failed; fi
+    REASON="harness error: $detail"
     LOG_TAIL="$(log_tail_of "$OUT/$NAME.log" 2>/dev/null)" || LOG_TAIL=''
     write_result || {
-        rm -f "$OUT/$NAME.json" "$OUT/$NAME.json.tmp"
+        RESULTS_UNWRITTEN=1
+        rm -f "$OUT/$NAME.json" "$OUT/$NAME.json.tmp" || true
         echo "run-shard: $NAME: cannot record the harness error either; write-stubs.php will stub it" >&2
     }
 }
@@ -555,4 +562,8 @@ while IFS= read -r project <&3; do
     measure_project "$project"
 done 3<<< "$PROJECT_LIST"
 
+if [ "$RESULTS_UNWRITTEN" -ne 0 ]; then
+    echo "run-shard: shard $SHARD finished, but the result of at least one project could not be written" >&2
+    exit 1
+fi
 echo "run-shard: shard $SHARD done" >&2

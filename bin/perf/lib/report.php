@@ -106,10 +106,14 @@ function deltaCell(array $p, string $metric, callable $fmt, float $limit): strin
         $cell .= sprintf(' (%s → %s)', $fmt($m['base']), $fmt($m['head']));
     }
 
+    // Red only when the evaluated outcome is a regression: the deltas of an incomparable or inconclusive project
+    // (different environment fingerprint, unmatched shared libraries, ...) stay informational.
     if ($m['delta_pct'] !== null && $m['delta_pct'] > $limit) {
-        $downgraded = $metric === 'ir' && $p['env_differs'] !== [];
+        if ($metric === 'ir' && $p['env_differs'] !== []) {
+            return $cell . ' ⚠️';
+        }
 
-        return $cell . ($downgraded ? ' ⚠️' : ' ❌');
+        return $cell . ($p['outcome'] === 'regression' ? ' ❌' : '');
     }
 
     return $cell;

@@ -289,7 +289,8 @@ function lintFiles(string $name, array $project, string $corpusDir): array
 }
 
 /**
- * Every PR shard must fit pr_budget_seconds: the shard runs base and head sequentially on one runner.
+ * Every PR shard must fit pr_budget_seconds per revision: base and head each run the shard's projects, so the
+ * budget is checked against one revision's sum (expected_seconds + expected_install_seconds).
  *
  * @param array<mixed> $corpus
  * @return list<string>
@@ -461,8 +462,8 @@ function buildPlan(array $corpus, array $in): array
             'revs' => $revs,
             'base_projects' => $baseNames,
             'head_projects' => $shardNames,
-            'base_step_timeout_minutes' => $baseStep,
-            'head_step_timeout_minutes' => $headStep,
+            'base_step_timeout_minutes' => max(1, $baseStep),
+            'head_step_timeout_minutes' => max(1, $headStep),
             'job_timeout_minutes' => $baseStep + $headStep + JOB_SLACK_MINUTES,
         ];
     }
@@ -548,7 +549,7 @@ function extraJobs(array $corpus, array $includeDisabled): array
             'mode' => $def['mode'],
             'threads4' => $t4 !== [],
             'projects' => array_values($projects),
-            'step_timeout_minutes' => $step,
+            'step_timeout_minutes' => max(1, $step),
             'job_timeout_minutes' => $step + JOB_SLACK_MINUTES,
         ];
     }
