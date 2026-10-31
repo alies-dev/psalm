@@ -20,6 +20,7 @@ declare(strict_types=1);
  */
 
 require __DIR__ . '/lib/cli.php';
+require __DIR__ . '/lib/corpus.php';
 require __DIR__ . '/lib/validate.php';
 require __DIR__ . '/lib/bundle.php';
 

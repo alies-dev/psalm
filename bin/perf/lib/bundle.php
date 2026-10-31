@@ -14,13 +14,6 @@ function bundleKey(string $branch, string $sha): string
     return "perf-base-{$branch}-{$sha}";
 }
 
-function fileSha256(string $path): ?string
-{
-    $hash = is_file($path) ? hash_file('sha256', $path) : false;
-
-    return $hash === false ? null : $hash;
-}
-
 /**
  * Problems that make a result unusable as a stored head result of a bundle: the project name, a storable status
  * and everything perfResultProblems() (the validation of the report) demands of it.
@@ -89,7 +82,7 @@ function buildBundle(
         $problems[] = 'head lock_source is ' . json_encode($lockInfo['lock_source'] ?? null);
     }
 
-    $lockSha = fileSha256($lockFile);
+    $lockSha = perfFileSha256($lockFile);
     $wantLock = $expected['locks']['head']['sha256'] ?? null;
     if ($lockSha === null || ($wantLock !== null && $wantLock !== $lockSha)) {
         $problems[] = 'lock file is missing or does not match expected.json locks.head.sha256';
@@ -161,7 +154,7 @@ function writeBundle(
     foreach ($results as $name => $result) {
         $target = "{$outDir}/results/{$name}.json";
         copy("{$headDir}/{$name}.json", $target) || throw new RuntimeException("cannot copy {$name}.json");
-        $manifest['result_sha256'][$name] = fileSha256($target);
+        $manifest['result_sha256'][$name] = perfFileSha256($target);
         $manifest['env_fingerprints'][$name] = $result['env']['fingerprint'] ?? null;
         $manifest['soft'][$name] = $result['env']['soft'] ?? (object) [];
 
@@ -169,7 +162,7 @@ function writeBundle(
         if ($issues !== '' && is_file("{$headDir}/{$issues}")) {
             $target = "{$outDir}/results/{$issues}";
             copy("{$headDir}/{$issues}", $target) || throw new RuntimeException("cannot copy {$issues}");
-            $manifest['issues_sha256'][$name] = fileSha256($target);
+            $manifest['issues_sha256'][$name] = perfFileSha256($target);
         }
     }
 
@@ -209,7 +202,7 @@ function validateBundle(string $dir, string $sha): array
         $problems[] = 'manifest lock_sha256 is missing';
     }
 
-    if (fileSha256("{$dir}/psalm-composer.lock") !== ($manifest['lock_sha256'] ?? null)) {
+    if (perfFileSha256("{$dir}/psalm-composer.lock") !== ($manifest['lock_sha256'] ?? null)) {
         $problems[] = 'psalm-composer.lock does not match manifest lock_sha256';
     }
 
@@ -240,7 +233,7 @@ function storedResultProblems(string $dir, array $manifest, string $sha, string 
         return ['result file is missing'];
     }
 
-    if (fileSha256($file) !== ($manifest['result_sha256'][$name] ?? null)) {
+    if (perfFileSha256($file) !== ($manifest['result_sha256'][$name] ?? null)) {
         return ['result file does not match manifest result_sha256'];
     }
 
@@ -273,7 +266,7 @@ function storedResultProblems(string $dir, array $manifest, string $sha, string 
     if (($result['status'] ?? null) === 'ok') {
         $issues = is_string($result['issues_file'] ?? null) ? basename($result['issues_file']) : '';
         $expectedHash = $manifest['issues_sha256'][$name] ?? null;
-        if ($issues === '' || $expectedHash === null || fileSha256("{$dir}/results/{$issues}") !== $expectedHash) {
+        if ($issues === '' || $expectedHash === null || perfFileSha256("{$dir}/results/{$issues}") !== $expectedHash) {
             $problems[] = 'issues file is missing or does not match manifest issues_sha256';
         }
     }

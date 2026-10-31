@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 function perfFileSha(string $path): string
 {
-    return is_file($path) ? (string) hash_file('sha256', $path) : 'absent';
+    return perfFileSha256($path) ?? 'absent';
 }
 
 /**

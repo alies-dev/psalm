@@ -43,6 +43,16 @@ function perfCorpusFile(string $default): string
 }
 
 /**
+ * sha256 of a file; null when it does not exist or cannot be read.
+ */
+function perfFileSha256(string $path): ?string
+{
+    $hash = is_file($path) ? hash_file('sha256', $path) : false;
+
+    return $hash === false ? null : $hash;
+}
+
+/**
  * Enabled projects in registry order, or exactly the named ones (disabled included) when $only is not empty.
  *
  * @param array<string, mixed> $corpus
@@ -60,9 +70,11 @@ function perfSelectProjects(array $corpus, array $only): array
     $selected = [];
     foreach ($corpus['projects'] as $name => $project) {
         // Disabled projects are skipped unless named explicitly (dispatch sizing runs).
-        $wanted = $only === [] ? !isset($project['disabled']) : in_array($name, $only, true);
+        $wanted = $only === []
+            ? is_array($project) && !array_key_exists('disabled', $project)
+            : in_array($name, $only, true);
         if ($wanted) {
-            $selected[$name] = $project;
+            $selected[(string) $name] = $project;
         }
     }
 
@@ -84,8 +96,19 @@ function perfShardProjects(array $corpus, string $shard, array $only): array
 
     return array_filter(
         perfSelectProjects($corpus, []),
-        static fn(array $project): bool => in_array($shard, $project['shards'] ?? [], true),
+        static fn(array $project): bool => perfShardId($project) === $shard,
     );
+}
+
+/**
+ * Names of the enabled projects of a shard in registry order.
+ *
+ * @param array<string, mixed> $corpus
+ * @return list<string>
+ */
+function perfShardProjectNames(array $corpus, string $shard): array
+{
+    return array_keys(perfShardProjects($corpus, $shard, []));
 }
 
 /**
@@ -93,7 +116,9 @@ function perfShardProjects(array $corpus, string $shard, array $only): array
  */
 function perfShardId(array $project): string
 {
-    return (string) ($project['shards'][0] ?? '');
+    $shards = $project['shards'] ?? null;
+
+    return is_array($shards) ? (string) ($shards[0] ?? '') : '';
 }
 
 /**

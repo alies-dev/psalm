@@ -66,7 +66,7 @@ function perfResultProblems(array $result, array $expectedRev, array $project, s
         }
 
         $check($nonEmpty($result['env']['fingerprint'] ?? null), 'env fingerprint missing');
-        $check(perfIssuesFileValid($dir, $result['issues_file'] ?? null), 'issues file missing or invalid');
+        $check(perfLoadIssues($dir, $result['issues_file'] ?? null) !== null, 'issues file missing or invalid');
     } elseif ($status === 'crash' || $status === 'timeout') {
         $check(is_numeric($result['elapsed_analysis'] ?? null), 'elapsed_analysis missing');
         $check(
@@ -80,19 +80,25 @@ function perfResultProblems(array $result, array $expectedRev, array $project, s
     return $problems;
 }
 
-function perfIssuesFileValid(?string $dir, mixed $issuesFile): bool
+/**
+ * The issues list of a result: the JSON list in $dir named by the result's issues_file (basename only), or null
+ * when the file is missing, unreadable or not a JSON list.
+ *
+ * @return list<array<string, mixed>>|null
+ */
+function perfLoadIssues(?string $dir, mixed $issuesFile): ?array
 {
     $name = is_string($issuesFile) ? basename($issuesFile) : '';
     if ($dir === null || $name === '') {
-        return false;
+        return null;
     }
 
     $raw = @file_get_contents(rtrim($dir, '/') . '/' . $name);
     if ($raw === false) {
-        return false;
+        return null;
     }
 
     $data = json_decode($raw, true);
 
-    return is_array($data) && array_is_list($data);
+    return is_array($data) && array_is_list($data) ? $data : null;
 }

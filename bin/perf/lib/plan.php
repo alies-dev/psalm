@@ -10,13 +10,6 @@ const MODES = ['cachegrind', 'native'];
 const TIERS = ['pr', 'post-merge'];
 const EVENTS = ['pull_request', 'push', 'workflow_dispatch'];
 
-function corpusPath(): string
-{
-    $override = getenv('PERF_CORPUS');
-
-    return is_string($override) && $override !== '' ? $override : dirname(__DIR__) . '/corpus.json';
-}
-
 /** "10G" / "512M" to MiB. */
 function parseMemoryMb(mixed $limit): ?int
 {
@@ -25,30 +18,6 @@ function parseMemoryMb(mixed $limit): ?int
     }
 
     return (int) $m[1] * (strtoupper($m[2]) === 'G' ? 1024 : 1);
-}
-
-/**
- * @param array<mixed> $corpus
- * @return array<string, array<mixed>> enabled projects in corpus order
- */
-function enabledProjects(array $corpus): array
-{
-    $projects = [];
-    foreach (is_array($corpus['projects'] ?? null) ? $corpus['projects'] : [] as $name => $project) {
-        if (is_array($project) && !array_key_exists('disabled', $project)) {
-            $projects[(string) $name] = $project;
-        }
-    }
-
-    return $projects;
-}
-
-/**
- * @param array<mixed> $project
- */
-function projectShard(array $project): string
-{
-    return (string) ($project['shards'][0] ?? '');
 }
 
 /**
@@ -93,22 +62,6 @@ function installTimeoutProblems(array $corpus, string $name, array $project): ar
 function limitMb(array $corpus, string $mode): int
 {
     return parseMemoryMb($corpus['memory_limit'][$mode] ?? null) ?? 0;
-}
-
-/**
- * @param array<mixed> $corpus
- * @return list<string> enabled project names of a shard in corpus order
- */
-function shardProjects(array $corpus, string $shard): array
-{
-    $names = [];
-    foreach (enabledProjects($corpus) as $name => $project) {
-        if (projectShard($project) === $shard) {
-            $names[] = $name;
-        }
-    }
-
-    return $names;
 }
 
 /**
@@ -355,7 +308,7 @@ function lintBudgets(array $corpus): array
         }
 
         $parts = [];
-        foreach (shardProjects($corpus, (string) $shard) as $name) {
+        foreach (perfShardProjectNames($corpus, (string) $shard) as $name) {
             $project = $corpus['projects'][$name];
             $parts[$name] = (float) ($project['expected_seconds'] ?? 0)
                 + (float) ($project['expected_install_seconds'] ?? 0);
@@ -388,7 +341,7 @@ function lintSummary(array $corpus): array
 {
     $lines = [];
     foreach ($corpus['shards'] as $shard => $def) {
-        $names = shardProjects($corpus, (string) $shard);
+        $names = perfShardProjectNames($corpus, (string) $shard);
         $seconds = 0.0;
         foreach ($names as $name) {
             $seconds += (float) $corpus['projects'][$name]['expected_seconds']
@@ -401,8 +354,8 @@ function lintSummary(array $corpus): array
 
     $eligible = [];
     $skipped = [];
-    foreach (enabledProjects($corpus) as $name => $project) {
-        $mode = $corpus['shards'][projectShard($project)]['mode'];
+    foreach (perfSelectProjects($corpus, []) as $name => $project) {
+        $mode = $corpus['shards'][perfShardId($project)]['mode'];
         if ($mode === 'native') {
             perfT4Eligible($corpus, $project) ? $eligible[] = $name : $skipped[] = $name;
         }
@@ -508,8 +461,9 @@ function buildPlan(array $corpus, array $in): array
             'revs' => $revs,
             'base_projects' => $baseNames,
             'head_projects' => $shardNames,
-            'step_timeout_minutes' => max($headStep, $baseStep),
-            'job_timeout_minutes' => $headStep + $baseStep + JOB_SLACK_MINUTES,
+            'base_step_timeout_minutes' => $baseStep,
+            'head_step_timeout_minutes' => $headStep,
+            'job_timeout_minutes' => $baseStep + $headStep + JOB_SLACK_MINUTES,
         ];
     }
 
@@ -534,7 +488,7 @@ function prShards(array $corpus): array
 {
     $shards = [];
     foreach ($corpus['shards'] as $shard => $def) {
-        $names = shardProjects($corpus, (string) $shard);
+        $names = perfShardProjectNames($corpus, (string) $shard);
         if ($def['tier'] === 'pr' && $names !== []) {
             $shards[(string) $shard] = $names;
         }
@@ -560,10 +514,10 @@ function extraJobs(array $corpus, array $includeDisabled): array
     $t4Jobs = [];
     foreach ($corpus['shards'] as $shard => $def) {
         $shard = (string) $shard;
-        $names = shardProjects($corpus, $shard);
+        $names = perfShardProjectNames($corpus, $shard);
         $added = array_values(array_filter(
             $includeDisabled,
-            static fn(string $n): bool => projectShard($corpus['projects'][$n]) === $shard,
+            static fn(string $n): bool => perfShardId($corpus['projects'][$n]) === $shard,
         ));
         $isEligible = static fn(string $n): bool => perfT4Eligible($corpus, $corpus['projects'][$n]);
 
@@ -600,7 +554,7 @@ function extraJobs(array $corpus, array $includeDisabled): array
     }
 
     $skipped = [];
-    foreach ([...array_keys(enabledProjects($corpus)), ...$includeDisabled] as $name) {
+    foreach ([...array_keys(perfSelectProjects($corpus, [])), ...$includeDisabled] as $name) {
         $project = $corpus['projects'][$name];
         $isNative = perfProjectMode($corpus, $project) === 'native';
         if ($isNative && !perfT4Eligible($corpus, $project) && !in_array($name, $t4Jobs, true)) {

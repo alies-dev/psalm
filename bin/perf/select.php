@@ -18,6 +18,9 @@ declare(strict_types=1);
  *   gets expected.json. `measure` and `extra` are empty when the head lock failed. A base lock_source of "failed"
  *   (pull_request) means nothing is measured or reused for base and expected.json marks the base source "none".
  *   t4_skipped (push/dispatch) lists the natives without a t4 pass because of the memory budget.
+ *   A `measure` entry carries base_step_timeout_minutes (0 without a base rev) and head_step_timeout_minutes (each:
+ *   sum of install + analysis timeouts of that rev's projects, in minutes, rounded up, + 2) and job_timeout_minutes
+ *   (= base step + head step + 8). An `extra` entry carries step_timeout_minutes and job_timeout_minutes.
  *   Reusing the bundle also needs locks-info base sha256 == the bundle manifest's lock_sha256. Exit 0, 2 on usage
  *   or corpus errors.
  *
@@ -36,7 +39,7 @@ $fail = static function (string $message): never {
 };
 
 $loadCorpus = static function () use ($fail): array {
-    $path = corpusPath();
+    $path = perfCorpusFile(__DIR__ . '/corpus.json');
     try {
         $corpus = readJsonFile($path);
     } catch (RuntimeException $e) {

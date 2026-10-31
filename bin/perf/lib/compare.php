@@ -30,17 +30,6 @@ function readJson(string $file): ?array
 }
 
 /**
- * @return list<array<string, mixed>>|null
- */
-function loadIssues(string $dir, string $issuesFile): ?array
-{
-    $name = basename($issuesFile);
-    $issues = $name === '' ? null : readJson(rtrim($dir, '/') . '/' . $name);
-
-    return $issues !== null && array_is_list($issues) ? $issues : null;
-}
-
-/**
  * @param array<string, mixed> $exp
  * @param array<string, mixed>|null $lock
  * @return array{result: array<string, mixed>|null, problem: string|null, issues: list<array<string, mixed>>|null}
@@ -68,7 +57,7 @@ function loadSide(?string $dir, string $project, string $rev, array $exp, ?array
         ...$problems,
         ...perfResultProblems($r, $expectedRev, $exp, (string) ($exp['mode'] ?? ''), $dir),
     ];
-    $issues = $problems === [] && $r['status'] === 'ok' ? loadIssues($dir, (string) $r['issues_file']) : null;
+    $issues = $problems === [] && $r['status'] === 'ok' ? perfLoadIssues($dir, $r['issues_file'] ?? null) : null;
 
     if ($problems !== []) {
         return $none('result invalid (' . implode('; ', $problems) . ')');
@@ -376,6 +365,7 @@ function headOnlyOutcome(array $p, array $head, array $exp): array
  * @param array{
  *     headOnly: bool,
  *     lockFailure: ?string,
+ *     baseLockFailure: ?string,
  *     baseDir: ?string,
  *     headDir: ?string,
  *     bundleDir: ?string,
@@ -416,16 +406,17 @@ function evaluateProject(string $name, array $exp, array $ctx): array
             return finish($p, 'inconclusive', ["head {$head['problem']}"]);
         }
 
-        if (in_array($p['status_head'], ['crash', 'timeout'], true)) {
-            // Listed with its reason; a head-only report is a pass unless a result is missing or invalid.
+        if ($p['status_head'] !== 'ok') {
+            // A valid crash/timeout/setup-failed/inconclusive record is listed with its reason. A head-only report
+            // warns only when a result is missing or invalid (spec 8).
             return finish($p, 'not_comparable', ["head {$p['status_head']}: " . resultReason($head['result'])]);
         }
 
-        if ($p['status_head'] !== 'ok') {
-            return finish($p, 'inconclusive', ["head {$p['status_head']}: " . resultReason($head['result'])]);
-        }
-
         return headOnlyOutcome($p, $head['result'], $exp);
+    }
+
+    if ($ctx['baseLockFailure'] !== null) {
+        return finish($p, 'inconclusive', [$ctx['baseLockFailure']]);
     }
 
     $baseDir = match ($baseSource) {

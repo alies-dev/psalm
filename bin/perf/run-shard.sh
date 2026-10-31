@@ -418,9 +418,15 @@ fail_run() {
     LOG_TAIL="$(log_tail_of "$1")"
 }
 
-# The work of one project after its state is reset and its env file written. Always returns 0.
+# The work of one project: setup of its variables, its env file, install, analysis, result. Returns 0 once a result
+# is recorded; a failure of the harness itself (jq, a full disk, ...) is a non-zero exit under `set -e` that
+# measure_guarded turns into a crash record for this project.
 measure_project_body() {
     local t0 t1 log="$OUT/$NAME.log"
+    PJ="$(printf '%s' "$INFO" | jq -c --arg n "$NAME" '.projects[] | select(.name == $n)')"
+    TIMEOUT="$(pf '.timeout')" INSTALL_TIMEOUT="$(pf '.install_timeout')"
+    write_env_file
+
     t0="$(now)"
     if ! install_project; then
         STATUS=setup-failed
@@ -487,20 +493,61 @@ measure_project_body() {
     rm -rf "$res"
 }
 
+# Why the body of the current project died: the failing command (its first word) of the ERR trap.
+harness_trap() {
+    local rc=$1 cmd=${2//$'\n'/ }
+    cmd=${cmd%% *}
+    printf '%s failed with exit code %s' "${cmd:0:60}" "$rc" > "$WORK/$NAME.harness-error"
+}
+
+# Last resort for a project whose measurement died of a harness error: a crash record (unless the body had already
+# written the result, which then stands) so the next project still runs and the comparator sees a reason.
+record_harness_error() {
+    local detail
+    detail="$(cat "$WORK/$NAME.harness-error" 2>/dev/null)" || detail="exit $1"
+    echo "run-shard: $NAME: harness error: $detail" >&2
+    rm -rf "$WORK/$NAME.results"
+    if [ -f "$OUT/$NAME.json" ]; then
+        echo "run-shard: $NAME: the result was already written, kept" >&2
+        return 0
+    fi
+
+    rm -f "$OUT/$NAME.issues.json" || true
+    STATUS=crash REASON="harness error: $detail" ELAPSED_ANALYSIS=0
+    LOG_TAIL="$(log_tail_of "$OUT/$NAME.log" 2>/dev/null)" || LOG_TAIL=''
+    write_result || {
+        rm -f "$OUT/$NAME.json" "$OUT/$NAME.json.tmp"
+        echo "run-shard: $NAME: cannot record the harness error either; write-stubs.php will stub it" >&2
+    }
+}
+
+# `set -e` is inert inside anything called from `||` or `if`, so the body runs as a plain command of a subshell
+# between `set +e` and `set -e`: its own `set -e` stays effective and its exit status is read afterwards.
+measure_guarded() {
+    local rc=0
+    rm -f "$WORK/$NAME.harness-error"
+    set +e
+    (
+        set -eE
+        trap 'harness_trap "$?" "$BASH_COMMAND"' ERR
+        measure_project_body
+    )
+    rc=$?
+    set -e
+    if [ "$rc" -ne 0 ]; then record_harness_error "$rc"; fi
+}
+
 measure_project() {
     NAME=$1
     PROJ="$WORK/$NAME"
-    PJ="$(printf '%s' "$INFO" | jq -c --arg n "$NAME" '.projects[] | select(.name == $n)')"
-    TIMEOUT="$(pf '.timeout')" INSTALL_TIMEOUT="$(pf '.install_timeout')"
     STATUS=ok REASON='' LOG_TAIL='' T4_JSON=''
     IR='' MB='' WALL1='' CPU1='' RSS1='' WALL4='' RSS4='' MB4='' ISSUE_COUNT='' ISSUES_FILE=''
     EXIT_CODE='' SIGNAL='' OOM_KILLED='' ELAPSED_INSTALL='' ELAPSED_ANALYSIS=''
-    rm -f "$OUT/$NAME.json" "$OUT/$NAME.issues.json" "$OUT/$NAME.started" "$OUT/$NAME.log" "$OUT/$NAME.env.json"
+    rm -f "$OUT/$NAME.json" "$OUT/$NAME.issues.json" "$OUT/$NAME.started" "$OUT/$NAME.log" "$OUT/$NAME.env.json" || true
     echo "== $NAME ($MODE)" >&2
 
-    write_env_file
-    measure_project_body
-    trim_log
+    measure_guarded
+    trim_log || true
 }
 
 # ----------------------------------------------------------------------- main

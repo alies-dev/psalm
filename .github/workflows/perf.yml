@@ -188,8 +188,9 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # Only caches saved by push runs on the branch itself (ref=refs/heads/<branch>) are listed. The list API is
-      # paged (100 per page, newest first); when the bundle is not within the pages read, each ancestor is looked
-      # up by its exact key.
+      # paged (100 per page, newest first) and read until exhausted (safety cap: 50 pages). The nearest ancestor
+      # with a listed key wins; when the listing is incomplete (failed or capped), every ancestor nearer than the
+      # best listed one is additionally looked up by its exact key before the listed match is accepted.
       - name: Find base bundle
         id: discover
         env:
@@ -206,26 +207,22 @@ jobs:
 
           keys="$RUNNER_TEMP/bundle-keys.txt"
           : > "$keys"
-          pages=0
-          listing_failed=0
-          for page in 1 2 3 4 5; do
-            page_keys=$(list_keys "$prefix" "$page") || { echo "::warning::Listing caches failed"; listing_failed=1; break; }
-            pages=$page
+          listing_complete=0
+          for page in $(seq 1 50); do
+            page_keys=$(list_keys "$prefix" "$page") || { echo "::warning::Listing caches failed"; break; }
             [ -n "$page_keys" ] && printf '%s\n' "$page_keys" >> "$keys"
-            [ "$(printf '%s\n' "$page_keys" | grep -c .)" -eq 100 ] || break
+            if [ "$(printf '%s\n' "$page_keys" | grep -c .)" -lt 100 ]; then listing_complete=1; break; fi
           done
+          [ "$listing_complete" -eq 1 ] || echo "::warning::The cache listing is incomplete, nearer ancestors are looked up by exact key"
 
           bundle_sha=
           while IFS= read -r sha; do
             if grep -Fxq "${prefix}${sha}" "$keys"; then bundle_sha=$sha; break; fi
-          done < "$RUNNER_TEMP/ancestry.txt"
-
-          if [ -z "$bundle_sha" ] && { [ "$pages" -gt 1 ] || [ "$listing_failed" -eq 1 ]; }; then
-            while IFS= read -r sha; do
+            if [ "$listing_complete" -eq 0 ]; then
               found=$(list_keys "${prefix}${sha}") || continue
               if grep -Fxq "${prefix}${sha}" <<< "$found"; then bundle_sha=$sha; break; fi
-            done < "$RUNNER_TEMP/ancestry.txt"
-          fi
+            fi
+          done < "$RUNNER_TEMP/ancestry.txt"
 
           # A bundle from an ancestor A of the merge-base only provides results when nothing that affects Psalm's
           # behaviour changed in between. The lock of the nearest bundle is used either way.
@@ -458,7 +455,7 @@ jobs:
 
       - name: Run shard (base)
         if: contains(matrix.revs, 'base')
-        timeout-minutes: ${{ matrix.step_timeout_minutes }}
+        timeout-minutes: ${{ matrix.base_step_timeout_minutes }}
         env:
           SHARD: ${{ matrix.shard }}
           PROJECTS: ${{ join(matrix.base_projects, ',') }}
@@ -478,8 +475,12 @@ jobs:
           PSALM_SHA: ${{ needs.prepare.outputs.base_sha }}
         run: |
           mkdir -p "$RUNNER_TEMP/out/base"
+          lock_args=()
+          if [ -f "$RUNNER_TEMP/plan/base.lock" ]; then
+            lock_args=(--lock-sha "$(sha256sum "$RUNNER_TEMP/plan/base.lock" | cut -d' ' -f1)")
+          fi
           php harness/bin/perf/write-stubs.php --corpus harness/bin/perf/corpus.json \
-            --out "$RUNNER_TEMP/out/base" --projects "$PROJECTS" --sha "$PSALM_SHA"
+            --out "$RUNNER_TEMP/out/base" --projects "$PROJECTS" --sha "$PSALM_SHA" "${lock_args[@]}"
 
       # A failed base must not prevent measuring the head: the report marks the project inconclusive instead.
       - name: Checkout Psalm (head)
@@ -500,7 +501,7 @@ jobs:
 
       - name: Run shard (head)
         if: ${{ !cancelled() && contains(matrix.revs, 'head') }}
-        timeout-minutes: ${{ matrix.step_timeout_minutes }}
+        timeout-minutes: ${{ matrix.head_step_timeout_minutes }}
         env:
           SHARD: ${{ matrix.shard }}
           PROJECTS: ${{ join(matrix.head_projects, ',') }}
@@ -518,8 +519,12 @@ jobs:
           PSALM_SHA: ${{ needs.prepare.outputs.head_sha }}
         run: |
           mkdir -p "$RUNNER_TEMP/out/head"
+          lock_args=()
+          if [ -f "$RUNNER_TEMP/plan/head.lock" ]; then
+            lock_args=(--lock-sha "$(sha256sum "$RUNNER_TEMP/plan/head.lock" | cut -d' ' -f1)")
+          fi
           php harness/bin/perf/write-stubs.php --corpus harness/bin/perf/corpus.json \
-            --out "$RUNNER_TEMP/out/head" --projects "$PROJECTS" --sha "$PSALM_SHA"
+            --out "$RUNNER_TEMP/out/head" --projects "$PROJECTS" --sha "$PSALM_SHA" "${lock_args[@]}"
 
       - name: Upload results
         if: always()
@@ -606,8 +611,12 @@ jobs:
           PSALM_SHA: ${{ needs.prepare.outputs.head_sha }}
         run: |
           mkdir -p "$RUNNER_TEMP/out/head"
+          lock_args=()
+          if [ -f "$RUNNER_TEMP/plan/head.lock" ]; then
+            lock_args=(--lock-sha "$(sha256sum "$RUNNER_TEMP/plan/head.lock" | cut -d' ' -f1)")
+          fi
           php harness/bin/perf/write-stubs.php --corpus harness/bin/perf/corpus.json \
-            --out "$RUNNER_TEMP/out/head" --projects "$PROJECTS" --sha "$PSALM_SHA"
+            --out "$RUNNER_TEMP/out/head" --projects "$PROJECTS" --sha "$PSALM_SHA" "${lock_args[@]}"
 
       - name: Upload results
         if: always()
@@ -766,6 +775,8 @@ jobs:
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.prepare.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Holds PERF_DATA_DEPLOY_KEY; its deployment branch policy restricts the job to the default branch (README).
+    environment: perf-data
     permissions:
       contents: read
       actions: read # gh run download of the shard artifacts
@@ -784,7 +795,10 @@ jobs:
           shopt -s nullglob
           files=()
           for f in "$RUNNER_TEMP"/extra/head/*.json; do
-            [[ "$f" == *.issues.json ]] || files+=("$f")
+            # Result identity: not an issue list or environment sidecar, an object with `schema` and a project name.
+            [[ "$f" == *.issues.json || "$f" == *.env.json ]] && continue
+            jq -e 'type == "object" and has("schema") and (.project | type == "string" and . != "")' "$f" > /dev/null 2>&1 \
+              && files+=("$f")
           done
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No extra-tier results."
@@ -914,24 +928,44 @@ jobs:
           $results = static function (string $dir) use ($read): array {
               $found = [];
               foreach (glob($dir . '/*.json') ?: [] as $file) {
-                  if (!str_ends_with($file, '.issues.json')) {
-                      $r = $read($file);
-                      $found[$r['project']] = $r;
+                  if (str_ends_with($file, '.issues.json') || str_ends_with($file, '.env.json')) {
+                      continue;
                   }
+                  try {
+                      $r = $read($file);
+                  } catch (JsonException) {
+                      continue;
+                  }
+                  if (!is_array($r) || !isset($r['schema']) || !is_string($r['project'] ?? null) || $r['project'] === '') {
+                      continue;
+                  }
+                  $found[$r['project']] = $r;
               }
               return $found;
           };
 
           $projects = $results($measuredDir);
+          // The threads=4 metrics come from another job (maybe another CPU): they are published together with that
+          // job's environment and the threads=4 outcome (`failed` / `skipped`), not under the main job's environment.
           foreach ($results($extraDir) as $name => $extra) {
+              $t4 = is_array($extra['t4'] ?? null) ? array_intersect_key($extra['t4'], array_flip(['failed', 'skipped'])) : [];
               if (!isset($projects[$name])) {
                   $projects[$name] = $extra;
                   continue;
               }
+              $copied = false;
               foreach (['wall_t4', 'rss_t4_kb', 'psalm_mb_t4'] as $key) {
                   if (isset($extra['metrics'][$key])) {
                       $projects[$name]['metrics'][$key] = $extra['metrics'][$key];
+                      $copied = true;
                   }
+              }
+              if ($copied || $t4 !== []) {
+                  $t4['env'] = array_intersect_key(
+                      is_array($extra['env'] ?? null) ? $extra['env'] : [],
+                      array_flip(['fingerprint', 'soft', 'cpu', 'cpu_measured']),
+                  );
+                  $projects[$name]['t4'] = $t4;
               }
           }
           $corpus = $read($corpusFile);
@@ -945,13 +979,22 @@ jobs:
               exit(1);
           }
 
-          $keep = array_flip(['shard', 'mode', 'status', 'reason', 'metrics', 'issue_count', 'oom_killed', 'env']);
+          $keep = array_flip(['shard', 'mode', 'status', 'reason', 'metrics', 'issue_count', 'oom_killed', 'env', 't4']);
+          $collapse = static function (array $env): array {
+              if (isset($env['soft']['libs'])) {
+                  ksort($env['soft']['libs']);
+                  $env['soft']['libs_sha256'] = hash('sha256', json_encode($env['soft']['libs']));
+                  unset($env['soft']['libs']);
+              }
+              return $env;
+          };
           foreach ($projects as $name => $r) {
               $r = array_intersect_key($r, $keep);
-              if (isset($r['env']['soft']['libs'])) {
-                  ksort($r['env']['soft']['libs']);
-                  $r['env']['soft']['libs_sha256'] = hash('sha256', json_encode($r['env']['soft']['libs']));
-                  unset($r['env']['soft']['libs']);
+              if (is_array($r['env'] ?? null)) {
+                  $r['env'] = $collapse($r['env']);
+              }
+              if (is_array($r['t4']['env'] ?? null)) {
+                  $r['t4']['env'] = $collapse($r['t4']['env']);
               }
               $projects[$name] = $r;
           }

@@ -57,11 +57,13 @@ The result file `<project>.json` carries a `t4` field for the threads=4 run of n
 | `{"skipped": "memory budget"}` | `run-shard.sh --threads4` met a project that is not `t4_eligible` and did not attempt the run |
 | `{"failed": "<status>"}` | The threads=4 run ended with that status; its metrics stay empty and the threads=1 result stands |
 
-Natives that are not eligible are listed in the plan's `t4_skipped` (`{"project", "reason"}`) and published in the `t4_skipped` field of the `perf-data` record.
+Natives that are not eligible are listed in the plan's `t4_skipped` (`{"project", "reason"}`) and published in the `t4_skipped` field of the `perf-data` record. The threads=4 numbers come from the extra tier, which may run on another CPU than the main job. The published project record therefore carries a `t4` object next to its own `env`: `t4.env` (`fingerprint`, `soft`, `cpu`, `cpu_measured` of the job that produced the numbers) and the outcome (`t4.failed` or `t4.skipped`, when there is one).
+
+The extra-results summary and the `perf-data` record only accept a file as a result if its name ends in `.json` but not `.issues.json` or `.env.json` (the per-project environment sidecar), and it decodes to an object with `schema` and a non-empty `project`.
 
 ### Which base is used
 
-The base of a PR is its merge-base with the target branch. Measuring it on every PR would double the cost, so a push run on the branch saves a base bundle (all PR-tier head results plus the Psalm lock) under the cache key `perf-base-<branch>-<sha>`. Prepare walks up to 30 first-parent commits from the merge-base and uses the nearest bundle.
+The base of a PR is its merge-base with the target branch. Measuring it on every PR would double the cost, so a push run on the branch saves a base bundle (all PR-tier head results plus the Psalm lock) under the cache key `perf-base-<branch>-<sha>`. Prepare walks up to 30 first-parent commits from the merge-base and uses the nearest bundle. It reads the cache listing page by page until it is exhausted (safety cap: 50 pages) and takes the nearest ancestor present in it. If the listing failed or hit the cap, every ancestor nearer than the best listed one (all of them when none was listed) is looked up by its exact key first.
 
 * A bundle from an ancestor A of the merge-base provides results only if nothing outside `docs`, `*.md`, `.github`, `.circleci`, `tests` and `bin/perf` changed between A and the merge-base. Its lock is always the starting point for locking.
 * A cached result is reused per project when its status is `ok`, `crash` or `timeout` and its environment fingerprint equals the one prepare computed for the head. Everything else is measured fresh. A shard measures its base only if at least one of its projects needs it, and then only those projects.
@@ -222,9 +224,17 @@ The post-merge tier (`measure-extra`, push and dispatch only) runs the full `doc
 ## Security model
 
 * `prepare`, `measure` and `report` run PR code with a read-only token and no secrets. Fork PRs work the same way.
-* The deploy key for `psalm/perf-data` exists only in `publish`, which never runs on `pull_request` and publishes only commits that are ancestors of the branch.
+* The deploy key for `psalm/perf-data` exists only in `publish`, which never runs on `pull_request` and publishes only commits that are ancestors of the branch. `publish` runs in the GitHub environment `perf-data`, so that the key is also unreachable from a dispatch on an arbitrary branch (a dispatched workflow file is the branch's own copy, so its ancestry checks restrict nothing). One-time admin setup, see below.
 * `perf-comment.yml` runs from the default branch, never checks out PR code, and treats the `perf-report` artifact as untrusted: `pr_number` and `head_sha` must match GitHub's own metadata for the run and the PR, mentions are neutralised, oversized reports fall back to a short report and then to a constant text built by the poster.
 * Base bundles are saved only by the `report` job of a push run on a protected branch, with a key built from `github.sha`. Caches written by PR runs live in the PR's own ref scope and are never found by branch runs or by other PRs.
+
+### One-time admin setup: the `perf-data` environment
+
+1. Repository settings, Environments, New environment: `perf-data`.
+2. Deployment branches and tags: "Selected branches and tags", add `master` only (and `6.x` once that branch is enabled).
+3. Add the secret `PERF_DATA_DEPLOY_KEY` (the write deploy key of `psalm/perf-data`) as an environment secret, then delete the repository-level secret. Until it is moved, the repository-level secret keeps working, but remains readable from every branch.
+
+A dispatch from a branch that is not allowed by the policy fails the `publish` job at its start (nothing is published); measurement jobs are unaffected.
 
 ## Enable another branch (6.x)
 
@@ -234,3 +244,4 @@ The post-merge tier (`measure-extra`, push and dispatch only) runs the full `doc
 4. Merge or push once: the push run saves the first bundle for `6.x`, and the first PR before that is cold. `COMPOSER_ROOT_VERSION` becomes `6.x-dev` automatically (any `^\d+(\.\d+)*\.x$` branch; other branches use `dev-<branch>`).
 5. `publish` creates `results/6.x/` in `psalm/perf-data` by itself; check it after the first push run.
 6. Re-check the sizing once: 6.x may be slower or faster than master, and `expected_*` are shared by all branches.
+7. Add the branch to the deployment branches of the `perf-data` environment, or its `publish` job is rejected.
