@@ -235,13 +235,18 @@ function withIssueDiff(array $judged, string $dir, string $name): array
         $judged['verdict'] = $judged['verdict'] === 'fail' ? 'fail' : 'warn';
         $judged['notes'][] = 'issue lists unavailable: ' . $e->getMessage();
 
-        return $judged + ['issues' => null, 'score' => null];
+        return $judged + ['issues' => null, 'weighted_issues' => null];
     }
 
-    return $judged + ['issues' => diffIssues($base, $head), 'score' => scoreIssues($base, $head)];
+    $weighted = weightedIssues($base, $head);
+    if ($weighted['drift']) {
+        $judged['notes'][] = 'drift';
+    }
+
+    return $judged + ['issues' => diffIssues($base, $head), 'weighted_issues' => $weighted];
 }
 
-/** Score weight of one issue: its error level for 1..8, 10 for always-error issues (-1), 0 for feature-specific (-2). */
+/** Weight of one issue: its error level for 1..8, 10 for always-error issues (-1), 0 for feature-specific (-2). */
 function issueWeight(int $level): int
 {
     return match (true) {
@@ -252,14 +257,18 @@ function issueWeight(int $level): int
 }
 
 /**
- * Informational issue score per side (sum of issueWeight) and the issue count per level, labelled L1..L8, always
- * (-1) and feature (-2), most serious last. Never feeds a verdict.
+ * Informational weighted issues per side (sum of issueWeight), the relative change and the issue count per level,
+ * labelled L1..L8, always (-1) and feature (-2), most serious last. `drift`: same issue count, different weight.
+ * Never feeds a verdict.
  *
  * @param list<array<string, mixed>> $base
  * @param list<array<string, mixed>> $head
- * @return array{base: int, head: int, delta: int, by_level: array<string, array{base: int, head: int, delta: int}>}
+ * @return array{
+ *     base: int, head: int, delta: int, delta_pct: ?float, drift: bool,
+ *     by_level: array<string, array{base: int, head: int, delta: int}>
+ * }
  */
-function scoreIssues(array $base, array $head): array
+function weightedIssues(array $base, array $head): array
 {
     $counts = static fn(array $issues): array => array_count_values(array_column($issues, 'error_level'));
     $score = static fn(array $counts): int => array_sum(array_map(
@@ -282,8 +291,16 @@ function scoreIssues(array $base, array $head): array
         $byLevel[$label] = ['base' => $b, 'head' => $h, 'delta' => $h - $b];
     }
 
-    return ['base' => $score($baseCounts), 'head' => $score($headCounts),
-        'delta' => $score($headCounts) - $score($baseCounts), 'by_level' => $byLevel];
+    [$baseWeight, $headWeight] = [$score($baseCounts), $score($headCounts)];
+
+    return [
+        'base' => $baseWeight,
+        'head' => $headWeight,
+        'delta' => $headWeight - $baseWeight,
+        'delta_pct' => pctDelta($baseWeight, $headWeight),
+        'by_level' => $byLevel,
+        'drift' => count($base) === count($head) && $baseWeight !== $headWeight,
+    ];
 }
 
 /**
