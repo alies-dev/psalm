@@ -400,7 +400,7 @@ set_exit_info() {
 # crash_reason <log> <report>
 crash_reason() {
     if [ "$RUN_OOM" = true ]; then REASON="killed by the kernel OOM killer"
-    elif grep -q 'Allowed memory size' "$1"; then REASON="PHP memory limit exceeded"
+    elif grep -qE 'Allowed memory size|Hard memory limit' "$1"; then REASON="PHP memory limit exceeded"
     elif [ -n "$SIGNAL" ]; then REASON="killed by $SIGNAL"
     elif grep -q 'Checks took' "$1" && [ -s "$2" ]; then REASON="Psalm exited with code $EXIT_CODE after finishing the analysis"
     else REASON="Psalm exited with code $EXIT_CODE without a report"

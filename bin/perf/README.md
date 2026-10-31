@@ -97,7 +97,7 @@ Among failures, only a crash or timeout of the measured process (Psalm, or valgr
 
 Downgrades to inconclusive, so that noise never fails a PR:
 
-* A memory crash (PHP "Allowed memory size" fatal, or an OOM kill reported by the cgroup) when the base already used more than 80 % of the limit.
+* A memory crash (PHP "Allowed memory size" or "Hard memory limit" fatal, or an OOM kill reported by the cgroup) when the base already used more than 80 % of the limit.
 * An `Ir` regression while the soft fingerprints (shared library hashes) differ between base and head. Memory regressions are never downgraded.
 * A timeout that the base's predicted time on the slowest CPU does not explain.
 

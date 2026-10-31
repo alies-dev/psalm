@@ -141,15 +141,15 @@ function softLibDiff(array $base, array $head): array
 }
 
 /**
- * PHP "Allowed memory size" fatal, an OOM kill, or (only when the OOM counter is unknown) a SIGKILL while the process
- * held at least 90 % of the VM's RAM.
+ * PHP "Allowed memory size" or "Hard memory limit" fatal, an OOM kill, or (only when the OOM counter is unknown) a
+ * SIGKILL while the process held at least 90 % of the VM's RAM.
  *
  * @param array<string, mixed> $head
  */
 function isMemoryCrash(array $head): bool
 {
     $tail = (string) ($head['log_tail'] ?? '') . "\n" . (string) ($head['reason'] ?? '');
-    if (str_contains($tail, 'Allowed memory size')) {
+    if (preg_match('/Allowed memory size|Hard memory limit/', $tail) === 1) {
         return true;
     }
 
@@ -534,7 +534,7 @@ function resultReason(array $r): string
     ));
     $fatal = array_values(array_filter(
         $lines,
-        static fn(string $l): bool => preg_match('/Fatal|Allowed memory/i', $l) === 1,
+        static fn(string $l): bool => preg_match('/Fatal|Allowed memory|Hard memory limit/i', $l) === 1,
     ));
 
     return $fatal[0] ?? $lines[count($lines) - 1] ?? 'no details';

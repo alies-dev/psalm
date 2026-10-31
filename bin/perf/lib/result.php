@@ -29,7 +29,10 @@ function perfLogTail(string $file): ?string
     fclose($handle);
 
     $fatal = array_slice(
-        array_filter($lines, static fn(string $l): bool => preg_match('/Fatal|Allowed memory|^PHP /', $l) === 1),
+        array_filter(
+            $lines,
+            static fn(string $l): bool => preg_match('/Fatal|Allowed memory|Hard memory limit|^PHP /', $l) === 1,
+        ),
         -PERF_FATAL_LINES,
     );
     $tail = array_slice($lines, -(PERF_LOG_TAIL_LINES - count($fatal)));
