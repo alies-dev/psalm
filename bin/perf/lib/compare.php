@@ -246,20 +246,42 @@ function withIssueDiff(array $judged, string $dir, string $name): array
     return $judged + ['issues' => diffIssues($base, $head), 'weighted_issues' => $weighted];
 }
 
-/** Weight of one issue: its error level for 1..8, 10 for always-error issues (-1), 0 for feature-specific (-2). */
-function issueWeight(int $level): int
+/** Fire on any unannotated code at the always-error level; tracked as their own bucket and weighted 0. */
+const PURITY_SUGGESTIONS = [
+    'MissingPureAnnotation',
+    'MissingImmutableAnnotation',
+    'MissingAbstractPureAnnotation',
+    'MissingInterfaceImmutableAnnotation',
+];
+/** Weighted-issues buckets in display order: error levels 1..8, always-errors (-1), feature-specific (-2), purity. */
+const ISSUE_BUCKETS = ['L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'always', 'feature', 'purity_suggestions'];
+
+/**
+ * @param array<string, mixed> $issue
+ */
+function issueBucket(array $issue): string
 {
     return match (true) {
-        $level === -1 => 10,
-        $level < 0 => 0,
-        default => $level,
+        in_array($issue['type'], PURITY_SUGGESTIONS, true) => 'purity_suggestions',
+        $issue['error_level'] === -1 => 'always',
+        $issue['error_level'] === -2 => 'feature',
+        default => 'L' . $issue['error_level'],
+    };
+}
+
+/** Weight of one issue: its error level for L1..L8, 10 for always-errors, 0 for feature-specific and purity. */
+function bucketWeight(string $bucket): int
+{
+    return match ($bucket) {
+        'always' => 10,
+        'feature', 'purity_suggestions' => 0,
+        default => (int) substr($bucket, 1),
     };
 }
 
 /**
- * Informational weighted issues per side (sum of issueWeight), the relative change and the issue count per level,
- * labelled L1..L8, always (-1) and feature (-2), most serious last. `drift`: same issue count, different weight.
- * Never feeds a verdict.
+ * Informational weighted issues per side (sum of bucketWeight), the relative change and the issue count per bucket
+ * (L1..L8, always, feature, purity_suggestions). `drift`: same issue count, different weight. Never feeds a verdict.
  *
  * @param list<array<string, mixed>> $base
  * @param list<array<string, mixed>> $head
@@ -270,28 +292,24 @@ function issueWeight(int $level): int
  */
 function weightedIssues(array $base, array $head): array
 {
-    $counts = static fn(array $issues): array => array_count_values(array_column($issues, 'error_level'));
-    $score = static fn(array $counts): int => array_sum(array_map(
-        static fn(int $level, int $n): int => issueWeight($level) * $n,
+    $counts = static fn(array $issues): array => array_count_values(array_map(issueBucket(...), $issues));
+    $weight = static fn(array $counts): int => array_sum(array_map(
+        static fn(string $bucket, int $n): int => bucketWeight($bucket) * $n,
         array_keys($counts),
         $counts,
     ));
     [$baseCounts, $headCounts] = [$counts($base), $counts($head)];
-    $levels = array_keys($baseCounts + $headCounts);
-    usort($levels, static fn(int $a, int $b): int => ($a < 0 ? 10 - $a : $a) <=> ($b < 0 ? 10 - $b : $b));
+    $rank = array_flip(ISSUE_BUCKETS);
+    $buckets = array_keys($baseCounts + $headCounts);
+    usort($buckets, static fn(string $a, string $b): int => ($rank[$a] ?? 99) <=> ($rank[$b] ?? 99));
     $byLevel = [];
-    foreach ($levels as $level) {
-        $label = match ($level) {
-            -1 => 'always',
-            -2 => 'feature',
-            default => "L{$level}",
-        };
-        $b = $baseCounts[$level] ?? 0;
-        $h = $headCounts[$level] ?? 0;
-        $byLevel[$label] = ['base' => $b, 'head' => $h, 'delta' => $h - $b];
+    foreach ($buckets as $bucket) {
+        $b = $baseCounts[$bucket] ?? 0;
+        $h = $headCounts[$bucket] ?? 0;
+        $byLevel[$bucket] = ['base' => $b, 'head' => $h, 'delta' => $h - $b];
     }
 
-    [$baseWeight, $headWeight] = [$score($baseCounts), $score($headCounts)];
+    [$baseWeight, $headWeight] = [$weight($baseCounts), $weight($headCounts)];
 
     return [
         'base' => $baseWeight,

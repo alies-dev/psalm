@@ -155,7 +155,7 @@ function levelDeltas(array $p): string
     $deltas = [];
     foreach ($p['weighted_issues']['by_level'] ?? [] as $label => $l) {
         if ($l['delta'] !== 0) {
-            $deltas[] = "{$label} " . fmtSigned($l['delta']);
+            $deltas[] = str_replace('_', ' ', $label) . ' ' . fmtSigned($l['delta']);
         }
     }
 
@@ -249,8 +249,8 @@ function renderReport(array $summary, ?string $runUrl): string
     }
 
     $out .= "\nWeighted issues = issues weighted by error level (levels 1–8 as is, always-errors 10, "
-        . "feature-specific 0). The corpus code is pinned, so a change means Psalm reports more, fewer or differently "
-        . "serious issues. Informational; a rise is not necessarily a regression.\n";
+        . "feature-specific and purity suggestions 0). The corpus code is pinned, so a change means Psalm reports "
+        . "more, fewer or differently serious issues. Informational; a rise is not necessarily a regression.\n";
 
     $out .= "\nMemory is Psalm's own peak figure (threads=1). Wall time is informational: base and head ran on the "
         . "same runner, expect ±10 % noise; \"re-run\" means a reversed second run was taken and the faster kept.\n";
