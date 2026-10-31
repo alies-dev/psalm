@@ -8,9 +8,9 @@ What v1 does not do: no cachegrind or instruction counts, no history of past run
 
 ```
 pull_request
-   plan      merge-base, composer.json changed?, corpus lint, job matrix
-   measure   one job per corpus job (laravel, symfony, orm-psl, phpunit-parser, small, drupal)
-   report    compare.php, job summary, artifact perf-report (fails on a regression)
+   plan      merge-base, composer.json changed?, job matrix
+   measure   one job per corpus job (laravel, symfony, orm-psl, phpunit-parser, small, drupal), never red itself
+   report    compare.php, job summary, artifact perf-report (the only step that fails, on a regression)
 
 perf-comment.yml (workflow_run, default branch) posts perf-report as the sticky PR comment
 ```
@@ -44,7 +44,7 @@ The first line of the report is the verdict, the head SHA and `N/M compared`.
 | timeout | base wall was less than 50 % of the timeout | ⚠️ |
 | any other crash | always | |
 
-⚠️ also for a wall time more than 20 % above base after the re-run, a missing or invalid result, and a harness or setup error (clone, install, normalisation). A base that crashed or timed out is "not comparable": listed, not counted. A memory crash is a log containing `Allowed memory size` or `Hard memory limit`.
+⚠️ also for a wall time more than 20 % above base after the re-run, a missing or invalid result (including a measure job that failed or timed out before writing results), and a harness or setup error (clone, install, normalisation). A base that crashed or timed out is "not comparable": listed, not counted. A memory crash is a log containing `Allowed memory size` or `Hard memory limit`.
 
 Timing is informational: both sides share a runner, but shared runners still show about ±10 % noise. Do not read a single wall delta as a regression; the re-run exists to avoid one noisy sample.
 
@@ -69,8 +69,6 @@ Issues are compared as a multiset of file, line, column, type, severity and mess
 | `error` | The harness failed (clone, install, launcher, normalisation); `reason` says why |
 
 ## Add or bump a project
-
-The pull request workflow lints `corpus.json` before measuring (every project in exactly one job, full 40 character SHA, timeout between 30 and 1800 seconds, config present, job under the 60 minute limit) and fails with the violation as message.
 
 1. Pick a release tag and resolve its commit:
 

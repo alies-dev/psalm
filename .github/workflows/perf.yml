@@ -38,11 +38,10 @@ jobs:
       contents: read
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
-      php_version: ${{ steps.plan.outputs.php_version }}
+      php_version: ${{ steps.php.outputs.version }}
       base_sha: ${{ steps.revisions.outputs.base_sha }}
       head_sha: ${{ steps.revisions.outputs.head_sha }}
       deps_changed: ${{ steps.revisions.outputs.deps_changed }}
-      composer_root_version: ${{ steps.revisions.outputs.composer_root_version }}
     steps:
       # The PR head itself, never the synthetic merge commit. Full history for the merge-base.
       - name: Checkout PR head
@@ -72,31 +71,18 @@ jobs:
         run: |
           base_sha=$(git merge-base "origin/$BASE_REF" "$HEAD_SHA")
           if git diff --quiet "$base_sha" "$HEAD_SHA" -- composer.json; then deps_changed=0; else deps_changed=1; fi
-          if [[ "$BASE_REF" =~ ^[0-9]+(\.[0-9]+)*\.x$ ]]; then root_version="${BASE_REF}-dev"; else root_version="dev-${BASE_REF}"; fi
           {
             echo "base_sha=$base_sha"
             echo "head_sha=$HEAD_SHA"
             echo "deps_changed=$deps_changed"
-            echo "composer_root_version=$root_version"
           } >> "$GITHUB_OUTPUT"
 
-      # Also validates the corpus: a violation fails the run here, with the message in the log and as annotation.
       - name: Plan jobs
         id: plan
-        env:
-          PHP_VERSION: ${{ steps.php.outputs.version }}
         run: |
-          plan="$RUNNER_TEMP/plan"
-          mkdir -p "$plan"
-          if ! php bin/perf/perf.php plan --corpus bin/perf/corpus.json > "$plan/plan.json" 2> "$plan/error.txt"; then
-            cat "$plan/error.txt" >&2
-            echo "::error title=Perf corpus::$(tr '\n' ' ' < "$plan/error.txt" | head -c 500)"
-            exit 1
-          fi
-          {
-            echo "matrix=$(jq -c '{include: .jobs}' "$plan/plan.json")"
-            echo "php_version=$PHP_VERSION"
-          } >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/plan"
+          php bin/perf/perf.php plan --corpus bin/perf/corpus.json > "$RUNNER_TEMP/plan/plan.json"
+          echo "matrix=$(jq -c '{include: .jobs}' "$RUNNER_TEMP/plan/plan.json")" >> "$GITHUB_OUTPUT"
 
       - name: Upload plan
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -110,13 +96,15 @@ jobs:
     needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.timeout_minutes }}
+    # Setup failures and timeouts must not turn the run red: `report` shows a job without results as a warning.
+    continue-on-error: true
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
-      COMPOSER_ROOT_VERSION: ${{ needs.plan.outputs.composer_root_version }}
+      COMPOSER_ROOT_VERSION: dev-master
     steps:
       - name: Checkout harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -187,7 +175,7 @@ jobs:
   report:
     name: Compare and report
     needs: [plan, measure]
-    # Also after failed measure jobs: their missing results are reported as warnings.
+    # Also when measure jobs lost their results: reported as warnings.
     if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
