@@ -1,0 +1,229 @@
+name: Perf
+
+# Runs Psalm on a pinned corpus of real projects, merge-base (base) vs PR head, on the same runner, and reports peak
+# memory, wall time and added or removed issues. See bin/perf/README.md.
+#
+# Trust model: everything here runs PR code with a read-only token, no secrets and no environment. The sticky PR
+# comment is posted by perf-comment.yml (workflow_run, default branch), which treats the `perf-report` artifact as
+# untrusted data.
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+
+permissions: {}
+
+concurrency:
+  group: perf-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  PERF_PHP_EXTENSIONS: intl, bcmath, gmp, mbstring, pcntl, posix, sodium, zip, xml, dom, simplexml, tokenizer, opcache
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    name: Plan
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      php_version: ${{ steps.plan.outputs.php_version }}
+      base_sha: ${{ steps.revisions.outputs.base_sha }}
+      head_sha: ${{ steps.revisions.outputs.head_sha }}
+      deps_changed: ${{ steps.revisions.outputs.deps_changed }}
+    steps:
+      # The PR head itself, never the synthetic merge commit. Full history for the merge-base.
+      - name: Checkout PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve revisions
+        id: revisions
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          base_sha=$(git merge-base "origin/$BASE_REF" "$HEAD_SHA")
+          if git diff --quiet "$base_sha" "$HEAD_SHA" -- composer.json; then deps_changed=0; else deps_changed=1; fi
+          {
+            echo "base_sha=$base_sha"
+            echo "head_sha=$HEAD_SHA"
+            echo "deps_changed=$deps_changed"
+          } >> "$GITHUB_OUTPUT"
+
+      # The corpus is YAML; everything downstream reads this JSON conversion. plan.php runs on the runner's own PHP.
+      - name: Plan jobs
+        id: plan
+        run: |
+          mkdir -p "$RUNNER_TEMP/plan"
+          yq -o=json bin/perf/corpus.yml > "$RUNNER_TEMP/corpus.json"
+          php bin/perf/perf.php plan --corpus "$RUNNER_TEMP/corpus.json" > "$RUNNER_TEMP/plan/plan.json"
+          echo "matrix=$(jq -c '{include: .jobs}' "$RUNNER_TEMP/plan/plan.json")" >> "$GITHUB_OUTPUT"
+          echo "php_version=$(jq -r '.php' "$RUNNER_TEMP/corpus.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload plan
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-plan
+          path: ${{ runner.temp }}/plan/plan.json
+          retention-days: 14
+
+  measure:
+    name: Measure ${{ matrix.job }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    # Setup failures and timeouts must not turn the run red: `report` shows a job without results as a warning.
+    continue-on-error: true
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      COMPOSER_ROOT_VERSION: dev-master
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ needs.plan.outputs.head_sha }}
+          path: harness
+          sparse-checkout: bin/perf
+          persist-credentials: false
+
+      - name: Checkout Psalm (base)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ needs.plan.outputs.base_sha }}
+          path: psalm-base
+          persist-credentials: false
+
+      - name: Checkout Psalm (head)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ needs.plan.outputs.head_sha }}
+          path: psalm-head
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: ${{ needs.plan.outputs.php_version }}
+          ini-file: production
+          tools: composer:v2
+          coverage: none
+          extensions: ${{ env.PERF_PHP_EXTENSIONS }}
+        env:
+          fail-fast: true
+
+      # Both revisions run on the same dependency versions, so Packagist drift never shows up as a difference.
+      # Only a PR that changes composer.json gets its own resolution.
+      - name: Install Psalm dependencies
+        env:
+          DEPS_CHANGED: ${{ needs.plan.outputs.deps_changed }}
+        run: |
+          composer update --working-dir=psalm-base --no-dev --no-scripts --no-interaction --no-progress
+          if [ "$DEPS_CHANGED" = 1 ]; then
+            composer update --working-dir=psalm-head --no-dev --no-scripts --no-interaction --no-progress
+          else
+            cp psalm-base/composer.lock psalm-head/composer.lock
+            composer install --working-dir=psalm-head --no-dev --no-scripts --no-interaction --no-progress
+          fi
+
+      - name: Measure
+        env:
+          JOB: ${{ matrix.job }}
+          BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.plan.outputs.head_sha }}
+        run: |
+          harness/bin/perf/run-shard.sh --job "$JOB" \
+            --base "$GITHUB_WORKSPACE/psalm-base" --head "$GITHUB_WORKSPACE/psalm-head" \
+            --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" --out "$RUNNER_TEMP/out"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-${{ matrix.job }}
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+          if-no-files-found: warn
+
+  report:
+    name: Compare and report
+    needs: [plan, measure]
+    # Also when measure jobs lost their results: reported as warnings.
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ needs.plan.outputs.head_sha }}
+          sparse-checkout: bin/perf
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: ${{ needs.plan.outputs.php_version }}
+          coverage: none
+        env:
+          fail-fast: true
+
+      # One directory per artifact: perf-plan/plan.json and perf-<job>/{base,head}/<project>.json.
+      - name: Download plan and results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: perf-*
+          path: ${{ runner.temp }}/in
+
+      - name: Compare
+        env:
+          BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.plan.outputs.head_sha }}
+          DEPS_CHANGED: ${{ needs.plan.outputs.deps_changed }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          report="$RUNNER_TEMP/report"
+          mkdir -p "$report"
+          php bin/perf/perf.php compare --plan "$RUNNER_TEMP/in/perf-plan/plan.json" --in "$RUNNER_TEMP/in" \
+            --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" --deps-changed "$DEPS_CHANGED" \
+            --out-md "$report/report.md" --out-json "$report/summary.json" --run-url "$RUN_URL"
+          cat "$report/report.md" >> "$GITHUB_STEP_SUMMARY"
+          # Read by perf-comment.yml as untrusted data and cross-checked against GitHub's own metadata.
+          printf '%s' "$PR_NUMBER" > "$report/pr_number"
+          printf '%s' "$HEAD_SHA" > "$report/head_sha"
+
+      - name: Upload report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-report
+          path: ${{ runner.temp }}/report
+          retention-days: 14
+
+      - name: Apply verdict
+        run: |
+          verdict=$(jq -r '.verdict' "$RUNNER_TEMP/report/summary.json")
+          if [ "$verdict" = fail ]; then
+            echo "::error title=Perf::Regression detected, see the job summary"
+            exit 1
+          fi
