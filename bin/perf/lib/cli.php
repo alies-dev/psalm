@@ -2,17 +2,23 @@
 
 declare(strict_types=1);
 
+const USAGE = <<<'TXT'
+usage: php perf.php plan --corpus <file>
+       php perf.php normalize <report.json> <project root> <out.issues.json>
+       php perf.php compare --plan <plan.json> --in <dir> --base-sha <sha> --head-sha <sha> --deps-changed 0|1
+                            --out-md <file> --out-json <file> [--run-url <url>]
+
+TXT;
+
 /**
- * Parses `--name value`, `--name=value` and bare `--flag` arguments. Unlike getopt() it also works after a
- * leading subcommand word, which is not an option and would stop getopt().
+ * Parses `--name value` and `--name=value` arguments (getopt() stops at the leading subcommand word).
  *
  * @param list<string> $args
- * @param list<string> $valued options that take a value
- * @param list<string> $flags options without a value
- * @return array<string, string|true>
+ * @param list<string> $names accepted option names
+ * @return array<string, string>
  * @throws RuntimeException on unknown options, missing values or stray arguments
  */
-function parseOptions(array $args, array $valued, array $flags = []): array
+function parseOptions(array $args, array $names): array
 {
     $options = [];
     for ($i = 0, $n = count($args); $i < $n; $i++) {
@@ -20,40 +26,31 @@ function parseOptions(array $args, array $valued, array $flags = []): array
             throw new RuntimeException("unexpected argument '{$args[$i]}'");
         }
 
-        $name = $m[1];
-        if (in_array($name, $flags, true) && !isset($m[2])) {
-            $options[$name] = true;
-            continue;
-        }
-
-        if (!in_array($name, $valued, true)) {
-            throw new RuntimeException("unknown option --{$name}");
+        if (!in_array($m[1], $names, true)) {
+            throw new RuntimeException("unknown option --{$m[1]}");
         }
 
         if (isset($m[2])) {
-            $options[$name] = $m[2];
-            continue;
+            $options[$m[1]] = $m[2];
+        } elseif (isset($args[$i + 1])) {
+            $options[$m[1]] = $args[++$i];
+        } else {
+            throw new RuntimeException("option --{$m[1]} needs a value");
         }
-
-        if (!isset($args[$i + 1])) {
-            throw new RuntimeException("option --{$name} needs a value");
-        }
-
-        $options[$name] = $args[++$i];
     }
 
     return $options;
 }
 
 /**
- * @param array<string, string|true> $options
+ * @param array<string, string> $options
  * @param list<string> $names
  * @throws RuntimeException
  */
 function requireOptions(array $options, array $names): void
 {
     foreach ($names as $name) {
-        if (!isset($options[$name]) || $options[$name] === true || $options[$name] === '') {
+        if (($options[$name] ?? '') === '') {
             throw new RuntimeException("missing --{$name}");
         }
     }
@@ -87,32 +84,12 @@ function readJsonFile(string $path): array
  * @param array<mixed> $data
  * @throws RuntimeException
  */
-function writeJsonFile(string $path, array $data): void
+function writeJsonFile(string $path, array $data, bool $pretty = true): void
 {
-    $dir = dirname($path);
-    if (!is_dir($dir) && !mkdir($dir, 0777, true) && !is_dir($dir)) {
-        throw new RuntimeException("cannot create directory {$dir}");
-    }
-
-    $flags = JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR;
+    $flags = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
+        | ($pretty ? JSON_PRETTY_PRINT : 0);
     $json = json_encode($data, $flags);
-    if (file_put_contents($path, $json . "\n") === false) {
+    if ($json === false || file_put_contents($path, $json . "\n") === false) {
         throw new RuntimeException("cannot write {$path}");
     }
-}
-
-function isSha1(mixed $value): bool
-{
-    return is_string($value) && preg_match('/^[0-9a-f]{40}$/', $value) === 1;
-}
-
-function isSha256(mixed $value): bool
-{
-    return is_string($value) && preg_match('/^[0-9a-f]{64}$/', $value) === 1;
-}
-
-/** Project and shard names end up in file names, CSV lists and matrix entries. */
-function isSafeName(mixed $value): bool
-{
-    return is_string($value) && preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]*$/', $value) === 1;
 }

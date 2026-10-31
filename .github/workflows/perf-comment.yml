@@ -74,21 +74,16 @@ jobs:
           [ "$pr_repo" = "$RUN_HEAD_REPO" ] || skip "PR #${pr_number} head repository does not match the triggering run."
 
           verdict=$(jq -r '.verdict // empty' "$dir/summary.json" 2>/dev/null || true)
-          case "$verdict" in pass | inconclusive | fail) ;; *) verdict=unknown ;; esac
+          case "$verdict" in pass | warn | fail) ;; *) verdict=unknown ;; esac
 
           # Marker and mention neutralisation (zero width space after every @) are applied here; the artifact never
-          # supplies the marker. GitHub limits comments to 65536 characters.
+          # supplies the marker. GitHub limits comments to 65536 characters; a larger report is replaced by a constant
+          # text.
           marker='<!-- psalm-perf-report -->'
           zwsp=$(printf '\342\200\213')
           comment="$RUNNER_TEMP/comment.md"
-          limit=60000
-          neutralised() { { echo "$marker"; iconv -f UTF-8 -t UTF-8 -c < "$1" | sed "s/@/@${zwsp}/g"; } > "$comment"; }
-
-          neutralised "$dir/report.md"
-          if [ "$(wc -c < "$comment")" -gt "$limit" ]; then
-            if [ -f "$dir/report-short.md" ]; then neutralised "$dir/report-short.md"; else : > "$comment"; fi
-          fi
-          if [ "$(wc -c < "$comment")" -gt "$limit" ] || [ ! -s "$comment" ]; then
+          { echo "$marker"; iconv -f UTF-8 -t UTF-8 -c < "$dir/report.md" | sed "s/@/@${zwsp}/g"; } > "$comment"
+          if [ "$(wc -c < "$comment")" -gt 60000 ]; then
             {
               echo "$marker"
               # shellcheck disable=SC2016

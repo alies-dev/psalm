@@ -2,558 +2,205 @@
 
 declare(strict_types=1);
 
-const SHOW_PCT = 0.5;
-const LIST_CAP = 10;
+const REPORT_MAX_BYTES = 60_000;
 const DETAILS_BUDGET_BYTES = 40_000;
-const CLIP_CHARS = 300;
 const LOG_TAIL_LINES = 15;
-const OUTCOME_ICONS = ['regression' => '❌', 'inconclusive' => '⚠️', 'not_comparable' => '➖', 'compared' => ''];
+const LOG_TAIL_BYTES = 2_000;
+const VERDICT_ICONS = ['pass' => '✅', 'warn' => '⚠️', 'fail' => '❌', 'skip' => '➖'];
 
-function fmtPct(float $pct): string
+function fmtPct(?float $pct): string
 {
-    return str_replace('-', '−', sprintf('%+.2f %%', $pct));
+    return $pct === null ? 'n/a' : str_replace('-', '−', sprintf('%+.1f %%', $pct));
 }
 
-/** Δ shown only when |Δ| >= 0.5 %, otherwise "≈". */
-function fmtDelta(?float $pct): string
+function inlineCode(string $text): string
 {
-    if ($pct === null) {
-        return 'n/a';
-    }
-
-    return abs($pct) >= SHOW_PCT ? fmtPct($pct) : '≈';
-}
-
-function fmtIr(int|float $ir): string
-{
-    return number_format($ir / 1e9, 2) . 'G';
-}
-
-function fmtSeconds(float $s): string
-{
-    return $s < 100 ? sprintf('%.1fs', $s) : sprintf('%.0fs', $s);
-}
-
-function shortSha(?string $sha): string
-{
-    return $sha === null || $sha === '' ? 'n/a' : substr($sha, 0, 12);
-}
-
-function shortCpu(?string $cpu): string
-{
-    if ($cpu === null) {
-        return '?';
-    }
-
-    $name = (string) preg_replace('/\(R\)|\(TM\)|\bCPU\b|\bProcessor\b|\b\d+-Core\b|@.*$/i', '', $cpu);
-
-    return trim((string) preg_replace('/\s+/', ' ', $name));
-}
-
-function clip(string $text, int $max = CLIP_CHARS): string
-{
-    return mb_strimwidth((string) preg_replace('/\s+/u', ' ', $text), 0, $max, '…');
-}
-
-/** Markdown inline code of arbitrary text: one line, clipped, no backticks. */
-function code(string $text, int $max = CLIP_CHARS): string
-{
-    return '`' . str_replace('`', "'", clip($text, $max)) . '`';
+    return '`' . str_replace('`', "'", $text) . '`';
 }
 
 function tableCell(string $text): string
 {
-    return str_replace('|', '\\|', clip($text));
-}
-
-/**
- * @param array<string, mixed>|null $r
- */
-function wallOf(?array $r): ?float
-{
-    $v = $r['metrics']['wall_t1'] ?? $r['elapsed_analysis'] ?? null;
-
-    return is_numeric($v) ? (float) $v : null;
+    return str_replace(['|', "\n"], ['\\|', ' '], $text);
 }
 
 /**
  * @param array<string, mixed> $p
  */
-function failureCell(array $p): string
+function isOkPair(array $p): bool
 {
-    foreach (['head', 'base'] as $side) {
-        $status = $p["status_{$side}"];
-        if ($status !== null && $status !== 'ok') {
-            return ($p['outcome'] === 'regression' ? '❌ ' : '') . "{$side} {$status}";
-        }
+    return $p['base']['status'] === 'ok' && $p['head']['status'] === 'ok';
+}
+
+/**
+ * "base → head (Δ)" of a metric, "–" when one side has no measurement.
+ *
+ * @param array<string, mixed> $p
+ */
+function metricCell(array $p, string $key, string $fmt, ?float $delta): string
+{
+    if (!isOkPair($p)) {
+        return '–';
     }
 
-    return '–';
+    return sprintf("{$fmt} → {$fmt} (%s)", $p['base'][$key], $p['head'][$key], fmtPct($delta));
 }
 
 /**
  * @param array<string, mixed> $p
  */
-function deltaCell(array $p, string $metric, callable $fmt, float $limit): string
+function wallCell(array $p): string
 {
-    $m = $p['metrics'][$metric] ?? null;
-    if ($m === null) {
-        return $metric === 'ir' && $p['mode'] === 'cachegrind' ? failureCell($p) : '–';
-    }
+    $cell = metricCell($p, 'wall', '%.1fs', $p['wall_delta']);
 
-    $cell = fmtDelta($m['delta_pct']);
-    if ($cell !== '≈') {
-        $cell .= sprintf(' (%s → %s)', $fmt($m['base']), $fmt($m['head']));
-    }
-
-    // Red only when the evaluated outcome is a regression: the deltas of an incomparable or inconclusive project
-    // (different environment fingerprint, unmatched shared libraries, ...) stay informational.
-    if ($m['delta_pct'] !== null && $m['delta_pct'] > $limit) {
-        if ($metric === 'ir' && $p['env_differs'] !== []) {
-            return $cell . ' ⚠️';
-        }
-
-        return $cell . ($p['outcome'] === 'regression' ? ' ❌' : '');
-    }
-
-    return $cell;
+    return $cell !== '–' && max($p['base']['runs'], $p['head']['runs']) > 1 ? $cell . ' re-run' : $cell;
 }
 
 /**
  * @param array<string, mixed> $p
  */
-function wallCell(array $p, bool $headOnly): string
+function issuesCell(array $p): string
 {
-    $show = static function (?array $r): string {
-        if ($r === null) {
-            return '–';
-        }
+    $i = $p['issues'] ?? null;
 
-        $wall = wallOf($r);
+    return $i === null ? '–' : sprintf('%d → %d (+%d −%d)', $i['base'], $i['head'], $i['added'], $i['removed']);
+}
 
-        return $r['status'] === 'ok' && $wall !== null ? fmtSeconds($wall) : $r['status'];
-    };
-    $head = $show($p['head']);
-    $headCpu = shortCpu(cpuOf($p['head'] ?? []));
-    if ($headOnly) {
-        return "{$head} ({$headCpu})";
-    }
-
-    return sprintf('%s → %s (%s / %s)', $show($p['base']), $head, shortCpu(cpuOf($p['base'] ?? [])), $headCpu);
+/**
+ * @param array<string, mixed> $summary
+ */
+function comparedCount(array $summary): int
+{
+    return count(array_filter(
+        $summary['projects'],
+        static fn(array $p): bool => $p['base']['status'] === 'ok'
+            && in_array($p['head']['status'], ['ok', 'crash', 'timeout'], true),
+    ));
 }
 
 /**
  * @param array<string, mixed> $p
  */
-function issuesCell(array $p, bool $headOnly): string
+function detailsFor(string $name, array $p): string
 {
-    $i = $p['issues'];
-    if ($i === null) {
-        $count = $p['head']['issue_count'] ?? null;
-
-        return $headOnly && $count !== null ? (string) $count : '–';
-    }
-
-    $change = sprintf('+%d −%d ~%d', $i['added'], $i['removed'], $i['changed']);
-
-    return sprintf('%d → %d (%s)', $i['base'], $i['head'], $change);
-}
-
-/**
- * @param array<string, mixed> $p
- */
-function noteCell(array $p): string
-{
-    $labels = ['regression' => 'regression', 'inconclusive' => 'inconclusive', 'not_comparable' => 'not comparable'];
     $parts = [];
-    if (isset($labels[$p['outcome']])) {
-        $parts[] = $labels[$p['outcome']] . ': ' . implode('; ', $p['reasons']);
-    }
-
-    if ($p['env_differs'] !== []) {
-        $parts[] = 'env differs: libs ' . implode(', ', array_slice($p['env_differs'], 0, 5))
-            . (count($p['env_differs']) > 5 ? ', …' : '');
-    }
-
-    return implode('; ', [...$parts, ...$p['near'], ...$p['warnings']]);
-}
-
-/**
- * @param array<string, array<string, mixed>> $projects
- */
-function renderTable(array $projects, bool $headOnly): string
-{
-    $header = $headOnly
-        ? ['Project', 'Ir', 'MB', 'wall t1 (CPU)', 'issues', 'Note']
-        : [
-            'Project',
-            'Ir Δ',
-            'MB Δ',
-            'wall t1 base → head (CPU base / CPU head)',
-            'issues base → head (+added −removed ~changed)',
-            'Note',
-        ];
-    $out = '| ' . implode(' | ', $header) . " |\n|" . str_repeat('---|', count($header)) . "\n";
-
-    foreach ($projects as $name => $p) {
-        $icon = OUTCOME_ICONS[$p['outcome']];
-        if ($headOnly) {
-            $ir = metricOf($p['head'] ?? [], 'ir');
-            $mb = metricOf($p['head'] ?? [], 'psalm_mb');
-            $cells = [
-                $ir === null ? ($p['mode'] === 'cachegrind' ? failureCell($p) : '–') : fmtIr($ir),
-                $mb === null ? '–' : sprintf('%.0f', $mb),
-            ];
-        } else {
-            $cells = [
-                deltaCell($p, 'ir', fmtIr(...), IR_REGRESSION_PCT),
-                deltaCell($p, 'psalm_mb', static fn(float|int $mb): string => sprintf('%.0f', $mb), MB_REGRESSION_PCT),
-            ];
+    $i = $p['issues'] ?? null;
+    if ($i !== null && ($i['added'] > 0 || $i['removed'] > 0)) {
+        $rows = ["| Issue type | added | removed |", '|---|---|---|'];
+        foreach ($i['types'] as $type => $n) {
+            $rows[] = '| ' . tableCell($type) . " | {$n['added']} | {$n['removed']} |";
         }
 
-        $row = [trim("{$icon} {$name}"), ...$cells, wallCell($p, $headOnly), issuesCell($p, $headOnly), noteCell($p)];
-        $out .= '| ' . implode(' | ', array_map(tableCell(...), $row)) . " |\n";
+        $parts[] = implode("\n", $rows);
+
+        foreach (['added', 'removed'] as $kind) {
+            if ($i["{$kind}_examples"] !== []) {
+                $more = $i[$kind] - count($i["{$kind}_examples"]);
+                $items = array_map(static fn(string $e): string => '- ' . inlineCode($e), $i["{$kind}_examples"]);
+                $parts[] = "**" . ucfirst($kind) . "** ({$i[$kind]})\n\n" . implode("\n", $items)
+                    . ($more > 0 ? "\n- … and {$more} more" : '');
+            }
+        }
     }
 
-    return $out;
+    foreach (['head', 'base'] as $side) {
+        if (($p[$side]['log_tail'] ?? null) !== null && $p[$side]['status'] !== 'ok') {
+            $lines = array_slice(explode("\n", (string) $p[$side]['log_tail']), -LOG_TAIL_LINES);
+            $log = str_replace('```', "'''", substr(implode("\n", $lines), -LOG_TAIL_BYTES));
+            $parts[] = "**{$side} log tail**\n\n```text\n{$log}\n```";
+        }
+    }
+
+    if ($parts === []) {
+        return '';
+    }
+
+    $summary = sprintf('%s %s', VERDICT_ICONS[$p['verdict']], $name);
+
+    return "<details><summary>{$summary}</summary>\n\n" . implode("\n\n", $parts) . "\n\n</details>\n";
 }
 
 /**
- * @param array<string, int> $counts
+ * @param array<string, mixed> $summary result of compareAll() plus base_sha and head_sha
  */
-function renderHeaderLine(string $verdict, bool $headOnly, string $headSha, array $counts): string
+function renderReport(array $summary, ?string $runUrl): string
 {
-    $label = match (true) {
-        $headOnly && $verdict === 'pass' => '✅ **Head measured**',
-        $headOnly => '⚠️ **Head measurement incomplete**',
-        $verdict === 'fail' => '❌ **Regression**',
-        $verdict === 'inconclusive' => '⚠️ **Inconclusive**',
-        default => '✅ **No regression**',
-    };
-
-    $line = sprintf(
-        '%s: head `%s`, %d/%d %s',
-        $label,
-        shortSha($headSha),
-        $counts['compared'] + $counts['regression'],
-        $counts['total'],
-        $headOnly ? 'measured' : 'compared',
-    );
-    if ($counts['regression'] > 0 && !$headOnly) {
-        $line .= sprintf(', %d regressed', $counts['regression']);
-    }
-
-    return $line . sprintf(', %d not comparable, %d inconclusive', $counts['not_comparable'], $counts['inconclusive']);
-}
-
-/**
- * @param array<string, mixed> $p
- */
-function renderIssueDetails(string $name, array $p): string
-{
-    $i = $p['issues'];
-    $d = $p['diff'];
+    $total = count($summary['projects']);
     $out = sprintf(
-        "<details><summary><b>%s</b>: issues %d → %d (+%d −%d ~%d)</summary>\n\n",
-        htmlspecialchars($name),
-        $i['base'],
-        $i['head'],
-        $i['added'],
-        $i['removed'],
-        $i['changed'],
+        "## %s Perf: %s, head `%s`, %d/%d compared\n\n",
+        VERDICT_ICONS[$summary['verdict']],
+        $summary['verdict'],
+        substr($summary['head_sha'], 0, 12),
+        comparedCount($summary),
+        $total,
     );
-
-    $out .= "| Type | added | removed | changed |\n|---|---|---|---|\n";
-    foreach ($i['by_type'] as $type => $n) {
-        $out .= sprintf("| %s | %d | %d | %d |\n", tableCell($type), $n['added'], $n['removed'], $n['changed']);
-    }
-
-    $out .= "\n";
-
-    foreach (['added' => 'Added', 'removed' => 'Removed', 'changed' => 'Changed'] as $key => $label) {
-        if ($d[$key] === []) {
-            continue;
-        }
-
-        $out .= sprintf("**%s** (%d)\n\n", $label, count($d[$key]));
-        foreach (array_slice($d[$key], 0, LIST_CAP) as $e) {
-            $out .= $key === 'changed' ? renderChanged($e) : renderEntry($e);
-        }
-
-        if (count($d[$key]) > LIST_CAP) {
-            $out .= sprintf("- … and %d more\n", count($d[$key]) - LIST_CAP);
-        }
-
-        $out .= "\n";
-    }
-
-    return $out . "</details>\n";
-}
-
-/**
- * @param array{type: string, severity: string, loc: string, message: string} $e
- */
-function renderEntry(array $e): string
-{
-    return sprintf("- **%s** (%s) %s %s\n", $e['type'], $e['severity'], code($e['loc']), code($e['message']));
-}
-
-/**
- * @param array{type: string, loc: string, old: string, new: string, old_severity: string, new_severity: string} $e
- */
-function renderChanged(array $e): string
-{
-    $out = sprintf("- **%s** %s\n", $e['type'], code($e['loc']));
-    if ($e['old_severity'] !== $e['new_severity']) {
-        $out .= sprintf("  - severity: %s → %s\n", $e['old_severity'], $e['new_severity']);
-    }
-
-    if ($e['old'] !== $e['new']) {
-        $out .= sprintf("  - was: %s\n  - now: %s\n", code($e['old']), code($e['new']));
-    }
-
-    return $out;
-}
-
-/**
- * Log tail of a run that did not finish ok.
- *
- * @param array<string, mixed> $result
- */
-function renderLogTail(string $name, string $side, array $result): string
-{
-    $lines = array_slice(explode("\n", trim((string) ($result['log_tail'] ?? ''))), -LOG_TAIL_LINES);
-    $clipLine = static fn(string $l): string => mb_strimwidth($l, 0, 200, '…');
-    $text = str_replace('```', "'''", implode("\n", array_map($clipLine, $lines)));
-    if (trim($text) === '') {
-        $text = '(no log) ' . trim((string) ($result['reason'] ?? ''));
-    }
-
-    return sprintf(
-        "<details><summary><b>%s</b> %s: %s</summary>\n\n```\n%s\n```\n</details>\n",
-        htmlspecialchars($name),
-        $side,
-        htmlspecialchars((string) $result['status']),
-        $text,
-    );
-}
-
-/**
- * Issue diffs and log tails, capped at DETAILS_BUDGET_BYTES in total.
- *
- * @param array<string, array<string, mixed>> $projects
- */
-function renderDetails(array $projects): string
-{
-    $blocks = ['issues' => '', 'logs' => ''];
-    $used = 0;
-    $skipped = 0;
-    $add = static function (string $section, string $block) use (&$blocks, &$used, &$skipped): void {
-        if ($used + strlen($block) > DETAILS_BUDGET_BYTES) {
-            $skipped++;
-
-            return;
-        }
-
-        $used += strlen($block);
-        $blocks[$section] .= $block . "\n";
-    };
-
-    foreach ($projects as $name => $p) {
-        foreach (['base', 'head'] as $side) {
-            $r = $p[$side];
-            if ($r !== null && $r['status'] !== 'ok' && !($side === 'base' && $p['outcome'] !== 'not_comparable')) {
-                $add('logs', renderLogTail($name, $side, $r));
-            }
-        }
-
-        if ($p['issues'] !== null && $p['issues']['added'] + $p['issues']['removed'] + $p['issues']['changed'] > 0) {
-            $add('issues', renderIssueDetails($name, $p));
-        }
-    }
-
-    $md = '';
-    if ($blocks['logs'] !== '') {
-        $md .= "\n### Runs that did not finish\n\n" . $blocks['logs'];
-    }
-
-    if ($blocks['issues'] !== '') {
-        $md .= "\n### Issue changes (threads=1)\n\n" . $blocks['issues'];
-    }
-
-    if ($skipped > 0) {
-        $md .= sprintf("\n_%d detail block(s) omitted: %d byte cap._\n", $skipped, DETAILS_BUDGET_BYTES);
-    }
-
-    return $md;
-}
-
-/**
- * @param array<string, mixed> $change one entry of resolve-lock's "changed"
- */
-function describePackageChange(array $change): string
-{
-    $name = (string) ($change['name'] ?? '?');
-    $from = $change['from'] ?? null;
-    $to = $change['to'] ?? null;
-    $refs = static fn(): string => shortSha($change['from_ref'] ?? null)
-        . ' → ' . shortSha($change['to_ref'] ?? null);
-
-    return match (true) {
-        $from === null => "{$name} added ({$to})",
-        $to === null => "{$name} removed ({$from})",
-        $from === $to => "upstream re-tagged {$name} {$from} ({$refs()})",
-        default => "{$name} {$from} → {$to}",
-    };
-}
-
-/**
- * @param array<string, mixed> $expected
- * @param array<string, mixed> $locksInfo
- * @param array<string, array<string, mixed>> $projects
- */
-function renderFooter(array $expected, array $locksInfo, array $projects, bool $headOnly, ?string $runUrl): string
-{
-    $lines = [];
-    $event = (string) ($expected['event'] ?? '?');
-    $branch = (string) ($expected['branch'] ?? '?');
-    if ($headOnly) {
-        $lines[] = sprintf(
-            '%s on `%s`, head `%s`, no base comparison',
-            $event,
-            $branch,
-            shortSha($expected['head_sha'] ?? null),
+    $out .= "| Project | Psalm MB | Wall | Issues | Status |\n|---|---|---|---|---|\n";
+    foreach ($summary['projects'] as $name => $p) {
+        $out .= sprintf(
+            "| %s | %s | %s | %s | %s |\n",
+            $name,
+            metricCell($p, 'psalm_mb', '%.0f', $p['mb_delta']),
+            wallCell($p),
+            issuesCell($p),
+            trim(VERDICT_ICONS[$p['verdict']] . ' ' . tableCell(implode('; ', $p['notes']))),
         );
-    } else {
-        $used = (string) ($expected['base_sha_used'] ?? '');
-        $mergeBase = (string) ($expected['base_sha'] ?? '');
-        $base = sprintf('base: merge-base `%s` of `%s`', shortSha($mergeBase), $branch);
-        if ($used !== '' && $used !== $mergeBase) {
-            $base .= sprintf(', results from ancestor `%s`', shortSha($used));
-        }
-
-        $lines[] = $base;
     }
 
-    $source = static fn(string $rev): string => (string) (
-        $locksInfo[$rev]['lock_source'] ?? $expected['locks'][$rev]['source'] ?? 'n/a'
-    );
-    $lines[] = $headOnly
-        ? 'lock: ' . $source('head')
-        : sprintf('locks: base %s, head %s', $source('base'), $source('head'));
+    $out .= "\nMemory is Psalm's own peak figure (threads=1). Wall time is informational: base and head ran on the "
+        . "same runner, expect ±10 % noise; \"re-run\" means a reversed second run was taken and the faster kept.\n";
 
-    $changes = $locksInfo['head']['changed'] ?? [];
-    if (!$headOnly && is_array($changes) && $changes !== []) {
-        $described = array_map(describePackageChange(...), array_slice($changes, 0, LIST_CAP));
-        $more = count($changes) > LIST_CAP ? sprintf(' (+%d more)', count($changes) - LIST_CAP) : '';
-        $lines[] = 'package differences, head lock vs base lock: ' . implode('; ', $described) . $more;
+    $out .= appendDetails($summary, strlen($out));
+
+    $footer = "\nBase (merge-base): `" . substr($summary['base_sha'], 0, 12) . '`';
+    $footer .= $summary['deps_changed']
+        ? ". composer.json changed in this PR, so head dependencies were re-resolved; "
+            . "memory and time deltas are informational.\n"
+        : ".\n";
+    if ($runUrl !== null) {
+        $footer .= "[Workflow run]({$runUrl})\n";
     }
 
-    $env = [];
-    foreach ($projects as $p) {
-        $env = $p['head']['env'] ?? $p['base']['env'] ?? [];
-        if ($env !== []) {
-            break;
-        }
-    }
-
-    $tools = 'PHP ' . ($env['php'] ?? 'n/a');
-    if (!empty($env['valgrind'])) {
-        $tools .= ', valgrind ' . $env['valgrind'];
-    }
-
-    $lines[] = $tools;
-    if ($runUrl !== null && $runUrl !== '') {
-        $lines[] = sprintf('[workflow run](%s)', $runUrl);
-    }
-
-    $escaped = array_map(static fn(string $l): string => htmlspecialchars($l, ENT_NOQUOTES), $lines);
-
-    return '<sub>' . implode('<br>', $escaped) . "</sub>\n";
+    return $out . $footer;
 }
 
 /**
- * @param array<string, array<string, mixed>> $projects
- * @return array<string, int>
+ * Project details in table order while they fit the budgets; the table itself is never dropped.
+ *
+ * @param array<string, mixed> $summary
  */
-function countOutcomes(array $projects): array
+function appendDetails(array $summary, int $usedBytes): string
 {
-    $counts = [
-        'total' => count($projects),
-        'compared' => 0,
-        'regression' => 0,
-        'not_comparable' => 0,
-        'inconclusive' => 0,
-    ];
-    foreach ($projects as $p) {
-        $counts[$p['outcome']]++;
-    }
-
-    return $counts;
-}
-
-/**
- * @param array<string, int> $counts
- */
-function verdictOf(array $counts): string
-{
-    return match (true) {
-        $counts['regression'] > 0 => 'fail',
-        $counts['inconclusive'] > 0 => 'inconclusive',
-        default => 'pass',
-    };
-}
-
-/**
- * @param array<string, array<string, mixed>> $projects
- * @return list<string>
- */
-function verdictReasons(array $projects): array
-{
-    $reasons = [];
-    foreach (['regression', 'inconclusive'] as $outcome) {
-        foreach ($projects as $name => $p) {
-            if ($p['outcome'] === $outcome) {
-                array_push($reasons, ...array_map(static fn(string $r): string => "{$name}: {$r}", $p['reasons']));
-            }
+    $details = '';
+    $omitted = 0;
+    foreach ($summary['projects'] as $name => $p) {
+        $block = detailsFor($name, $p);
+        $fits = strlen($details) + strlen($block) <= DETAILS_BUDGET_BYTES
+            && $usedBytes + strlen($details) + strlen($block) <= REPORT_MAX_BYTES - 1_000;
+        if ($block === '' || $fits) {
+            $details .= $block;
+        } else {
+            $omitted++;
         }
     }
 
-    return $reasons;
+    $note = $omitted > 0 ? "\n{$omitted} detail block(s) omitted for size; see summary.json in the artifact.\n" : '';
+
+    return ($details === '' ? '' : "\n" . $details) . $note;
 }
 
 /**
- * @param array<string, array<string, mixed>> $projects
- * @param array<string, int> $counts
- * @param list<string> $reasons
- * @return array<string, mixed>
+ * @param list<string> $args
  */
-function buildSummary(array $expected, array $projects, array $counts, string $verdict, array $reasons): array
+function runCompare(array $args): int
 {
-    $entries = [];
-    foreach ($projects as $name => $p) {
-        $entries[$name] = [
-            'outcome' => $p['outcome'],
-            'base_source' => $p['base_source'],
-            'status_base' => $p['status_base'],
-            'status_head' => $p['status_head'],
-            'reasons' => $p['reasons'],
-            'warnings' => [...$p['near'], ...$p['warnings']],
-            'env_differs' => $p['env_differs'],
-            'metrics' => $p['metrics'],
-            'cpu' => ['base' => cpuOf($p['base'] ?? []), 'head' => cpuOf($p['head'] ?? [])],
-            'issues' => $p['issues'],
-        ];
+    $names = ['plan', 'in', 'base-sha', 'head-sha', 'deps-changed', 'out-md', 'out-json', 'run-url'];
+    $options = parseOptions($args, $names);
+    requireOptions($options, array_slice($names, 0, 7));
+    $summary = compareAll(readJsonFile($options['plan']), $options['in'], $options['deps-changed'] === '1');
+    $summary += ['base_sha' => $options['base-sha'], 'head_sha' => $options['head-sha']];
+    writeJsonFile($options['out-json'], ['schema' => 1] + $summary);
+    if (file_put_contents($options['out-md'], renderReport($summary, $options['run-url'] ?? null)) === false) {
+        throw new RuntimeException("cannot write {$options['out-md']}");
     }
 
-    return [
-        'schema' => 2,
-        'verdict' => $verdict,
-        'event' => $expected['event'] ?? null,
-        'head_sha' => $expected['head_sha'] ?? null,
-        'base_sha' => $expected['base_sha'] ?? null,
-        'counts' => $counts,
-        'projects' => $entries,
-        'reasons' => $reasons,
-    ];
+    return 0;
 }

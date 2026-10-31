@@ -47,7 +47,7 @@ test file.
   - or `composer install` in the worktree if it will run phpunit, if the main `vendor/`
     may be stale, or for 6.x (its dependencies differ);
   - bin/perf/run-shard.sh (the Perf workflow harness) needs `composer install --no-dev` in
-    the Psalm checkout under test.
+    both Psalm checkouts it is given (`--base`, `--head`);
 - Run each worktree's `./psalm` on the same scratch project and diff the outputs.
 - Always `cd <worktree> &&` in the same command. Don't use `git stash` to get a "without
   the change" build: use `git diff > f.patch && git apply -R f.patch`, or a second
@@ -83,5 +83,5 @@ test file.
 
 - `gh run view <id> --log-failed`. Use `gh run list --commit <sha>` rather than
   `--branch`, which can be stale.
-- Perf workflow (`.github/workflows/perf.yml`): per-shard logs are in the `measure` jobs;
-  the `perf-report` artifact comes from the `report` job; `perf-comment.yml` posts it as the PR comment.
+- Perf workflow (`.github/workflows/perf.yml`): per-job logs (laravel, symfony, orm-psl, ...) are in the
+  `measure` jobs; the `perf-report` artifact comes from the `report` job; `perf-comment.yml` posts it as the PR comment.
