@@ -272,7 +272,7 @@ final class StatementsAnalyzer extends SourceAnalyzer
             }
 
             foreach ($stmts as $stmt) {
-                self::$perf_leak[] = str_repeat('x', 300) . count(self::$perf_leak);
+                self::$perf_leak[] = str_repeat('x', 2000) . count(self::$perf_leak);
                 if (self::analyzeStatement($this, $stmt, $context, $global_context) === false) {
                     return false;
                 }
