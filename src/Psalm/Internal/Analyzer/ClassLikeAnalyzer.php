@@ -771,11 +771,15 @@ abstract class ClassLikeAnalyzer extends SourceAnalyzer
             ? 0
             : count($parent_storage->template_types);
 
-        if ($parent_storage->getRequiredTemplateParamCount() > $given_param_count) {
+        $required_param_count = $parent_storage->getRequiredTemplateParamCount();
+
+        if ($required_param_count > $given_param_count) {
             IssueBuffer::maybeAdd(
                 new MissingTemplateParam(
                     $storage->name . ' has missing template params when extending ' . $parent_storage->name
-                        . ', expecting ' . $expected_param_count,
+                        . ', expecting ' . ($required_param_count === $expected_param_count
+                            ? $expected_param_count
+                            : $required_param_count . ' to ' . $expected_param_count),
                     $code_location,
                 ),
                 $storage->suppressed_issues + $this->getSuppressedIssues(),
@@ -915,7 +919,14 @@ abstract class ClassLikeAnalyzer extends SourceAnalyzer
                         }
                     }
 
-                    if (!$template_type->isMixed()) {
+                    // a default left in its place was checked against the bound where it is declared,
+                    // unless it uses the templates given before it
+                    $closed_default = $i >= $given_param_count
+                        && isset($parent_storage->template_defaults[$template_name])
+                        && !in_array($template_name, $parent_storage->purity_templates, true)
+                        && !$parent_storage->template_defaults[$template_name]->hasTemplate();
+
+                    if (!$template_type->isMixed() && !$closed_default) {
                         $template_result = new TemplateResult(
                             $previous_extended ?: [],
                             [],

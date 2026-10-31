@@ -29,6 +29,7 @@ use Psalm\Internal\Codebase\VariableUseGraph;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\MethodIdentifier;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
@@ -72,6 +73,7 @@ use function array_filter;
 use function array_keys;
 use function array_map;
 use function array_search;
+use function array_values;
 use function count;
 use function explode;
 use function in_array;
@@ -732,7 +734,12 @@ final class AtomicPropertyFetchAnalyzer
 
                 if (count($template_types = $class_storage->getClassTemplateTypes()) !== 0) {
                     if (!$lhs_type_part instanceof TGenericObject) {
-                        $lhs_type_part = new TGenericObject($lhs_type_part->value, $template_types);
+                        $lhs_type_part = self::getBareReceiver(
+                            $codebase,
+                            $lhs_type_part,
+                            $class_storage,
+                            $template_types,
+                        );
                     }
 
                     $stmt_type = self::localizePropertyType(
@@ -863,8 +870,13 @@ final class AtomicPropertyFetchAnalyzer
             $property_class_storage,
             $property_class_storage->template_types ?: [],
         );
-
         $extended_types = $property_class_storage->template_extended_params;
+
+        if (!$lhs_type_part->is_static) {
+            $lhs_type_part = $lhs_type_part->setTypeParams(
+                TemplateDefaults::localize($codebase, $property_class_storage, $lhs_type_part->type_params),
+            );
+        }
 
         if ($template_types) {
             if ($property_class_storage->template_types) {
@@ -919,6 +931,26 @@ final class AtomicPropertyFetchAnalyzer
         }
 
         return $class_property_type;
+    }
+
+    /**
+     * A receiver without type arguments (`Foo $foo`) has the defaults of the templates of its class,
+     * else their bounds, except a late static one, which may be any subclass.
+     *
+     * @param non-empty-list<Union> $template_types the bounds of the templates of the class
+     */
+    private static function getBareReceiver(
+        Codebase $codebase,
+        TNamedObject $lhs_type_part,
+        ClassLikeStorage $class_storage,
+        array $template_types,
+    ): TGenericObject {
+        return new TGenericObject(
+            $lhs_type_part->value,
+            $lhs_type_part->is_static
+                ? $template_types
+                : array_values(TemplateDefaults::bareParams($codebase, $class_storage)),
+        );
     }
 
     public static function processTaints(
@@ -1441,7 +1473,12 @@ final class AtomicPropertyFetchAnalyzer
 
             if (count($template_types = $class_storage->getClassTemplateTypes()) !== 0) {
                 if (!$lhs_type_part instanceof TGenericObject) {
-                    $lhs_type_part = new TGenericObject($lhs_type_part->value, $template_types);
+                    $lhs_type_part = self::getBareReceiver(
+                        $codebase,
+                        $lhs_type_part,
+                        $class_storage,
+                        $template_types,
+                    );
                 }
 
                 $stmt_type = self::localizePropertyType(
@@ -1541,7 +1578,12 @@ final class AtomicPropertyFetchAnalyzer
 
             if (count($template_types = $declaring_class_storage->getClassTemplateTypes()) !== 0) {
                 if (!$lhs_type_part instanceof TGenericObject) {
-                    $lhs_type_part = new TGenericObject($lhs_type_part->value, $template_types);
+                    $lhs_type_part = self::getBareReceiver(
+                        $codebase,
+                        $lhs_type_part,
+                        $declaring_class_storage,
+                        $template_types,
+                    );
                 }
 
                 $class_property_type = self::localizePropertyType(

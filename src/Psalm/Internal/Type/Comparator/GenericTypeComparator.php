@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Psalm\Internal\Type\Comparator;
 
 use Psalm\Codebase;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
 use Psalm\Type\Atomic;
 use Psalm\Type\Atomic\TGenericObject;
@@ -53,6 +54,21 @@ final class GenericTypeComparator
             }
 
             return false;
+        }
+
+        // a container left short (`Foo<int>` for `Foo<int, Default>`) stands for its defaults
+        if ($container_type_part instanceof TGenericObject
+            && $codebase->classlike_storage_provider->has($container_type_part->value)
+        ) {
+            $filled_container_params = TemplateDefaults::fill(
+                $codebase,
+                $codebase->classlike_storage_provider->get($container_type_part->value),
+                $container_type_part->type_params,
+            );
+
+            if ($filled_container_params !== $container_type_part->type_params) {
+                $container_type_part = $container_type_part->setTypeParams($filled_container_params);
+            }
         }
 
         $container_type_params_covariant = [];

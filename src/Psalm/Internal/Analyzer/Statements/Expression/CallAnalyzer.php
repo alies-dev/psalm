@@ -23,6 +23,7 @@ use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Type\Comparator\TypeComparisonResult;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\TemplateBound;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
@@ -359,6 +360,10 @@ abstract class CallAnalyzer
             $context,
         ) === false) {
             return false;
+        }
+
+        if ($method_storage && $method_storage->template_defaults) {
+            TemplateDefaults::applyToCall($codebase, $template_result, $method_storage);
         }
 
         if ($template_result->template_types) {

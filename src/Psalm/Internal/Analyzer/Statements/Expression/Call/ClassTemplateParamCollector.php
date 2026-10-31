@@ -6,6 +6,7 @@ namespace Psalm\Internal\Analyzer\Statements\Expression\Call;
 
 use AssertionError;
 use Psalm\Codebase;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
 use Psalm\Storage\ClassLikeStorage;
@@ -13,6 +14,7 @@ use Psalm\Type;
 use Psalm\Type\Atomic;
 use Psalm\Type\Atomic\TClassConstant;
 use Psalm\Type\Atomic\TGenericObject;
+use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Type\Atomic\TTemplateParam;
 use Psalm\Type\Union;
 
@@ -93,6 +95,24 @@ final class ClassTemplateParamCollector
 
         $class_template_params = [];
         $e = $static_class_storage->template_extended_params;
+
+        // a receiver has the defaults of the templates of its class for the arguments it leaves out
+        // or does not know (`Foo $foo`), except a late static one, which may be any subclass
+        $bare_receiver = $lhs_type_part instanceof TNamedObject && !$lhs_type_part->is_static && !$self_call;
+
+        if ($lhs_type_part instanceof TGenericObject) {
+            $localized_type_params = $bare_receiver
+                ? TemplateDefaults::localize($codebase, $static_class_storage, $lhs_type_part->type_params)
+                : TemplateDefaults::fill($codebase, $static_class_storage, $lhs_type_part->type_params);
+
+            if ($localized_type_params !== $lhs_type_part->type_params) {
+                $lhs_type_part = $lhs_type_part->setTypeParams($localized_type_params);
+            }
+        }
+
+        $bare_params = $bare_receiver && !$lhs_type_part instanceof TGenericObject
+            ? TemplateDefaults::bareParams($codebase, $class_storage)
+            : [];
 
         if ($lhs_type_part instanceof TGenericObject) {
             if ($class_storage === $static_class_storage && $class_storage->template_types) {
@@ -177,7 +197,7 @@ final class ClassTemplateParamCollector
 
                 if (!$self_call) {
                     if (!isset($class_template_params[$type_name])) {
-                        $class_template_params[$type_name][$class_storage->name] = $type;
+                        $class_template_params[$type_name][$class_storage->name] = $bare_params[$type_name] ?? $type;
                     }
                 }
             }

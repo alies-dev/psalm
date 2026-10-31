@@ -363,12 +363,21 @@ final class ClassLikeStorage implements HasAttributesInterface
     public ?array $template_covariants = null;
 
     /**
-     * The default value of each purity template that has one (`@psalm-purity-template C(pure) <= io`):
-     * what a subclass that does not bind the template gets.
+     * The default of each template that has one: the declared default of a type template
+     * (`@template T = int`), the declared default or upper bound of a purity template
+     * (`@psalm-purity-template C(pure) <= io`). It is what an omitted template argument stands for.
      *
      * @var array<string, Union>
      */
     public array $template_defaults = [];
+
+    /**
+     * The names of the templates declared with `@psalm-purity-template`.
+     *
+     * @internal
+     * @var list<string>
+     */
+    public array $purity_templates = [];
 
     /**
      * The lower bound of each purity template that has one (`@psalm-purity-template write-props <= C`):
@@ -550,7 +559,7 @@ final class ClassLikeStorage implements HasAttributesInterface
     }
 
     /**
-     * How many template params a use of this class must give: all of them, except trailing purity
+     * How many template params a use of this class must give: all of them, except trailing
      * templates with a default, which need not be given.
      *
      * @psalm-mutation-free

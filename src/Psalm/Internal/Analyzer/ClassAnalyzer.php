@@ -28,6 +28,7 @@ use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Provider\NodeDataProvider;
 use Psalm\Internal\Type\Comparator\TypeComparisonResult;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
@@ -279,6 +280,8 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
         foreach ($storage->docblock_issues as $docblock_issue) {
             IssueBuffer::maybeAdd($docblock_issue);
         }
+
+        TemplateDefaults::checkDeclaredDefaults($this, $storage, $this->fq_class_name);
 
         $parent_fq_class_name = $this->parent_fq_class_name;
 

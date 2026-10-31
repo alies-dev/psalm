@@ -15,6 +15,7 @@ use Psalm\Internal\Analyzer\Statements\Expression\ClassConstAnalyzer;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\Provider\NodeDataProvider;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Issue\InheritorViolation;
 use Psalm\Issue\ParseError;
 use Psalm\Issue\UndefinedInterface;
@@ -162,6 +163,8 @@ final class InterfaceAnalyzer extends ClassLikeAnalyzer
         foreach ($class_storage->docblock_issues as $docblock_issue) {
             IssueBuffer::maybeAdd($docblock_issue);
         }
+
+        TemplateDefaults::checkDeclaredDefaults($this, $class_storage, $class_storage->name);
 
         $member_stmts = [];
         foreach ($this->class->stmts as $stmt) {

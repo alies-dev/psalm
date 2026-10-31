@@ -26,6 +26,7 @@ use Psalm\Internal\Codebase\ReceiverPropertyTaints;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Type\TemplateBound;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
@@ -73,6 +74,7 @@ use Psalm\Type\Atomic\TUnknownClassString;
 use Psalm\Type\TaintKind;
 use Psalm\Type\Union;
 
+use function array_filter;
 use function array_map;
 use function array_values;
 use function count;
@@ -80,7 +82,6 @@ use function in_array;
 use function is_int;
 use function ltrim;
 use function preg_match;
-use function reset;
 use function strtolower;
 
 /**
@@ -619,9 +620,27 @@ final class NewAnalyzer extends CallAnalyzer
 
             if ($storage->template_types) {
                 $unconstrainable_templates = null;
+                $earlier_params = [];
 
                 foreach ($storage->template_types as $template_name => $base_type) {
-                    if (isset($template_result->lower_bounds[$template_name][$fq_class_name])) {
+                    // a template the arguments did not bind has its default, if it has one
+                    $default_param_type = !isset($template_result->upper_bounds[$template_name][$fq_class_name])
+                        && !array_filter(
+                            $template_result->lower_bounds[$template_name][$fq_class_name] ?? [],
+                            static fn(TemplateBound $bound): bool => !$bound->from_constraint_fallback,
+                        )
+                        && !self::isGivenToBoundParentTemplate(
+                            $fq_class_name,
+                            $template_name,
+                            $storage->template_extended_params,
+                            $template_result->lower_bounds,
+                        )
+                        ? TemplateDefaults::resolveDefault($codebase, $storage, $template_name, $earlier_params)
+                        : null;
+
+                    if ($default_param_type !== null) {
+                        $generic_param_type = $default_param_type;
+                    } elseif (isset($template_result->lower_bounds[$template_name][$fq_class_name])) {
                         $generic_param_type = TemplateStandinTypeReplacer::getMostSpecificTypeFromBounds(
                             $template_result->lower_bounds[$template_name][$fq_class_name],
                             $codebase,
@@ -722,6 +741,8 @@ final class NewAnalyzer extends CallAnalyzer
                         }
                     }
 
+                    $earlier_params[$template_name] = $generic_param_type;
+
                     $generic_param_types[] = $generic_param_type->setProperties([
                         'had_template' => true,
                     ]);
@@ -767,12 +788,7 @@ final class NewAnalyzer extends CallAnalyzer
         } elseif ($storage->template_types) {
             $result_atomic_type = new TGenericObject(
                 $fq_class_name,
-                array_values(
-                    array_map(
-                        static fn($map) => reset($map),
-                        $storage->template_types,
-                    ),
-                ),
+                array_values(TemplateDefaults::bareParams($codebase, $storage)),
                 false,
                 $from_static,
             );
@@ -1895,10 +1911,8 @@ final class NewAnalyzer extends CallAnalyzer
      */
     private static function hasTemplatesInferredByConstructor(Codebase $codebase, ClassLikeStorage $storage): bool
     {
-        // every purity template the class declares has a default (its upper bound without one),
-        // which tells it apart from a type template bounded by a type alias or a purity template
         foreach ($storage->template_types ?? [] as $template_name => $_) {
-            if (!isset($storage->template_defaults[$template_name])) {
+            if (!in_array($template_name, $storage->purity_templates, true)) {
                 return true;
             }
         }

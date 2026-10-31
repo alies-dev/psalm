@@ -17,6 +17,7 @@ use Psalm\Internal\Analyzer\Statements\Expression\Fetch\ConstFetchAnalyzer;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\PurityArguments;
 use Psalm\Internal\Type\TemplateBound;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
@@ -306,12 +307,16 @@ final class TypeChecker extends TypeVisitor
         $template_type_count = count($expected_type_params);
         $template_param_count = count($atomic->type_params);
 
-        // trailing purity templates with a default need not be given
-        if ($class_storage->getRequiredTemplateParamCount() > $template_param_count) {
+        // trailing templates with a default need not be given
+        $required_param_count = $class_storage->getRequiredTemplateParamCount();
+
+        if ($required_param_count > $template_param_count) {
             IssueBuffer::maybeAdd(
                 new MissingTemplateParam(
                     $atomic->value . ' has missing template params, expecting '
-                        . $template_type_count,
+                        . ($required_param_count === $template_type_count
+                            ? $template_type_count
+                            : $required_param_count . ' to ' . $template_type_count),
                     $this->code_location,
                 ),
                 $this->suppressed_issues,
@@ -363,7 +368,19 @@ final class TypeChecker extends TypeVisitor
         }
       
         $prevents_covariance = [];
-        foreach ($atomic->type_params as $i => $type_param) {
+
+        // the defaults filled in for omitted type arguments are checked against their bounds where
+        // they use the arguments given before them (`@template B of string = A`); the others where
+        // they are declared
+        foreach (TemplateDefaults::fill($codebase, $class_storage, $atomic->type_params) as $i => $type_param) {
+            if ($i >= $template_param_count) {
+                $default = $class_storage->template_defaults[$expected_type_param_keys[$i] ?? ''] ?? null;
+
+                if ($default === null || !$default->hasTemplate()) {
+                    continue;
+                }
+            }
+
             // a covariant type param is in the position of the type (null): an invariant one is in neither
             $prevents_covariance[$i] = empty($expected_param_covariants[$i])
                 ? $this->source instanceof MethodAnalyzer && $this->source->getMethodName() !== '__construct'

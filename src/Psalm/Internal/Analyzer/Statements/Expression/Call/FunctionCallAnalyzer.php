@@ -29,6 +29,7 @@ use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Type\Comparator\CallableTypeComparator;
 use Psalm\Internal\Type\PurityWildcardPaths;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeCombiner;
 use Psalm\Issue\DeprecatedFunction;
@@ -295,6 +296,10 @@ final class FunctionCallAnalyzer extends CallAnalyzer
                 $function_call_info->function_id,
                 $code_location,
             );
+        }
+
+        if ($function_call_info->function_storage && $function_call_info->function_storage->template_defaults) {
+            TemplateDefaults::applyToCall($codebase, $template_result, $function_call_info->function_storage);
         }
 
         CallAnalyzer::checkTemplateResult(

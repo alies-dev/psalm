@@ -35,6 +35,7 @@ use Psalm\Internal\Scope\LoopScope;
 use Psalm\Internal\Type\AssertionReconciler;
 use Psalm\Internal\Type\Comparator\AtomicTypeComparator;
 use Psalm\Internal\Type\PurityWildcardPaths;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
@@ -1447,17 +1448,25 @@ final class ForeachAnalyzer
             if ($generic_storage->template_types
                 || $iterator_atomic_type instanceof TGenericObject
             ) {
-                // if we're just being passed the non-generic class itself, assume
-                // that it's inside the calling class
-                $passed_type_params = $iterator_atomic_type instanceof TGenericObject
-                    ? $iterator_atomic_type->type_params
-                    : array_values(
+                // a generic object left short, or the non-generic class itself, has the defaults of
+                // its templates, unless it is a late static one (assumed to be inside the calling class)
+                if ($iterator_atomic_type instanceof TGenericObject) {
+                    $passed_type_params = $iterator_atomic_type->is_static
+                        ? $iterator_atomic_type->type_params
+                        : TemplateDefaults::localize($codebase, $generic_storage, $iterator_atomic_type->type_params);
+                } elseif (!$iterator_atomic_type->is_static && TemplateDefaults::hasTypeDefaults($generic_storage)) {
+                    $passed_type_params = array_values(TemplateDefaults::bareParams($codebase, $generic_storage));
+                } else {
+                    // if we're just being passed the non-generic class itself, assume
+                    // that it's inside the calling class
+                    $passed_type_params = array_values(
                         array_map(
                             /** @param array<string, Union> $arr */
                             static fn(array $arr): Union => $arr[$iterator_atomic_type->value] ?? Type::getMixed(),
                             $generic_storage->template_types,
                         ),
                     );
+                }
             } else {
                 $passed_type_params = null;
             }

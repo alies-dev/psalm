@@ -109,6 +109,14 @@ abstract class FunctionLikeStorage implements HasAttributesInterface, Stringable
     public ?array $template_types = null;
 
     /**
+     * The default of each template that has one (`@template T = Default`): what a call that
+     * does not infer the template gets.
+     *
+     * @var array<string, Union>
+     */
+    public array $template_defaults = [];
+
+    /**
      * @var array<int, Possibilities>
      */
     public array $assertions = [];

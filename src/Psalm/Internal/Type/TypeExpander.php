@@ -53,6 +53,7 @@ use function array_map;
 use function array_merge;
 use function array_values;
 use function count;
+use function in_array;
 use function is_string;
 use function reset;
 use function strtolower;
@@ -124,6 +125,7 @@ final class TypeExpander
         $fleshed_out_type->from_global_state = $return_type->from_global_state;
         $fleshed_out_type->explicit_never = $return_type->explicit_never;
         $fleshed_out_type->had_template = $return_type->had_template;
+        $fleshed_out_type->from_template_default = $return_type->from_template_default;
         $fleshed_out_type->parent_nodes = $return_type->parent_nodes;
         $fleshed_out_type->int_mask_bits = $int_mask_bits !== null && IntMask::fits($fleshed_out_type, $int_mask_bits)
             ? $int_mask_bits
@@ -555,13 +557,16 @@ final class TypeExpander
                 $type_params[0] = ArrayAnalyzer::castArrayKeyType($type_params[0]);
             }
 
-            // `Foo[pure]` for a class with type templates
+            // trailing type arguments with a default left out (`Foo<int>`), and `Foo[pure]` for a
+            // class with type templates
             if ($return_type instanceof TGenericObject
                 && $codebase->classlike_storage_provider->has($return_type->value)
             ) {
+                $class_storage = $codebase->classlike_storage_provider->get($return_type->value);
+
                 $type_params = PurityArguments::align(
-                    $type_params,
-                    $codebase->classlike_storage_provider->get($return_type->value),
+                    TemplateDefaults::fill($codebase, $class_storage, $type_params),
+                    $class_storage,
                 );
             }
 
@@ -762,15 +767,25 @@ final class TypeExpander
                     static fn($type_map): bool => !reset($type_map)->hasMixed(),
                 )
             ) {
-                $return_type = new TGenericObject(
-                    $return_type->value,
-                    array_values(
-                        array_map(
-                            static fn($type_map) => PurityArguments::getOmittedArgument(reset($type_map)),
-                            $container_class_storage->template_types,
-                        ),
-                    ),
-                );
+                // the argument of a template with a default is marked as unknown: the receivers of
+                // the type see the default (TemplateDefaults::localize()), unless the type is a late
+                // static one, which may be any subclass
+                $type_params = [];
+
+                foreach ($container_class_storage->template_types as $template_name => $type_map) {
+                    $type_param = PurityArguments::getOmittedArgument(reset($type_map));
+
+                    if (!$return_type->is_static
+                        && isset($container_class_storage->template_defaults[$template_name])
+                        && !in_array($template_name, $container_class_storage->purity_templates, true)
+                    ) {
+                        $type_param = $type_param->setProperties(['from_template_default' => true]);
+                    }
+
+                    $type_params[] = $type_param;
+                }
+
+                $return_type = new TGenericObject($return_type->value, $type_params);
 
                 // we don't want to expand generic types recursively
                 $expand_generic = false;

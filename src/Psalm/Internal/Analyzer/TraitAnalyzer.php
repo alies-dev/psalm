@@ -9,6 +9,7 @@ use Override;
 use PhpParser\Node\Stmt\Trait_;
 use Psalm\Aliases;
 use Psalm\Context;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\IssueBuffer;
 use Psalm\Type;
 
@@ -97,5 +98,7 @@ final class TraitAnalyzer extends ClassLikeAnalyzer
         foreach ($storage->docblock_issues as $docblock_issue) {
             IssueBuffer::maybeAdd($docblock_issue);
         }
+
+        TemplateDefaults::checkDeclaredDefaults($statements_analyzer, $storage, $storage->name);
     }
 }

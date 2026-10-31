@@ -36,12 +36,14 @@ use Psalm\Internal\Scanner\ClassLikeDocblockComment;
 use Psalm\Internal\Scanner\FileScanner;
 use Psalm\Internal\Scanner\ParsedDocblock;
 use Psalm\Internal\Scanner\UnresolvedConstantComponent;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TypeAlias;
 use Psalm\Internal\Type\TypeAlias\ClassTypeAlias;
 use Psalm\Internal\Type\TypeAlias\InlineTypeAlias;
 use Psalm\Internal\Type\TypeAlias\LinkableTypeAlias;
 use Psalm\Internal\Type\TypeParser;
 use Psalm\Internal\Type\TypeTokenizer;
+use Psalm\Internal\TypeVisitor\TypeScanner;
 use Psalm\Issue\ConstantDeclarationInTrait;
 use Psalm\Issue\DuplicateClass;
 use Psalm\Issue\DuplicateConstant;
@@ -548,6 +550,12 @@ final class ClassLikeNodeScanner
                 }
 
                 $this->class_template_types = $storage->template_types;
+
+                $storage->purity_templates = $purity_templates;
+
+                if ($docblock_info->template_defaults) {
+                    $this->scanTemplateDefaults($storage, $docblock_info, $name_location ?? $class_location);
+                }
 
                 foreach ($docblock_info->purity_templates as $purity_template) {
                     $bound = $storage->template_types[$purity_template][$fq_classlike_name] ?? null;
@@ -1215,6 +1223,82 @@ final class ClassLikeNodeScanner
                     new CodeLocation($this->file_scanner, $node, null, true),
                 );
             }
+        }
+    }
+
+    private function scanTemplateDefaults(
+        ClassLikeStorage $storage,
+        ClassLikeDocblockComment $docblock_info,
+        CodeLocation $location,
+    ): void {
+        $template_types = $storage->template_types ?? [];
+        $earlier_template_names = [];
+        $after_default = null;
+
+        foreach ($template_types as $template_name => $_) {
+            if (in_array($template_name, $storage->purity_templates, true)) {
+                break;
+            }
+
+            $default_string = $docblock_info->template_defaults[$template_name] ?? null;
+
+            if ($default_string === null) {
+                if ($after_default !== null) {
+                    $storage->docblock_issues[] = new InvalidDocblock(
+                        'Template ' . $template_name . ' has no default but follows ' . $after_default
+                            . ', which has one, in docblock for ' . $storage->name,
+                        $location,
+                    );
+                    $after_default = null;
+                }
+
+                $earlier_template_names[] = $template_name;
+
+                continue;
+            }
+
+            $earlier = $earlier_template_names;
+            $earlier_template_names[] = $template_name;
+
+            try {
+                $default = TypeParser::parseTokens(
+                    TypeTokenizer::getFullyQualifiedTokens(
+                        CommentAnalyzer::sanitizeDocblockType($default_string),
+                        $this->aliases,
+                        $template_types,
+                        $this->type_aliases,
+                    ),
+                    null,
+                    $template_types,
+                    $this->type_aliases,
+                );
+            } catch (TypeParseTreeException $e) {
+                $storage->docblock_issues[] = new InvalidDocblock(
+                    $e->getMessage() . ' in the default of template ' . $template_name . ' in docblock for '
+                        . $storage->name,
+                    $location,
+                );
+
+                continue;
+            }
+
+            $error = TemplateDefaults::getDeclarationError($default, $template_name, $earlier, $storage->name);
+
+            if ($error !== null) {
+                $storage->docblock_issues[] = new InvalidDocblock(
+                    $error . ' in docblock for ' . $storage->name,
+                    $location,
+                );
+
+                continue;
+            }
+
+            // a default names classes the code using it may never mention
+            (new TypeScanner($this->codebase->scanner, $this->file_storage, $template_types))
+                ->traverseArray($default->getAtomicTypes());
+
+            $storage->template_defaults[$template_name] = $default->setFromDocblock();
+            $after_default ??= $template_name;
         }
     }
 

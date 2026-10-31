@@ -23,9 +23,11 @@ use Psalm\Internal\Scanner\FileScanner;
 use Psalm\Internal\Scanner\FunctionDocblockComment;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\PurityWildcard;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TypeAlias;
 use Psalm\Internal\Type\TypeParser;
 use Psalm\Internal\Type\TypeTokenizer;
+use Psalm\Internal\TypeVisitor\TypeScanner;
 use Psalm\Issue\InvalidDocblock;
 use Psalm\Issue\PossiblyInvalidDocblockTag;
 use Psalm\Storage\Assertion;
@@ -275,6 +277,8 @@ final class FunctionLikeDocblockScanner
                 $file_scanner,
                 $stmt,
                 $cased_function_id,
+                $codebase,
+                $file_storage,
             );
 
             foreach ($docblock_info->purity_templates as $purity_template) {
@@ -1965,6 +1969,8 @@ final class FunctionLikeDocblockScanner
         FileScanner $file_scanner,
         PhpParser\Node\FunctionLike $stmt,
         string $cased_function_id,
+        Codebase $codebase,
+        FileStorage $file_storage,
     ): array {
         $storage->template_types = [];
 
@@ -2025,7 +2031,94 @@ final class FunctionLikeDocblockScanner
             }
         }
 
+        if ($docblock_info->template_defaults) {
+            self::handleTemplateDefaults(
+                $storage,
+                $docblock_info,
+                $aliases,
+                $template_types ?: [],
+                $type_aliases,
+                $codebase,
+                $file_storage,
+                new CodeLocation($file_scanner, $stmt, null, true),
+                $cased_function_id,
+            );
+        }
+
         return array_merge($template_types ?: [], $storage->template_types);
+    }
+
+    /**
+     * @param array<string, non-empty-array<string, Union>> $class_template_types
+     * @param array<string, TypeAlias> $type_aliases
+     */
+    private static function handleTemplateDefaults(
+        FunctionLikeStorage $storage,
+        FunctionDocblockComment $docblock_info,
+        Aliases $aliases,
+        array $class_template_types,
+        array $type_aliases,
+        Codebase $codebase,
+        FileStorage $file_storage,
+        CodeLocation $location,
+        string $cased_function_id,
+    ): void {
+        $template_types = ($storage->template_types ?? []) + $class_template_types;
+        $defining_id = 'fn-' . strtolower($cased_function_id);
+        $earlier_template_names = [];
+
+        foreach ($storage->template_types ?? [] as $template_name => $_) {
+            $default_string = $docblock_info->template_defaults[$template_name] ?? null;
+            $earlier = $earlier_template_names;
+            $earlier_template_names[] = $template_name;
+
+            if ($default_string === null) {
+                continue;
+            }
+
+            if (in_array($template_name, $docblock_info->purity_templates, true)) {
+                continue;
+            }
+
+            try {
+                $default = TypeParser::parseTokens(
+                    TypeTokenizer::getFullyQualifiedTokens(
+                        CommentAnalyzer::sanitizeDocblockType($default_string),
+                        $aliases,
+                        $template_types,
+                        $type_aliases,
+                    ),
+                    null,
+                    $template_types,
+                    $type_aliases,
+                );
+            } catch (TypeParseTreeException $e) {
+                $storage->docblock_issues[] = new InvalidDocblock(
+                    $e->getMessage() . ' in the default of template ' . $template_name . ' in docblock for '
+                        . $cased_function_id,
+                    $location,
+                );
+
+                continue;
+            }
+
+            $error = TemplateDefaults::getDeclarationError($default, $template_name, $earlier, $defining_id);
+
+            if ($error !== null) {
+                $storage->docblock_issues[] = new InvalidDocblock(
+                    $error . ' in docblock for ' . $cased_function_id,
+                    $location,
+                );
+
+                continue;
+            }
+
+            // a default names classes the code using it may never mention
+            (new TypeScanner($codebase->scanner, $file_storage, $template_types))
+                ->traverseArray($default->getAtomicTypes());
+
+            $storage->template_defaults[$template_name] = $default->setFromDocblock();
+        }
     }
 
     private static function handleUnexpectedTags(

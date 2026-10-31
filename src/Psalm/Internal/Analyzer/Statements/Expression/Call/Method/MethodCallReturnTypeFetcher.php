@@ -25,6 +25,7 @@ use Psalm\Internal\Codebase\TaintStore;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Type\TemplateBound;
+use Psalm\Internal\Type\TemplateDefaults;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
@@ -97,7 +98,7 @@ final class MethodCallReturnTypeFetcher
                 $stmt,
                 $context,
                 new CodeLocation($statements_analyzer->getSource(), $stmt->name),
-                $lhs_type_part instanceof TGenericObject ? $lhs_type_part->type_params : null,
+                self::getLhsTypeParams($codebase, $lhs_type_part),
             );
 
             if ($return_type_candidate) {
@@ -129,7 +130,7 @@ final class MethodCallReturnTypeFetcher
                     $stmt,
                     $context,
                     new CodeLocation($statements_analyzer->getSource(), $stmt->name),
-                    $lhs_type_part instanceof TGenericObject ? $lhs_type_part->type_params : null,
+                    self::getLhsTypeParams($codebase, $lhs_type_part),
                     $fq_class_name,
                     $method_name,
                 );
@@ -311,6 +312,29 @@ final class MethodCallReturnTypeFetcher
             $method_id,
             $args,
             $return_type_candidate,
+        );
+    }
+
+    /**
+     * The type params of the receiver for the return type providers, with the defaults of those it
+     * leaves out.
+     *
+     * @return non-empty-list<Union>|null
+     */
+    private static function getLhsTypeParams(Codebase $codebase, Atomic $lhs_type_part): ?array
+    {
+        if (!$lhs_type_part instanceof TGenericObject) {
+            return null;
+        }
+
+        if (!$codebase->classlike_storage_provider->has($lhs_type_part->value)) {
+            return $lhs_type_part->type_params;
+        }
+
+        return TemplateDefaults::fill(
+            $codebase,
+            $codebase->classlike_storage_provider->get($lhs_type_part->value),
+            $lhs_type_part->type_params,
         );
     }
 
