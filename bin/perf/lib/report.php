@@ -49,14 +49,14 @@ function isOkPair(array $p): bool
 }
 
 /**
- * "base → head (Δ)" of a metric, "–" when one side has no measurement.
+ * "base → head (Δ)" of a metric; "– → head" when only head has a measurement (base crashed), else "–".
  *
  * @param array<string, mixed> $p
  */
 function metricCell(array $p, string $key, string $fmt, ?float $delta): string
 {
     if (!isOkPair($p)) {
-        return '–';
+        return $p['head']['status'] === 'ok' ? sprintf("– → {$fmt}", $p['head'][$key]) : '–';
     }
 
     return sprintf("{$fmt} → {$fmt} (%s)", $p['base'][$key], $p['head'][$key], fmtPct($delta));
@@ -78,8 +78,11 @@ function wallCell(array $p): string
 function issuesCell(array $p): string
 {
     $i = $p['issues'] ?? null;
+    if ($i === null) {
+        return $p['head']['status'] === 'ok' && !isOkPair($p) ? sprintf('– → %d', $p['head']['issue_count']) : '–';
+    }
 
-    return $i === null ? '–' : sprintf('%d → %d (+%d −%d)', $i['base'], $i['head'], $i['added'], $i['removed']);
+    return sprintf('%d → %d (+%d −%d)', $i['base'], $i['head'], $i['added'], $i['removed']);
 }
 
 /**
