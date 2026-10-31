@@ -60,18 +60,6 @@ jobs:
             - build/psalm.phar
     # The resource_class feature allows configuring CPU and RAM resources for each job. Different resource classes are available for different executors. https://circleci.com/docs/2.0/configuration-reference/#resourceclass
     resource_class: large
-  test-with-real-projects:
-    executor: php-82
-    steps:
-      - checkout # used here just for the side effect of loading the github public ssh key so we can clone other stuff
-      - attach_workspace:
-          at: /home/docker/project/
-      - run:
-          name: Analyse PHPUnit
-          command: bin/ci/test-with-real-projects.sh phpunit
-      - run:
-          name: Analyse Collections
-          command: bin/ci/test-with-real-projects.sh collections
 
 # Orchestrate or schedule a set of jobs, see https://circleci.com/docs/2.0/workflows/
 workflows:
@@ -81,6 +69,3 @@ workflows:
       - phar-build:
           requires:
             - "Code Style Analysis"
-      - test-with-real-projects:
-          requires:
-            - phar-build

@@ -46,7 +46,8 @@ test file.
     classes, "Cannot redeclare class");
   - or `composer install` in the worktree if it will run phpunit, if the main `vendor/`
     may be stale, or for 6.x (its dependencies differ);
-  - bin/ci/test-with-real-projects.sh needs `composer install --no-dev`.
+  - bin/perf/run-shard.sh (the Perf workflow harness) needs `composer install --no-dev` in
+    both Psalm checkouts it is given (`--base`, `--head`);
 - Run each worktree's `./psalm` on the same scratch project and diff the outputs.
 - Always `cd <worktree> &&` in the same command. Don't use `git stash` to get a "without
   the change" build: use `git diff > f.patch && git apply -R f.patch`, or a second
@@ -82,5 +83,5 @@ test file.
 
 - `gh run view <id> --log-failed`. Use `gh run list --commit <sha>` rather than
   `--branch`, which can be stale.
-- CircleCI `test-with-real-projects`: read the failing action's `output_url` from the
-  v1.1 API (`/project/gh/<owner>/psalm/<build>`).
+- Perf workflow (`.github/workflows/perf.yml`): per-job logs (laravel, symfony, orm-psl, ...) are in the
+  `measure` jobs; the `perf-report` artifact comes from the `report` job; `perf-comment.yml` posts it as the PR comment.
