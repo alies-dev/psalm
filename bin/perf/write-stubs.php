@@ -14,7 +14,7 @@ declare(strict_types=1);
  * its own startup; else null), the environment run-shard.sh recorded before analysis
  * (<project>.env.json: fingerprint, soft, cpu, cpu_measured, vm_ram_kb) and the live tail of <project>.log.
  * Without an env file the stub's env fingerprint is null and the comparator reports it as inconclusive.
- * Exit: 0 ok, 2 usage/corpus error.
+ * Exit: 0 ok, 1 when a stub could not be encoded or written (project and path named on stderr), 2 usage/corpus error.
  */
 
 require __DIR__ . '/lib/cli.php';
@@ -52,6 +52,7 @@ if ($lockSha === null && is_file("{$out}/.lock_sha256")) {
     $lockSha = $lockSha === '' ? null : $lockSha;
 }
 
+$failed = [];
 $names = array_values(array_filter(explode(',', $options['projects']), static fn(string $p): bool => $p !== ''));
 foreach (perfSelectProjects($corpus, $names) as $name => $project) {
     if (is_file("{$out}/{$name}.json")) {
@@ -71,9 +72,29 @@ foreach (perfSelectProjects($corpus, $names) as $name => $project) {
         $env,
     );
 
-    file_put_contents(
-        "{$out}/{$name}.json",
-        json_encode($stub, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT),
+    // Log text may hold invalid UTF-8 (a log cut mid-character, binary output): substitute instead of failing.
+    $json = json_encode(
+        $stub,
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_INVALID_UTF8_SUBSTITUTE,
     );
+    if ($json === false) {
+        $failed[] = "{$name}: cannot encode the stub ({$out}/{$name}.json): " . json_last_error_msg();
+        continue;
+    }
+
+    if (@file_put_contents("{$out}/{$name}.json", $json) !== strlen($json)) {
+        @unlink("{$out}/{$name}.json");
+        $failed[] = "{$name}: cannot write {$out}/{$name}.json";
+        continue;
+    }
+
     echo "write-stubs: {$name} => {$outcome['status']} ({$outcome['reason']})\n";
+}
+
+if ($failed !== []) {
+    foreach ($failed as $message) {
+        fwrite(STDERR, "write-stubs: {$message}\n");
+    }
+
+    exit(1);
 }

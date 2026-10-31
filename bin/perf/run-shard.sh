@@ -323,7 +323,8 @@ run_psalm() {
     oom_before="$(oom_count)"
     RUN_RC=0
     start="$(now)"
-    (cd "$PROJ" && /usr/bin/time "$TIME_FLAG" -o "$timefile" "${full[@]}") > "$log" 2>&1 < /dev/null || RUN_RC=$?
+    # 125 = the subshell could not enter the project directory (a launcher failure, see classify_run).
+    (cd "$PROJ" || exit 125; /usr/bin/time "$TIME_FLAG" -o "$timefile" "${full[@]}") > "$log" 2>&1 < /dev/null || RUN_RC=$?
     end="$(now)"
     RUN_WALL="$(elapsed "$start" "$end")"
     oom_after="$(oom_count)"
@@ -359,16 +360,30 @@ run_exit_code() {
     if [ -n "$TIME_SIGNAL" ]; then echo $((128 + TIME_SIGNAL)); else echo "$RUN_RC"; fi
 }
 
-# classify_run <log> <report> <limit seconds>: sets RUN_STATUS (ok|crash|timeout) for the run just made (parse_time first).
+# classify_run <log> <report> <limit seconds>: sets RUN_STATUS (ok|crash|timeout|harness) for the run just made (parse_time
+# first). `harness` (reason in RUN_HARNESS_REASON) = the launchers around the measured process failed, so nothing says
+# anything about Psalm: `crash` is reserved for failures attributable to the measured process. Checked first:
+#  - exit 125-127 of the chain: GNU `timeout`/`env` internal failure, command not invocable or not found, or
+#    /usr/bin/time failing to start the command (Psalm itself exits 0, 1, 2 or 255, a signal death is 128 + n);
+#  - cachegrind: valgrind's own `valgrind: ...` startup error (no "==pid==" prefix) before Psalm printed its result.
 # ok = Psalm exited 0 (no issues) or 2 (issues found) AND printed its "Checks took" line AND wrote a report.
 # Any other exit or signal, even after the report was written, is a crash.
 # A KILLed process after timeout's grace period exits 137, the same as an OOM kill: tell them apart by wall time.
-RUN_STATUS=''
+RUN_STATUS='' RUN_HARNESS_REASON=''
 classify_run() {
-    local rc
+    local rc detail
     rc="$(run_exit_code)"
-    if [ "$RUN_RC" -eq 124 ] || { [ "$RUN_RC" -eq 137 ] && awk -v w="$RUN_WALL" -v l="$3" 'BEGIN { exit !(w >= l) }'; }; then
+    RUN_HARNESS_REASON=''
+    if [ "$RUN_RC" -ge 125 ] && [ "$RUN_RC" -le 127 ]; then
+        detail="$(grep -v '^[[:space:]]*$' "$1" | tail -n 1 | cut -c1-200)" || detail=''
+        RUN_HARNESS_REASON="harness error: launcher (timeout, time or valgrind) failed with exit code $RUN_RC${detail:+: $detail}"
+        RUN_STATUS=harness
+    elif [ "$RUN_RC" -eq 124 ] || { [ "$RUN_RC" -eq 137 ] && awk -v w="$RUN_WALL" -v l="$3" 'BEGIN { exit !(w >= l) }'; }; then
         RUN_STATUS=timeout
+    elif [ "$MODE" = cachegrind ] && [ "$RUN_RC" -ne 0 ] && ! grep -q 'Checks took' "$1" \
+        && detail="$(grep -m 1 '^valgrind: ' "$1" | cut -c1-200)" && [ -n "$detail" ]; then
+        RUN_HARNESS_REASON="harness error: valgrind failed before Psalm ran: $detail"
+        RUN_STATUS=harness
     elif { [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; } && grep -q 'Checks took' "$1" && [ -s "$2" ]; then
         RUN_STATUS=ok
     else
@@ -453,7 +468,13 @@ measure_project_body() {
     set_exit_info
     classify_run "$log" "$res/report.json" "$TIMEOUT"
 
-    if [ "$RUN_STATUS" = timeout ]; then
+    if [ "$RUN_STATUS" = harness ]; then
+        # A launcher failed, not the measured process: never a crash (a false regression, a reusable crash base).
+        STATUS=inconclusive REASON="$RUN_HARNESS_REASON"
+        LOG_TAIL="$(log_tail_of "$log")"
+        write_result
+        return 0
+    elif [ "$RUN_STATUS" = timeout ]; then
         fail_run "$log"
         REASON="analysis exceeded ${TIMEOUT}s"
         if [ "$CPU_MEASURED" != true ]; then

@@ -407,9 +407,14 @@ function evaluateProject(string $name, array $exp, array $ctx): array
         }
 
         if ($p['status_head'] !== 'ok') {
-            // A valid crash/timeout/setup-failed/inconclusive record is listed with its reason. A head-only report
-            // warns only when a result is missing or invalid (spec 8).
-            return finish($p, 'not_comparable', ["head {$p['status_head']}: " . resultReason($head['result'])]);
+            // A valid record of a failed measurement is listed with its reason. crash/timeout of the measured
+            // process stay not comparable; setup-failed/inconclusive (harness or infrastructure failure) warn.
+            $reason = "head {$p['status_head']}: " . resultReason($head['result']);
+            if (in_array($p['status_head'], ['setup-failed', 'inconclusive'], true)) {
+                return finish($p, 'inconclusive', [$reason]);
+            }
+
+            return finish($p, 'not_comparable', [$reason]);
         }
 
         return headOnlyOutcome($p, $head['result'], $exp);

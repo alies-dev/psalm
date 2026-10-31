@@ -84,4 +84,4 @@ test file.
 - `gh run view <id> --log-failed`. Use `gh run list --commit <sha>` rather than
   `--branch`, which can be stale.
 - Perf workflow (`.github/workflows/perf.yml`): per-shard logs are in the `measure` jobs;
-  the PR comment and `perf-report` artifact come from the `report` job.
+  the `perf-report` artifact comes from the `report` job; `perf-comment.yml` posts it as the PR comment.

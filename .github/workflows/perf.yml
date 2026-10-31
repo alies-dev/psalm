@@ -438,6 +438,8 @@ jobs:
 
       # Base first: it shares the runner (and the project clones) with the head.
       - name: Checkout Psalm (base)
+        id: checkout_base
+        continue-on-error: true
         if: contains(matrix.revs, 'base')
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
@@ -446,20 +448,23 @@ jobs:
           persist-credentials: false
 
       - name: Install Psalm dependencies (base)
-        if: contains(matrix.revs, 'base')
+        id: install_base
+        continue-on-error: true
+        if: contains(matrix.revs, 'base') && steps.checkout_base.outcome == 'success'
         env:
           COMPOSER_ROOT_VERSION: ${{ needs.prepare.outputs.composer_root_version }}
         run: |
           cp "$RUNNER_TEMP/plan/base.lock" psalm-base/composer.lock
           composer install --working-dir=psalm-base --no-dev --no-scripts --no-interaction --no-progress
 
-      # continue-on-error: a failed or timed out shard must not colour the job. The stub step below records the
-      # outcome per project and `report` decides the verdict (⚠️ succeeds, ❌ fails). Only a Psalm regression or an
-      # unusable report turns the run red.
+      # continue-on-error (here and on the checkout and install steps above): a failed or timed out setup or shard
+      # must not colour the job. The run step only starts when its revision's setup succeeded; the stub step below
+      # records the outcome per project (setup-failed when the setup failed) and `report` decides the verdict
+      # (⚠️ succeeds, ❌ fails). Only a Psalm regression or an unusable report turns the run red.
       - name: Run shard (base)
         id: run_base
         continue-on-error: true
-        if: contains(matrix.revs, 'base')
+        if: contains(matrix.revs, 'base') && steps.install_base.outcome == 'success'
         timeout-minutes: ${{ matrix.base_step_timeout_minutes }}
         env:
           SHARD: ${{ matrix.shard }}
@@ -474,7 +479,7 @@ jobs:
       # time it really had. Interrupted or failed shards still produce a result per expected project (timeout,
       # inconclusive or setup-failed) instead of a bare "missing".
       - name: Write stub results (base)
-        if: ${{ (cancelled() || steps.run_base.outcome != 'success') && contains(matrix.revs, 'base') }}
+        if: ${{ (cancelled() || steps.install_base.outcome != 'success' || steps.run_base.outcome != 'success') && contains(matrix.revs, 'base') }}
         env:
           PROJECTS: ${{ join(matrix.base_projects, ',') }}
           PSALM_SHA: ${{ needs.prepare.outputs.base_sha }}
@@ -489,6 +494,8 @@ jobs:
 
       # A failed base must not prevent measuring the head: the report marks the project inconclusive instead.
       - name: Checkout Psalm (head)
+        id: checkout_head
+        continue-on-error: true
         if: ${{ !cancelled() && contains(matrix.revs, 'head') }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
@@ -497,7 +504,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Psalm dependencies (head)
-        if: ${{ !cancelled() && contains(matrix.revs, 'head') }}
+        id: install_head
+        continue-on-error: true
+        if: ${{ !cancelled() && contains(matrix.revs, 'head') && steps.checkout_head.outcome == 'success' }}
         env:
           COMPOSER_ROOT_VERSION: ${{ needs.prepare.outputs.composer_root_version }}
         run: |
@@ -507,7 +516,7 @@ jobs:
       - name: Run shard (head)
         id: run_head
         continue-on-error: true
-        if: ${{ !cancelled() && contains(matrix.revs, 'head') }}
+        if: ${{ !cancelled() && contains(matrix.revs, 'head') && steps.install_head.outcome == 'success' }}
         timeout-minutes: ${{ matrix.head_step_timeout_minutes }}
         env:
           SHARD: ${{ matrix.shard }}
@@ -520,7 +529,7 @@ jobs:
 
       # Existing results are never overwritten, so the head stub is a no-op for projects that finished.
       - name: Write stub results (head)
-        if: ${{ (cancelled() || steps.run_head.outcome != 'success') && contains(matrix.revs, 'head') }}
+        if: ${{ (cancelled() || steps.install_head.outcome != 'success' || steps.run_head.outcome != 'success') && contains(matrix.revs, 'head') }}
         env:
           PROJECTS: ${{ join(matrix.head_projects, ',') }}
           PSALM_SHA: ${{ needs.prepare.outputs.head_sha }}
@@ -585,6 +594,8 @@ jobs:
           path: ${{ runner.temp }}/plan
 
       - name: Checkout Psalm (head)
+        id: checkout_extra
+        continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ needs.prepare.outputs.head_sha }}
@@ -592,6 +603,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Psalm dependencies (head)
+        id: install_extra
+        continue-on-error: true
+        if: steps.checkout_extra.outcome == 'success'
         env:
           COMPOSER_ROOT_VERSION: ${{ needs.prepare.outputs.composer_root_version }}
         run: |
@@ -600,6 +614,7 @@ jobs:
 
       - name: Run shard (head)
         id: run_extra
+        if: steps.install_extra.outcome == 'success'
         continue-on-error: true
         timeout-minutes: ${{ matrix.step_timeout_minutes }}
         env:
@@ -614,7 +629,7 @@ jobs:
           harness/bin/perf/run-shard.sh "${args[@]}"
 
       - name: Write stub results (head)
-        if: ${{ cancelled() || steps.run_extra.outcome != 'success' }}
+        if: ${{ cancelled() || steps.install_extra.outcome != 'success' || steps.run_extra.outcome != 'success' }}
         env:
           PROJECTS: ${{ join(matrix.projects, ',') }}
           PSALM_SHA: ${{ needs.prepare.outputs.head_sha }}

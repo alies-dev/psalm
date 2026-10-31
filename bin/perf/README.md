@@ -93,7 +93,7 @@ Per project:
 | not comparable | base `crash` or `timeout`; listed, excluded from `N` |
 | inconclusive | `setup-failed`, `inconclusive`, missing or invalid result on either side; environment fingerprint mismatch; a timeout on a CPU model that was never measured; dependency resolution failed; a harness or infrastructure failure (full disk, missing summary, failed normalisation) |
 
-Only Psalm's own crash (a non-zero exit or a signal of the measured Psalm process) is ❌. Harness and infrastructure failures are ⚠️: they never fail a PR. A failed or timed out `Run shard` step does not colour the `measure` job either (`continue-on-error`): the stub step records the outcome per project and the verdict in `report` decides the check.
+Among failures, only a crash or timeout of the measured process (Psalm, or valgrind running it) can be ❌; harness and infrastructure failures are ⚠️ and never fail a PR. This includes failures of the launchers around the measured process (GNU `timeout` exit 125 to 127, `/usr/bin/time` failing to start, valgrind failing at startup): `run-shard.sh` records them as `inconclusive` with a `harness error:` reason before it classifies a Psalm crash. A failed or timed out `Run shard` step does not colour the `measure` job either, and neither does a failed checkout or dependency install of a Psalm revision (all `continue-on-error`): the run step is skipped when its revision's setup failed, the stub step records `setup-failed` per project, and the verdict in `report` decides the check. In push and dispatch runs (head only), `setup-failed` and `inconclusive` records are ⚠️; `crash` and `timeout` are listed as not comparable.
 
 Downgrades to inconclusive, so that noise never fails a PR:
 
