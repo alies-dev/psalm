@@ -3053,6 +3053,19 @@ final class TaintTest extends TestCase
                     html(json_encode($_GET["x"], \JSON_HEX_TAG | \JSON_HEX_AMP | \JSON_THROW_ON_ERROR));
                     html(encode($_GET["x"], \JSON_HEX_TAG | \JSON_HEX_AMP | \JSON_THROW_ON_ERROR));',
             ],
+            'jsonEncodeOfNestedArrayEscapesHeaderTaint' => [
+                'code' => '<?php
+                    function trigger(string $message): void {
+                        header("HX-Trigger: " . json_encode(["notification:show" => ["message" => $message]], \JSON_THROW_ON_ERROR));
+                    }
+                    trigger($_GET["x"]);',
+            ],
+            'jsonEncodeImportedUnderAliasEscapesHeaderTaint' => [
+                'code' => '<?php
+                    namespace Foo;
+                    use function json_encode as encode;
+                    header("X: " . encode($_GET["x"]));',
+            ],
             'taintFilterVar' => [
                 'code' => '<?php
                     /** @psalm-taint-sink input_except_sleep $value */
@@ -4834,6 +4847,19 @@ final class TaintTest extends TestCase
     public static function providerInvalidCodeParse(): array
     {
         return [
+            'jsonEncodeNamedPrettyPrintAfterDepthKeepsHeaderTaint' => [
+                'code' => '<?php
+                    header("X: " . json_encode($_GET["x"], depth: 5, flags: JSON_PRETTY_PRINT));',
+                'error_message' => 'TaintedHeader',
+            ],
+            'jsonEncodeShadowedInNamespaceKeepsHeaderTaint' => [
+                'code' => '<?php
+                    namespace Foo;
+                    /** @psalm-flow ($value) -> return */
+                    function json_encode(mixed $value): string { return (string) $value; }
+                    header("X: " . json_encode($_GET["x"]));',
+                'error_message' => 'TaintedHeader',
+            ],
             'taintSourceUnderAKeyOfTheReturnOfAFunction' => [
                 'code' => '<?php // --taint-analysis
                     /**
