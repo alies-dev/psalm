@@ -884,6 +884,120 @@ final class TaintTest extends TestCase
                         $receiver->go(...["safe"], first: (string) $_GET["x"]);
                     }',
             ],
+            'dontTaintAnOverrideParameterWithAnUnpackedElementAnotherParameterTakes' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $rest = "", string ...$more): void {
+                            system($rest);
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $receiver->go(...["safe", (string) $_GET["x"]]);
+                    }',
+            ],
+            'dontTaintAnOverrideParameterWithAnUnpackedKeyAnotherParameterTakes' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $rest = "", string ...$more): void {
+                            system($rest);
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $receiver->go(...["other" => (string) $_GET["x"]]);
+                    }',
+            ],
+            'dontTaintAnOverrideParameterWithASanitizedUnpackedElementBesideARawOne' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string ...$rest): void {
+                            echo $first;
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $input = (string) $_GET["x"];
+                        $receiver->go(...[htmlspecialchars($input, ENT_QUOTES), $input]);
+                    }',
+            ],
+            'dontTaintAnOverrideParameterWithASanitizedUnpackedElementOfAVariableBesideARawOne' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string ...$rest): void {
+                            echo $first;
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $input = (string) $_GET["x"];
+                        $items = [htmlspecialchars($input, ENT_QUOTES), $input];
+                        $receiver->go(...$items);
+                    }',
+            ],
+            'dontTaintAnOverrideParameterWithASanitizedUnpackedElementBeforeAnEmptyUnpack' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string ...$rest): void {
+                            echo $first;
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $input = (string) $_GET["x"];
+                        $receiver->go(...[htmlspecialchars($input, ENT_QUOTES), $input], ...[]);
+                    }',
+            ],
+            'dontTaintAnOverrideParameterWithASanitizedUnpackedElementBeforeAnUnpackOfUnknownShape' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string ...$rest): void {
+                            echo $first;
+                        }
+                    }
+
+                    /** @param list<string> $items */
+                    function run(Base $receiver, array $items): void {
+                        $input = (string) $_GET["x"];
+                        $receiver->go(...[htmlspecialchars($input, ENT_QUOTES), $input], ...$items);
+                    }',
+            ],
             'taintSourceUnderAKeyOfTheReturnOnly' => [
                 'code' => '<?php // --taint-analysis
                     /**
@@ -5431,6 +5545,297 @@ final class TaintTest extends TestCase
                         $r->go(other: "safe", first: (string) $_GET["x"]);
                     }',
                 'error_message' => 'TaintedShell',
+            ],
+            'taintAnOverrideParameterWithAnUnpackedElementAtItsPosition' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string ...$rest): void {
+                            system($first);
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $receiver->go(...[(string) $_GET["x"]]);
+                    }',
+                'error_message' => 'TaintedShell',
+            ],
+            'taintAnOverrideParameterWithAnUnpackedElementAtAnotherPosition' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string $second = "", string ...$rest): void {
+                            system($second);
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $receiver->go(...["safe", (string) $_GET["x"]]);
+                    }',
+                'error_message' => 'TaintedShell',
+            ],
+            'taintAnOverrideParameterWithAnUnpackedKeyOfItsName' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string ...$rest): void {
+                            system($first);
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $receiver->go(...["first" => (string) $_GET["x"]]);
+                    }',
+                'error_message' => 'TaintedShell',
+            ],
+            'taintAnOverrideParameterWithANamedArgumentAfterAnEmptyUnpack' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string ...$rest): void {
+                            system($first);
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        /** @psalm-suppress NoValue */
+                        $receiver->go(...[], first: (string) $_GET["x"]);
+                    }',
+                'error_message' => 'TaintedShell',
+            ],
+            'taintAnOverrideParameterWithAnUnpackedArrayOfUnknownShape' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string ...$rest): void {
+                            system($first);
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $items = [];
+                        foreach ($_GET as $item) {
+                            $items[] = (string) $item;
+                        }
+
+                        $receiver->go(...$items);
+                    }',
+                'error_message' => 'TaintedShell',
+            ],
+            'taintAnOverrideVariadicWithAnUnpackedArgumentAfterAnotherUnpackedOne' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string $first = "", string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string $second = "", string ...$rest): void {
+                            foreach ($rest as $r) {
+                                system($r);
+                            }
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $receiver->go(...["safe", "safe"], ...[(string) $_GET["x"]]);
+                    }',
+                'error_message' => 'TaintedShell',
+            ],
+            'taintAnOverrideVariadicWithAnUnpackedArgumentBeyondItsFixedParameters' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string ...$rest): void {
+                            foreach ($rest as $r) {
+                                system($r);
+                            }
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $receiver->go(...["safe", "safe", "safe", (string) $_GET["x"]]);
+                    }',
+                'error_message' => 'TaintedShell',
+            ],
+            'taintAnOverrideVariadicWithAPositionalArgumentBeyondItsFixedParameters' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string ...$rest): void {
+                            foreach ($rest as $r) {
+                                system($r);
+                            }
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $receiver->go("safe", "safe", (string) $_GET["x"]);
+                    }',
+                'error_message' => 'TaintedShell',
+            ],
+            'taintAnOverrideParameterWithAnUnpackedRawElementBesideASanitizedOne' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string ...$rest): void {
+                            echo $first;
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $input = (string) $_GET["x"];
+                        $items = [$input, htmlspecialchars($input, ENT_QUOTES)];
+                        $receiver->go(...$items);
+                    }',
+                'error_message' => 'TaintedHtml',
+            ],
+            'taintAnOverrideParameterWithAnUnpackedElementBeforeAnEmptyUnpack' => [
+                'code' => '<?php // --taint-analysis
+                    /** @psalm-taint-escape html */
+                    function sanitize(string $value): string {
+                        return $value;
+                    }
+
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $first = "", string ...$rest): void {
+                            echo $first;
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $input = (string) $_GET["x"];
+                        $receiver->go(...[$input, sanitize($input)], ...[]);
+                    }',
+                'error_message' => 'TaintedHtml',
+            ],
+            'taintAnOverrideParameterOfTheCallThatUnpacksAnArrayBeforeTheOneThatUnpacksItAtAnotherPosition' => [
+                'code' => '<?php // --taint-analysis
+                    /** @psalm-taint-escape html */
+                    function sanitize(string $value): string {
+                        return $value;
+                    }
+
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string $before = "", string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $before = "", string $rest = "", string ...$more): void {
+                            echo $rest;
+                        }
+                    }
+
+                    function run(Base $receiver, bool $first): void {
+                        $input = (string) $_GET["x"];
+                        $items = [sanitize($input), $input];
+
+                        if ($first) {
+                            $receiver->go(...$items);
+                        } else {
+                            $receiver->go("safe", ...$items);
+                        }
+                    }',
+                'error_message' => 'TaintedHtml',
+            ],
+            'taintAnOverrideParameterOfTheCallThatUnpacksAnArrayAfterTheOneThatUnpacksItAtAnotherPosition' => [
+                'code' => '<?php // --taint-analysis
+                    /** @psalm-taint-escape html */
+                    function sanitize(string $value): string {
+                        return $value;
+                    }
+
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(string $before = "", string ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(string $before = "", string $rest = "", string ...$more): void {
+                            echo $rest;
+                        }
+                    }
+
+                    function run(Base $receiver, bool $first): void {
+                        $input = (string) $_GET["x"];
+                        $items = [$input, sanitize($input)];
+
+                        if ($first) {
+                            $receiver->go("safe", ...$items);
+                        } else {
+                            $receiver->go(...$items);
+                        }
+                    }',
+                'error_message' => 'TaintedHtml',
+            ],
+            'taintAnOverrideParameterWithAnUnpackedElementThatIsAnArray' => [
+                'code' => '<?php // --taint-analysis
+                    class Base {
+                        /** @psalm-impure */
+                        public function go(array ...$rest): void {}
+                    }
+
+                    class Child extends Base {
+                        /** @psalm-suppress ParamNameMismatch */
+                        public function go(array $first = [], array $second = [], array ...$rest): void {
+                            echo $second["key"];
+                        }
+                    }
+
+                    function run(Base $receiver): void {
+                        $receiver->go(...[["key" => "safe"], ["key" => (string) $_GET["x"]]]);
+                    }',
+                'error_message' => 'TaintedHtml',
             ],
             'taintSourceUnderAKeyOfTheReturnOfAFunction' => [
                 'code' => '<?php // --taint-analysis

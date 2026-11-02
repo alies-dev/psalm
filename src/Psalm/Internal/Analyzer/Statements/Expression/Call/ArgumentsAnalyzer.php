@@ -873,18 +873,29 @@ final class ArgumentsAnalyzer
         }
 
         $has_packed_var = false;
+        $positions_unknown = false;
         $positional_arguments = 0;
+        $unpack_positions = [];
 
-        foreach ($args as $arg) {
+        foreach ($args as $argument_offset => $arg) {
             if ($arg->unpack) {
                 $has_packed_var = true;
+                $elements = ArgumentAnalyzer::getUnpackedElements(
+                    $statements_analyzer->node_data->getType($arg->value),
+                );
+                $unpack_positions[$argument_offset] = $positions_unknown ? null : $positional_arguments;
+                $positions_unknown = $positions_unknown || $elements === null;
+
+                foreach ($elements ?? [] as $key => $_) {
+                    $positional_arguments += is_int($key) ? 1 : 0;
+                }
             } elseif (!$arg->name) {
                 $positional_arguments++;
             }
         }
 
         // PHP binds no positional argument after a named one, so this holds for each named argument of the call
-        $positional_arguments = $has_packed_var ? null : $positional_arguments;
+        $positional_arguments = $positions_unknown ? null : $positional_arguments;
 
         $last_param = $function_params
             ? $function_params[count($function_params) - 1]
@@ -1146,6 +1157,7 @@ final class ArgumentsAnalyzer
                     $specialize_taint,
                     $in_call_map,
                     $positional_arguments,
+                    $unpack_positions[$argument_offset] ?? null,
                 ) === false) {
                     return false;
                 }

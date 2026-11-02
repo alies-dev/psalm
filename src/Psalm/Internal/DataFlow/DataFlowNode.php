@@ -188,7 +188,8 @@ final class DataFlowNode implements Stringable
      * specialized to their location have one of their own, which only goes to the overrides.
      *
      * What an override takes of an argument the variadic collects depends on its name (case-sensitive) and the
-     * number of positional arguments before it (null: an unpack precedes), or on its being unpacked.
+     * number of positional arguments before it (null: an unpack of unknown shape precedes), or on its being unpacked
+     * (from a position the call knows, or not).
      *
      * @psalm-pure
      */
@@ -199,13 +200,15 @@ final class DataFlowNode implements Stringable
         ?string $named_argument = null,
         bool $unpacked_argument = false,
         ?int $positional_arguments = null,
+        bool $unpacked_from_position = false,
     ): self {
         $label = ($specialized_calls ? 'specialized ' : '') . 'dispatch of ' . $cased_method_id
             . '#' . ($argument_offset + 1);
         $collected = ($named_argument !== null
                 ? ' named ' . $named_argument . ' after ' . ($positional_arguments ?? 'unpack')
                 : '')
-            . ($unpacked_argument ? ' unpacked' : '');
+            . ($unpacked_argument ? ' unpacked' : '')
+            . ($unpacked_from_position ? ' onwards' : '');
 
         return self::make(strtolower($label) . $collected, $label . $collected, null);
     }

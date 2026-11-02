@@ -50,6 +50,7 @@ use Psalm\Issue\PossiblyNullArgument;
 use Psalm\IssueBuffer;
 use Psalm\Node\VirtualArg;
 use Psalm\Plugin\EventHandler\Event\AddRemoveTaintsEvent;
+use Psalm\Storage\ClassLikeStorage;
 use Psalm\Storage\FunctionLikeParameter;
 use Psalm\Storage\FunctionLikeStorage;
 use Psalm\Type;
@@ -75,9 +76,13 @@ use function count;
 use function explode;
 use function implode;
 use function in_array;
+use function is_int;
 use function is_string;
+use function max;
 use function mb_ord;
+use function min;
 use function preg_split;
+use function range;
 use function reset;
 use function str_contains;
 use function str_starts_with;
@@ -87,6 +92,7 @@ use function substr;
 use function substr_count;
 
 use const DIRECTORY_SEPARATOR;
+use const PHP_INT_MAX;
 use const PREG_SPLIT_NO_EMPTY;
 
 /**
@@ -166,6 +172,7 @@ final class ArgumentAnalyzer
         bool $specialize_taint,
         bool $in_call_map,
         ?int $positional_arguments,
+        ?int $unpacked_from = null,
     ): ?bool {
         $codebase = $statements_analyzer->getCodebase();
 
@@ -276,6 +283,7 @@ final class ArgumentAnalyzer
             $specialize_taint,
             $in_call_map,
             $positional_arguments,
+            $unpacked_from,
         ) === false) {
             return false;
         }
@@ -308,6 +316,7 @@ final class ArgumentAnalyzer
         bool $specialize_taint,
         bool $in_call_map,
         ?int $positional_arguments,
+        ?int $unpacked_from = null,
     ): ?bool {
         if (!$function_param->type) {
             if (!$codebase->infer_types_from_usage && !$statements_analyzer->data_flow_graph) {
@@ -517,6 +526,7 @@ final class ArgumentAnalyzer
                         $arg->name?->name,
                         $arg->unpack,
                         $positional_arguments,
+                        $unpacked_from,
                     );
                 }
 
@@ -703,6 +713,7 @@ final class ArgumentAnalyzer
             $function_call_location,
             $arg->name?->name,
             $positional_arguments,
+            $unpacked_from,
         ) === false) {
             return false;
         }
@@ -855,6 +866,7 @@ final class ArgumentAnalyzer
         CodeLocation $function_call_location,
         ?string $named_argument = null,
         ?int $positional_arguments = null,
+        ?int $unpacked_from = null,
     ): ?bool {
         $codebase = $statements_analyzer->getCodebase();
 
@@ -897,6 +909,7 @@ final class ArgumentAnalyzer
                     $named_argument,
                     $unpack,
                     $positional_arguments,
+                    $unpacked_from,
                 );
             }
 
@@ -984,6 +997,7 @@ final class ArgumentAnalyzer
                     $named_argument,
                     $unpack,
                     $positional_arguments,
+                    $unpacked_from,
                 );
             }
 
@@ -1166,6 +1180,7 @@ final class ArgumentAnalyzer
                 $named_argument,
                 $unpack,
                 $positional_arguments,
+                $unpacked_from,
             );
 
             if ($function_param->assert_untainted) {
@@ -1935,6 +1950,331 @@ final class ArgumentAnalyzer
         }
     }
 
+    /**
+     * The elements of an unpacked array by key, null unless its shape is known: the keys all there and no others
+     *
+     * @return array<array-key, Union>|null
+     * @psalm-mutation-free
+     */
+    public static function getUnpackedElements(?Union $type): ?array
+    {
+        $array = $type && $type->isSingle() && $type->hasArray() ? $type->getArray() : null;
+
+        if ($array instanceof TKeyedArray) {
+            return $array->fallback_params === null && $array->allShapeKeysAlwaysDefined() ? $array->properties : null;
+        }
+
+        return $array instanceof TArray && $array->type_params[1]->isNever() ? [] : null;
+    }
+
+    /**
+     * A virtual call of a method on a class may run an override of a class extending it: the call goes to them, as
+     * well as to the parameter of its method. But that parameter is also where the calls on the classes extending
+     * it go when they inherit the method, which can't run those overrides: what the call dispatches to the
+     * overrides goes through a node of its own, shared by the virtual calls of the method on the class so that
+     * their number doesn't multiply its paths.
+     */
+    private static function addDispatchPaths(
+        StatementsAnalyzer $statements_analyzer,
+        TaintFlowGraph $taint_flow_graph,
+        ?MethodIdentifier $method_id,
+        PhpParser\Node\Expr $expr,
+        string $cased_method_id,
+        ?FunctionLikeStorage $function_storage,
+        FunctionLikeParameter $function_param,
+        int $argument_offset,
+        bool $specialize_taint,
+        ?string $named_argument,
+        bool $unpacked_argument,
+        ?int $positional_arguments,
+        ?int $unpacked_from,
+        CodeLocation $arg_location,
+        DataFlowNode $argument_value_node,
+        int $added_taints,
+        int $removed_taints,
+    ): void {
+        if (!$method_id
+            || $method_id->method_name === '__construct'
+            // a call naming its class (parent::, self::, A::) runs that method only (see StaticCallAnalyzer)
+            || $expr->getAttribute(self::NON_VIRTUAL_CALL_ATTRIBUTE) === true
+        ) {
+            return;
+        }
+
+        $codebase = $statements_analyzer->getCodebase();
+        $class_storage = $codebase->classlike_storage_provider->get($method_id->fq_class_name);
+
+        if ($class_storage->dependent_classlikes === []) {
+            return;
+        }
+
+        $param_offset = $function_storage
+            ? DataFlowNode::getParameterOffset($function_storage, $function_param, $argument_offset)
+            : $argument_offset;
+
+        // What an override takes of an argument the variadic collects depends on how PHP binds it: a positional one
+        // by its position, a named one by its name (and the positional arguments before it), an unpacked one of
+        // unknown shape by any position from its own.
+        $unpacked = $function_param->is_variadic && $unpacked_argument;
+        $named_argument = $function_param->is_variadic ? $named_argument : null;
+        $from_position = $unpacked && $unpacked_from !== null;
+        $array_type = $from_position ? $statements_analyzer->node_data->getType($expr) : null;
+        $elements = self::getUnpackedElements($array_type);
+
+        if ($elements === null) {
+            $dispatch_node = self::getDispatchNode(
+                $statements_analyzer,
+                $taint_flow_graph,
+                $method_id,
+                $class_storage,
+                $cased_method_id,
+                $function_param,
+                $specialize_taint,
+                $named_argument,
+                $from_position ? max($param_offset, $unpacked_from) : $param_offset,
+                $unpacked && !$from_position,
+                $from_position,
+                $positional_arguments,
+            );
+
+            if ($dispatch_node) {
+                $taint_flow_graph->addPath($argument_value_node, $dispatch_node, 'arg', $added_taints, $removed_taints);
+            }
+
+            return;
+        }
+
+        // An unpacked array of known shape is that many arguments. Its nodes hold the taints of all its elements, so
+        // each element's dispatch fetches its own key, as `$array[$key]` does.
+        $array_nodes = $array_type->parent_nodes ?? [];
+        $position = $unpacked_from ?? 0;
+
+        foreach ($elements as $key => $element) {
+            if (is_int($key)) {
+                if ($position++ < $param_offset) {
+                    continue;
+                }
+
+                $named = null;
+                $offset = $position - 1;
+            } elseif (!$function_storage
+                || DataFlowNode::getParameterOffsetOfNamedArgument($function_storage, $key) === $param_offset
+            ) {
+                $named = $key;
+                $offset = $param_offset;
+            } else {
+                continue;
+            }
+
+            $dispatch_node = self::getDispatchNode(
+                $statements_analyzer,
+                $taint_flow_graph,
+                $method_id,
+                $class_storage,
+                $cased_method_id,
+                $function_param,
+                $specialize_taint,
+                $named,
+                $offset,
+                false,
+                false,
+                $positional_arguments,
+            );
+
+            if (!$dispatch_node) {
+                continue;
+            }
+
+            $element_removed_taints = $removed_taints | $element->getTaintsToRemove($codebase->getInputTaints());
+
+            // the array's nodes and the dispatch are shared by other calls, and a path replaces the one between the
+            // same nodes: the fetch goes through a node of this call
+            $element_node = DataFlowNode::getForAssignment(
+                'unpacked \'' . $key . '\' to ' . $dispatch_node->label,
+                $arg_location,
+            );
+
+            $taint_flow_graph->addNode($element_node);
+            $taint_flow_graph->addPath($element_node, $dispatch_node, 'arg');
+
+            foreach ($array_nodes as $array_node) {
+                $taint_flow_graph->addPath(
+                    $array_node,
+                    $element_node,
+                    'arrayvalue-fetch-\'' . $key . '\'',
+                    $added_taints,
+                    $element_removed_taints,
+                );
+            }
+
+            // an array without nodes of its own leaves the argument's, which hold all its elements
+            if ($array_nodes === []) {
+                $taint_flow_graph->addPath(
+                    $argument_value_node,
+                    $element_node,
+                    'arg',
+                    $added_taints,
+                    $element_removed_taints,
+                );
+            }
+        }
+    }
+
+    /**
+     * The node a virtual call dispatches an argument to the overrides through, or null if none may run (the classes
+     * extending the class inherit the method).
+     *
+     * @param bool $unpacked unpacked from a position the call can't tell: an override takes it by the name of the
+     *                       declared variadic
+     * @param bool $range unpacked from $offset, of unknown shape: any parameter from there may take it
+     */
+    private static function getDispatchNode(
+        StatementsAnalyzer $statements_analyzer,
+        TaintFlowGraph $taint_flow_graph,
+        MethodIdentifier $method_id,
+        ClassLikeStorage $class_storage,
+        string $cased_method_id,
+        FunctionLikeParameter $function_param,
+        bool $specialize_taint,
+        ?string $named,
+        int $offset,
+        bool $unpacked,
+        bool $range,
+        ?int $positional_arguments,
+    ): ?DataFlowNode {
+        $dispatch_node = DataFlowNode::getForDispatch(
+            $cased_method_id,
+            $offset,
+            $specialize_taint,
+            $named,
+            $unpacked,
+            $positional_arguments,
+            $range,
+        );
+
+        // which parameter takes a named argument is unknown after an unpack of unknown shape, as for an unpacked one
+        $by_name = $unpacked || ($named !== null && $positional_arguments === null);
+
+        if ($taint_flow_graph->isEmptyDispatch($dispatch_node)) {
+            return null;
+        }
+
+        if ($taint_flow_graph->hasNode($dispatch_node)) {
+            return $dispatch_node;
+        }
+
+        $codebase = $statements_analyzer->getCodebase();
+        $new_sinks = [];
+
+        $cased_method_name = explode('::', $cased_method_id)[1];
+        $appearing_method_id = $codebase->methods->getAppearingMethodId($method_id);
+
+        foreach ($class_storage->dependent_classlikes as $dependent_classlike_lc => $_) {
+            $dependent_classlike_storage = $codebase->classlike_storage_provider->get($dependent_classlike_lc);
+
+            $dependent_method_id = new MethodIdentifier($dependent_classlike_lc, $method_id->method_name);
+            $dependent_appearing_method_id = $codebase->methods->getAppearingMethodId($dependent_method_id);
+            $dependent_declaring_method_id = $codebase->methods->getDeclaringMethodId($dependent_method_id);
+            $dependent_storage = $dependent_declaring_method_id
+                && $codebase->methods->hasStorage($dependent_declaring_method_id)
+                ? $codebase->methods->getStorage($dependent_declaring_method_id)
+                : null;
+            $is_override = $dependent_appearing_method_id !== null
+                && (string) $dependent_appearing_method_id !== (string) $appearing_method_id;
+
+            // a specialized call takes the method itself through its own parameter: only the overrides, which it
+            // used not to take at all
+            if ($specialize_taint && !$is_override) {
+                continue;
+            }
+
+            // the declared variadic's name says nothing about the parameter of an override that takes the argument
+            $dependent_param = $function_param->is_variadic && !$by_name ? null : $function_param;
+
+            $dependent_offsets = [$offset];
+
+            if ($range) {
+                $dependent_offsets = range($offset, max($offset, count($dependent_storage->params ?? []) - 1));
+            } elseif ($named !== null && $positional_arguments !== null && $dependent_storage) {
+                $named_offset = DataFlowNode::getParameterOffsetOfNamedArgument($dependent_storage, $named);
+
+                // none takes it, or the positional arguments already filled it (PHP throws)
+                if ($named_offset === null
+                    || ($named_offset < $positional_arguments
+                        && !$dependent_storage->params[$named_offset]->is_variadic)
+                ) {
+                    continue;
+                }
+
+                $dependent_offsets = [$named_offset];
+            }
+
+            $variadic_offset = $function_param->is_variadic
+                && $dependent_storage
+                && $dependent_storage->params !== []
+                && $dependent_storage->params[count($dependent_storage->params) - 1]->is_variadic
+                ? count($dependent_storage->params) - 1
+                : PHP_INT_MAX;
+
+            foreach ($dependent_offsets as $dependent_offset) {
+                $dependent_offset = min($dependent_offset, $variadic_offset);
+
+                // The parameter of an override specialized by call, in the specialization keyed by the location of
+                // the method, which the dispatch of its returns leaves (see
+                // MethodCallReturnTypeFetcher::getReturnDispatchNode()): what its body returns of the argument then
+                // reaches the call.
+                if ($is_override
+                    && $dependent_storage
+                    && $dependent_storage->location
+                    && TaintFlowGraph::isCallSpecialized(
+                        $taint_flow_graph,
+                        $codebase,
+                        $dependent_storage,
+                        $dependent_storage->location,
+                    )
+                ) {
+                    $new_sink = DataFlowNode::getForMethodArgument(
+                        FunctionLikeAnalyzer::getCasedBodyMethodId($codebase, $dependent_method_id),
+                        $dependent_offset,
+                        $dependent_storage,
+                        $dependent_storage->location,
+                    );
+                } else {
+                    // the declaring method's storage (a dependent class usually inherits the method, so it has no
+                    // storage under its own id) keeps this node the canonical one wherever the id is created
+                    $new_sink = DataFlowNode::getForMethodArgumentById(
+                        $codebase->methods,
+                        $dependent_classlike_storage->name . '::' . $cased_method_name,
+                        $dependent_offset,
+                        null,
+                        $dependent_param,
+                    ) ?? DataFlowNode::getForCallableArg(
+                        'inherited-method',
+                        $dependent_classlike_storage->name . '::' . $cased_method_name,
+                        $offset,
+                    );
+                }
+
+                $new_sinks[$new_sink->id] = $new_sink;
+            }
+        }
+
+        if ($new_sinks === []) {
+            $taint_flow_graph->addEmptyDispatch($dispatch_node);
+
+            return null;
+        }
+
+        $taint_flow_graph->addNode($dispatch_node);
+
+        foreach ($new_sinks as $new_sink) {
+            $taint_flow_graph->addNode($new_sink);
+            $taint_flow_graph->addPath($dispatch_node, $new_sink, 'arg');
+        }
+
+        return $dispatch_node;
+    }
+
     private static function processTaintedness(
         StatementsAnalyzer $statements_analyzer,
         string $cased_method_id,
@@ -1952,6 +2292,7 @@ final class ArgumentAnalyzer
         ?string $named_argument = null,
         bool $unpacked_argument = false,
         ?int $positional_arguments = null,
+        ?int $unpacked_from = null,
     ): void {
         $codebase = $statements_analyzer->getCodebase();
 
@@ -2050,160 +2391,6 @@ final class ArgumentAnalyzer
                 $specialization_location,
             );
 
-        // A virtual call of a method on a class may run an override of a class extending it: the call goes to
-        // them, as well as to the parameter of its method. But that parameter is also where the calls on the
-        // classes extending it go when they inherit the method, which can't run those overrides: what the call
-        // dispatches to the overrides goes through a node of its own, not the parameter. That node is shared by
-        // the virtual calls of the method on the class, so that their number doesn't multiply its paths.
-        $dispatch_node = null;
-
-        if ($taint_flow_graph
-            && $method_id
-            && $method_id->method_name !== '__construct'
-            // a call naming its class (parent::, self::, A::) runs that method only (see StaticCallAnalyzer)
-            && $expr->getAttribute(self::NON_VIRTUAL_CALL_ATTRIBUTE) !== true
-        ) {
-            $class_storage = $codebase->classlike_storage_provider->get($method_id->fq_class_name);
-
-            if ($class_storage->dependent_classlikes !== []) {
-                $param_offset = $function_storage
-                    ? DataFlowNode::getParameterOffset($function_storage, $function_param, $argument_offset)
-                    : $argument_offset;
-
-                // what an override takes of an argument the variadic collects depends on its name and on how many
-                // positional arguments precede it, or on its being unpacked
-                $named_argument = $function_param->is_variadic ? $named_argument : null;
-                $unpacked_argument = $function_param->is_variadic && $unpacked_argument;
-
-                $dispatch_node = DataFlowNode::getForDispatch(
-                    $cased_method_id,
-                    $param_offset,
-                    $specialize_taint,
-                    $named_argument,
-                    $unpacked_argument,
-                    $positional_arguments,
-                );
-
-                // which parameter takes a named argument is unknown after an unpack, as for an unpacked one
-                $unpacked_argument = $unpacked_argument || ($named_argument !== null && $positional_arguments === null);
-
-                if ($taint_flow_graph->isEmptyDispatch($dispatch_node)) {
-                    $dispatch_node = null;
-                } elseif (!$taint_flow_graph->hasNode($dispatch_node)) {
-                    // the first of these calls links it to the methods that may run
-                    $new_sinks = [];
-
-                    $cased_method_name = explode('::', $cased_method_id)[1];
-                    $appearing_method_id = $codebase->methods->getAppearingMethodId($method_id);
-
-                    foreach ($class_storage->dependent_classlikes as $dependent_classlike_lc => $_) {
-                        $dependent_classlike_storage = $codebase->classlike_storage_provider->get(
-                            $dependent_classlike_lc,
-                        );
-
-                        $dependent_method_id = new MethodIdentifier($dependent_classlike_lc, $method_id->method_name);
-                        $dependent_appearing_method_id = $codebase->methods->getAppearingMethodId(
-                            $dependent_method_id,
-                        );
-                        $dependent_declaring_method_id = $codebase->methods->getDeclaringMethodId(
-                            $dependent_method_id,
-                        );
-                        $dependent_storage = $dependent_declaring_method_id
-                            && $codebase->methods->hasStorage($dependent_declaring_method_id)
-                            ? $codebase->methods->getStorage($dependent_declaring_method_id)
-                            : null;
-                        $is_override = $dependent_appearing_method_id !== null
-                            && (string) $dependent_appearing_method_id !== (string) $appearing_method_id;
-
-                        // a specialized call takes the method itself through its own parameter: only the overrides,
-                        // which it used not to take at all
-                        if ($specialize_taint && !$is_override) {
-                            continue;
-                        }
-
-                        // The parameter of an override specialized by call, in the specialization keyed by the
-                        // location of the method, which the dispatch of its returns leaves (see
-                        // MethodCallReturnTypeFetcher::getReturnDispatchNode()): what its body returns of the
-                        // argument then reaches the call.
-                        $dependent_offset = $param_offset;
-                        $dependent_param = $function_param;
-
-                        if ($function_param->is_variadic && !$unpacked_argument) {
-                            // the declared variadic's name says nothing about the parameter of an override that
-                            // takes the argument: a positional one by its position, a named one by its name
-                            $dependent_param = null;
-
-                            if ($named_argument !== null && $positional_arguments !== null && $dependent_storage) {
-                                $named_offset = DataFlowNode::getParameterOffsetOfNamedArgument(
-                                    $dependent_storage,
-                                    $named_argument,
-                                );
-
-                                // none takes it, or the positional arguments already filled it (PHP throws)
-                                if ($named_offset === null
-                                    || ($named_offset < $positional_arguments
-                                        && !$dependent_storage->params[$named_offset]->is_variadic)
-                                ) {
-                                    continue;
-                                }
-
-                                $dependent_offset = $named_offset;
-                            }
-                        }
-
-                        if ($is_override
-                            && $dependent_storage
-                            && $dependent_storage->location
-                            && TaintFlowGraph::isCallSpecialized(
-                                $taint_flow_graph,
-                                $codebase,
-                                $dependent_storage,
-                                $dependent_storage->location,
-                            )
-                        ) {
-                            $new_sink = DataFlowNode::getForMethodArgument(
-                                FunctionLikeAnalyzer::getCasedBodyMethodId($codebase, $dependent_method_id),
-                                $dependent_offset,
-                                $dependent_storage,
-                                $dependent_storage->location,
-                            );
-                        } else {
-                            // Resolve the declaring method's storage (a dependent class usually inherits the
-                            // method, so it has no storage under its own id) so this node's location -- and the
-                            // declared parameter it is keyed by -- is the same canonical one used wherever else
-                            // the node id is created.
-                            $new_sink = DataFlowNode::getForMethodArgumentById(
-                                $codebase->methods,
-                                $dependent_classlike_storage->name . '::' . $cased_method_name,
-                                $dependent_offset,
-                                null,
-                                $dependent_param,
-                            ) ?? DataFlowNode::getForCallableArg(
-                                'inherited-method',
-                                $dependent_classlike_storage->name . '::' . $cased_method_name,
-                                $param_offset,
-                            );
-                        }
-
-                        $new_sinks[$new_sink->id] = $new_sink;
-                    }
-
-                    if ($new_sinks === []) {
-                        // no override may run: the classes extending this one inherit the method
-                        $taint_flow_graph->addEmptyDispatch($dispatch_node);
-                        $dispatch_node = null;
-                    } else {
-                        $taint_flow_graph->addNode($dispatch_node);
-
-                        foreach ($new_sinks as $new_sink) {
-                            $taint_flow_graph->addNode($new_sink);
-                            $taint_flow_graph->addPath($dispatch_node, $new_sink, 'arg');
-                        }
-                    }
-                }
-            }
-        }
-
         if ($method_id && $taint_flow_graph && $called_body_suffix === null) {
             $declaring_method_id = $codebase->methods->getDeclaringMethodId($method_id);
 
@@ -2286,8 +2473,26 @@ final class ArgumentAnalyzer
             $removed_taints,
         );
 
-        if ($dispatch_node && $taint_flow_graph) {
-            $taint_flow_graph->addPath($argument_value_node, $dispatch_node, 'arg', $added_taints, $removed_taints);
+        if ($taint_flow_graph) {
+            self::addDispatchPaths(
+                $statements_analyzer,
+                $taint_flow_graph,
+                $method_id,
+                $expr,
+                $cased_method_id,
+                $function_storage,
+                $function_param,
+                $argument_offset,
+                $specialize_taint,
+                $named_argument,
+                $unpacked_argument,
+                $positional_arguments,
+                $unpacked_from,
+                $arg_location,
+                $argument_value_node,
+                $added_taints,
+                $removed_taints,
+            );
         }
 
         foreach ($input_type->parent_nodes as $parent_node) {
