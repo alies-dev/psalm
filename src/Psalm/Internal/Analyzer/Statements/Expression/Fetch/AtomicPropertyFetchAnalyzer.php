@@ -29,6 +29,7 @@ use Psalm\Internal\Codebase\VariableUseGraph;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\MethodIdentifier;
+use Psalm\Internal\Type\CallSiteVarianceProjector;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
@@ -523,6 +524,8 @@ final class AtomicPropertyFetchAnalyzer
             $declaring_property_class,
         );
 
+        $unset_charged = false;
+
         if (isset($declaring_class_storage->properties[$prop_name])) {
             self::checkPropertyDeprecation($prop_name, $declaring_property_class, $stmt, $statements_analyzer);
 
@@ -564,7 +567,7 @@ final class AtomicPropertyFetchAnalyzer
             }
 
             if (UnsetAnalyzer::writesFetchedProperty($context, $stmt, $property_storage->type)) {
-                InstancePropertyAssignmentAnalyzer::trackPropertyImpurity(
+                $unset_charged = InstancePropertyAssignmentAnalyzer::trackPropertyImpurity(
                     $statements_analyzer,
                     $stmt,
                     $property_id,
@@ -599,15 +602,17 @@ final class AtomicPropertyFetchAnalyzer
 
         if (!self::isFreeToAccess($statements_analyzer, $stmt, $class_storage)) {
             if (UnsetAnalyzer::writesFetchedProperty($context, $stmt, $class_property_type)) {
-                $statements_analyzer->signalMutation(
-                    $stmt_var_id === '$this'
-                        ? Capabilities::WRITE_THIS_PROPS
-                        : Capabilities::WRITE_PROPS,
-                    $context,
-                    'unsetting a property on a mutable object',
-                    ImpurePropertyAssignment::class,
-                    $stmt,
-                );
+                if (!$unset_charged) {
+                    $statements_analyzer->signalMutation(
+                        $stmt_var_id === '$this'
+                            ? Capabilities::WRITE_THIS_PROPS
+                            : Capabilities::WRITE_PROPS,
+                        $context,
+                        'unsetting a property on a mutable object',
+                        ImpurePropertyAssignment::class,
+                        $stmt,
+                    );
+                }
             } else {
                 $statements_analyzer->signalMutation(
                     Capabilities::READ_PROPS,
@@ -855,7 +860,13 @@ final class AtomicPropertyFetchAnalyzer
         TGenericObject $lhs_type_part,
         ClassLikeStorage $property_class_storage,
         ClassLikeStorage $property_declaring_class_storage,
+        bool $for_assignment = false,
     ): Union {
+        $variance_projector = CallSiteVarianceProjector::create($codebase, $lhs_type_part);
+
+        $class_property_type = $variance_projector?->project($class_property_type, $for_assignment)
+            ?? $class_property_type;
+
         $template_types = CallAnalyzer::getTemplateTypesForCall(
             $codebase,
             $property_declaring_class_storage,
