@@ -43,16 +43,6 @@ final class ParserCacheProvider
     }
 
     /**
-     * Without a disk cache, stops keeping the statements parsed from now on
-     *
-     * @psalm-capabilities read-props|write-props
-     */
-    public function dropNewStatementsWithoutDisk(): void
-    {
-        $this->stmtCache->dropMemoryOnlyItems();
-    }
-
-    /**
      * @return array{list<PhpParser\Node\Stmt>, list<PhpParser\Error>}|null
      */
     public function loadStatementsFromCache(
@@ -96,12 +86,15 @@ final class ParserCacheProvider
     /**
      * @param  list<PhpParser\Node\Stmt>        $stmts
      * @param  list<PhpParser\Error>            $parse_errors
+     * @param  bool                             $keep_without_disk whether to keep the statements in memory without a
+     *                                                             disk cache, see {@see Cache::saveItem()}
      */
     public function saveStatementsToCache(
         string $file_path,
         string $file_content_hash,
         array $stmts,
         array $parse_errors,
+        bool $keep_without_disk = true,
     ): void {
         $this->stmtCache->saveItem(
             $file_path,
@@ -113,6 +106,7 @@ final class ParserCacheProvider
                 ),
             ],
             $file_content_hash,
+            $keep_without_disk,
         );
     }
 }

@@ -300,8 +300,7 @@ final class CacheTest extends TestCase
     {
         /** @var Cache<string> $cache */
         $cache = new Cache($this->newConfig(), 'test', [], $persistent);
-        $cache->dropMemoryOnlyItems();
-        $cache->saveItem('key', 'item', 'hash');
+        $cache->saveItem('key', 'item', 'hash', false);
 
         $in_memory = new ReflectionProperty(Cache::class, 'cache');
         self::assertSame($persistent, $in_memory->getValue($cache) !== []);

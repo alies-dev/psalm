@@ -32,7 +32,7 @@ final class InitScannerTask implements Task
         InheritedScanState::take($codebase);
         // this process scans each file once and never sends statements to the parent: kept only in memory, they would
         // be kept for nothing
-        $statements_provider->parser_cache_provider?->dropNewStatementsWithoutDisk();
+        $statements_provider->dropNewStatementsWithoutDisk();
 
         $analyzer->progress->debug('Have initialised forked process for scanning' . PHP_EOL);
 

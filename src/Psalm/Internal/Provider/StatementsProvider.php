@@ -109,6 +109,9 @@ final class StatementsProvider
 
     private static ?Parser $parser = null;
 
+    /** Whether the statements parsed are kept in memory without a disk cache */
+    private bool $keep_new_statements_without_disk = true;
+
     /**
      * @psalm-mutation-free
      */
@@ -310,7 +313,13 @@ final class StatementsProvider
             $this->errors[$file_path] = true;
         }
 
-        $this->parser_cache_provider->saveStatementsToCache($file_path, $file_contents, $stmts, $parse_errors);
+        $this->parser_cache_provider->saveStatementsToCache(
+            $file_path,
+            $file_contents,
+            $stmts,
+            $parse_errors,
+            $this->keep_new_statements_without_disk,
+        );
 
         return $stmts;
     }
@@ -412,6 +421,17 @@ final class StatementsProvider
     public function addDeletionRanges(array $deletion_ranges): void
     {
         $this->deletion_ranges = [...$deletion_ranges, ...$this->deletion_ranges];
+    }
+
+    /**
+     * Without a disk cache, stops keeping the statements parsed from now on, for a process that never asks for them
+     * again
+     *
+     * @psalm-external-mutation-free
+     */
+    public function dropNewStatementsWithoutDisk(): void
+    {
+        $this->keep_new_statements_without_disk = false;
     }
 
     /**
