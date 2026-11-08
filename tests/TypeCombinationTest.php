@@ -10,8 +10,26 @@ use Psalm\Internal\Type\TypeCombiner;
 use Psalm\Tests\Traits\ValidCodeAnalysisTestTrait;
 use Psalm\Type;
 use Psalm\Type\Atomic;
+use Psalm\Type\Atomic\TArray;
+use Psalm\Type\Atomic\TArrayKey;
+use Psalm\Type\Atomic\TBool;
+use Psalm\Type\Atomic\TClassStringMap;
+use Psalm\Type\Atomic\TFalse;
+use Psalm\Type\Atomic\TIterable;
+use Psalm\Type\Atomic\TKeyedArray;
+use Psalm\Type\Atomic\TMixed;
+use Psalm\Type\Atomic\TNamedObject;
+use Psalm\Type\Atomic\TObject;
+use Psalm\Type\Atomic\TObjectWithProperties;
+use Psalm\Type\Atomic\TScalar;
+use Psalm\Type\Atomic\TString;
+use Psalm\Type\Atomic\TTemplateParam;
+use Psalm\Type\Atomic\TTrue;
+use ReflectionClass;
 
+use function array_map;
 use function array_reverse;
+use function is_a;
 
 final class TypeCombinationTest extends TestCase
 {
@@ -41,6 +59,106 @@ final class TypeCombinationTest extends TestCase
             $expected,
             TypeCombiner::combine(array_reverse($converted_types))->getId(),
         );
+    }
+
+    /**
+     * @param non-empty-list<string> $types
+     */
+    #[DataProvider('providerStringCombination')]
+    public function testStringCombination(
+        string $expected,
+        string $expected_reversed,
+        int $literal_limit,
+        array $types,
+    ): void {
+        $atomics = array_map(self::getAtomic(...), $types);
+
+        $this->assertSame(
+            $expected,
+            TypeCombiner::combine($atomics, literal_limit: $literal_limit)->getId(),
+        );
+        $this->assertSame(
+            $expected_reversed,
+            TypeCombiner::combine(array_reverse($atomics), literal_limit: $literal_limit)->getId(),
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string, string, int, non-empty-list<string>}>
+     * @psalm-pure
+     */
+    public static function providerStringCombination(): iterable
+    {
+        return [
+            'scalarAbsorbsStrings' => [
+                'scalar',
+                'class-string|scalar',
+                500,
+                ['scalar', '"a"', 'non-empty-string', 'class-string', 'callable-string'],
+            ],
+            'arrayKeyAbsorbsStrings' => ['array-key', 'array-key', 500, ['array-key', '"a"', 'numeric-string']],
+            'callableAbsorbsCallableString' => ['callable[impure]', 'callable[impure]', 500, ['callable', 'callable-string']],
+            'literalsAtLimit' => ["'a'|'b'|'c'", "'a'|'b'|'c'", 3, ['"a"', '"b"', '"c"']],
+            'literalsOverLimit' => ['string', 'string', 2, ['"a"', '"b"', '"c"']],
+            'literalsOverZeroLimit' => ['string', 'string', 0, ['"a"', '"b"']],
+            'literalsOverLimitBesideNonEmptyString' => [
+                'non-empty-string',
+                'string',
+                2,
+                ['non-empty-string', '"a"', '"b"', '"c"'],
+            ],
+            'zeroOverLimitBesideNonFalsyString' => ['non-empty-string', 'string', 1, ['non-falsy-string', '"a"', '"0"']],
+            'literalsOverLimitBesideNonFalsyString' => ['non-falsy-string', 'string', 1, ['non-falsy-string', '"a"', '"b"']],
+            'literalsOverLimitBesideLowercaseString' => [
+                'lowercase-string',
+                'string',
+                1,
+                ['lowercase-string', '"a"', '"b"'],
+            ],
+            'literalOverLimitBesideNumericString' => ['non-empty-string', 'string', 1, ['numeric-string', '"1"', '"a"']],
+            'literalsOverLimitBesideLiteralString' => ['literal-string', 'string', 1, ['literal-string', '"a"', '"b"']],
+            'literalsOverLimitBesideDecimalIntString' => [
+                'non-empty-lowercase-string',
+                'string',
+                1,
+                ['decimal-int-string', '"1"', '"a"', '"b"'],
+            ],
+            'literalClassStringsOverLimit' => ['class-string', 'class-string', 1, ['A::class', 'B::class']],
+            'stringAndIntLiteralsOverLimit' => [
+                'int<0, max>|string',
+                'int<0, max>|string',
+                1,
+                ['"a"', '1', '"b"', '2'],
+            ],
+        ];
+    }
+
+    /**
+     * Strings skip the checks for the types combined before them in TypeCombiner::scrapeTypeProperties(), which
+     * holds while no string is one of those types.
+     */
+    public function testNoStringIsATypeCombinedBeforeStrings(): void
+    {
+        foreach ([
+            TArray::class,
+            TArrayKey::class,
+            TBool::class,
+            TClassStringMap::class,
+            TFalse::class,
+            TIterable::class,
+            TKeyedArray::class,
+            TMixed::class,
+            TNamedObject::class,
+            TObject::class,
+            TObjectWithProperties::class,
+            TScalar::class,
+            TTemplateParam::class,
+            TTrue::class,
+        ] as $class) {
+            $this->assertFalse((new ReflectionClass($class))->isInterface(), $class);
+            $this->assertFalse(is_a(TString::class, $class, true), $class);
+            $this->assertFalse(is_a($class, TString::class, true), $class);
+        }
     }
 
     /**

@@ -449,6 +449,23 @@ final class TypeCombiner
         bool $allow_mixed_union,
         int $literal_limit,
     ): ?Union {
+        // a string is none of the types checked before scalar absorption below
+        if ($type instanceof TString) {
+            $type_key = $type->getKey();
+
+            if (!isset($combination->value_types['scalar'])) {
+                self::scrapeStringProperties(
+                    $type_key,
+                    $type,
+                    $combination,
+                    $codebase,
+                    $literal_limit,
+                );
+            }
+
+            return null;
+        }
+
         if ($type instanceof TMixed) {
             if ($type->from_loop_isset) {
                 if ($combination->mixed_from_loop_isset === null) {
@@ -997,18 +1014,6 @@ final class TypeCombiner
                 $combination->value_types['int'],
             );
             $combination->value_types[$type_key] = $type;
-
-            return null;
-        }
-
-        if ($type instanceof TString) {
-            self::scrapeStringProperties(
-                $type_key,
-                $type,
-                $combination,
-                $codebase,
-                $literal_limit,
-            );
 
             return null;
         }
