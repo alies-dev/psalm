@@ -35,7 +35,6 @@ use function array_fill_keys;
 use function array_key_first;
 use function array_shift;
 use function count;
-use function explode;
 use function implode;
 use function preg_match;
 use function preg_replace;
@@ -689,16 +688,14 @@ final class ClassLikeDocblockParser
      */
     private static function getMethodOffset(Doc $comment, string $method_entry): int
     {
-        $lines = explode("\n", $comment->getText());
-        $method_offset = 0;
-
-        foreach ($lines as $i => $line) {
-            if (str_contains($line, $method_entry)) {
-                $method_offset = $i;
-                break;
-            }
+        // the index of the first line containing the entry: an entry spanning lines is never found
+        if (str_contains($method_entry, "\n")) {
+            return 0;
         }
 
-        return $method_offset;
+        $text = $comment->getText();
+        $position = strpos($text, $method_entry);
+
+        return $position === false ? 0 : substr_count($text, "\n", 0, $position);
     }
 }
