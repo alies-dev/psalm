@@ -294,6 +294,28 @@ final class CacheTest extends TestCase
         yield 'not persistent without array cache' => [false, false, true];
     }
 
+    /** The statements a parser cache without disk does not keep are parsed again, a change is still noticed */
+    public function testParserCacheWithoutDiskKeepsOnlyTheContentsOfStatementsItDoesNotKeep(): void
+    {
+        $provider = new ParserCacheProvider($this->newConfig(), '', false);
+        $provider->saveStatementsToCache(self::KEY, 'contents', [], [], false);
+
+        self::assertNull($provider->loadStatementsFromCache(self::KEY, 'contents'));
+        self::assertSame('contents', $provider->getHash(self::KEY));
+        self::assertFalse($provider->hasChanged(self::KEY, 'contents'));
+        self::assertTrue($provider->hasChanged(self::KEY, 'new contents'));
+
+        $provider->saveStatementsToCache(self::KEY, 'new contents', [], []);
+
+        self::assertSame([[], []], $provider->loadStatementsFromCache(self::KEY, 'new contents'));
+        self::assertSame('new contents', $provider->getHash(self::KEY));
+
+        $provider->saveStatementsToCache(self::KEY, 'newer contents', [], [], false);
+
+        self::assertNull($provider->loadStatementsFromCache(self::KEY, null));
+        self::assertSame('newer contents', $provider->getHash(self::KEY));
+    }
+
     /** Callers such as ParserCacheProvider keep the previous file contents as the hash to compare them */
     public function testGetHashReturnsTheStoredHashAndNotThePayload(): void
     {
