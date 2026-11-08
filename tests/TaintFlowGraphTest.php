@@ -206,6 +206,42 @@ final class TaintFlowGraphTest extends TestCase
     }
 
     /**
+     * The resolution prepares the graph from the reverse edges linkGeneratorSends() searched when a generator is sent
+     * to, and from its own otherwise: the flows elsewhere are the same either way.
+     */
+    public function testGeneratorSendDoesNotChangeTheOtherFlows(): void
+    {
+        $flows = [
+            'Flows.php' => '<?php
+                namespace App;
+                /** @return array{a: string, b: string} */
+                function wrap(string $s): array { return ["a" => $s, "b" => "safe"]; }
+                function flows(): void {
+                    $x = wrap((string) $_GET["x"]);
+                    echo $x["a"];
+                    echo $x["b"];
+                    $y = wrap("safe");
+                    echo $y["a"];
+                }',
+        ];
+        $send = [
+            'Send.php' => '<?php
+                namespace App;
+                /** @return \Generator<int, string, string, void> */
+                function gen(): \Generator { $s = yield ""; echo $s; }
+                function send(): void { gen()->send((string) $_GET["y"]); }',
+        ];
+
+        $without_send = $this->analyzeWithMergeOrder($flows, false);
+        $with_send = $this->analyzeWithMergeOrder($flows + $send, false);
+
+        // the html and the text with quotes from $x["a"], none from $x["b"] or $y["a"]
+        $this->assertCount(2, $without_send);
+        $this->assertNotSame($without_send, $with_send, 'Expected the send to be linked to the generator');
+        $this->assertSame([], array_diff($without_send, $with_send));
+    }
+
+    /**
      * Which generators a send is linked to must not depend on the order the workers' graphs are merged in, which
      * sets the order of a node's edges. linkGeneratorSends() reaches a node here with 17 call stacks, one over
      * TaintFlowGraph::GENERATOR_SEND_STACKS, and which of them it replaces with "any call matches" decides whether
