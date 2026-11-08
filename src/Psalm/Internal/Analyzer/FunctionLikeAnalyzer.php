@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Psalm\Internal\Analyzer;
 
 use Attribute;
+use LogicException;
 use Override;
 use PhpParser;
 use PhpParser\Node\Expr\ArrowFunction;
@@ -35,6 +36,7 @@ use Psalm\Internal\FileManipulation\FunctionDocblockManipulator;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\PhpVisitor\NodeCounterVisitor;
 use Psalm\Internal\Provider\NodeDataProvider;
+use Psalm\Internal\Provider\StatementsProvider;
 use Psalm\Internal\Type\Comparator\TypeComparisonResult;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\IterationPurity;
@@ -292,6 +294,12 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         bool $add_mutations = false,
         array &$byref_vars = [],
     ): ?bool {
+        if ($this->function->hasAttribute(StatementsProvider::LAZY_METHOD_BODY)) {
+            throw new LogicException(
+                'The body of ' . $this->getId() . ' was left out of its statements: hydrate it before analysing it',
+            );
+        }
+
         $storage = $this->storage;
 
         $function_stmts = $this->function->getStmts() ?: [];

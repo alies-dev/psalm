@@ -13,6 +13,7 @@ use Psalm\Codebase;
 use Psalm\Context;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\Provider\NodeDataProvider;
+use Psalm\Internal\Provider\StatementsProvider;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\PurityArguments;
 use Psalm\Internal\Type\TemplateDefaults;
@@ -186,6 +187,7 @@ abstract class ClassLikeAnalyzer extends SourceAnalyzer
             if ($stmt instanceof PhpParser\Node\Stmt\ClassMethod &&
                 strtolower($stmt->name->name) === strtolower($method_name)
             ) {
+                StatementsProvider::hydrateMethodBody($stmt);
                 $method_analyzer = new MethodAnalyzer($stmt, $this);
 
                 $method_analyzer->analyze($context, new NodeDataProvider(), null, true);
