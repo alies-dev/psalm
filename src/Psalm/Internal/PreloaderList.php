@@ -1761,6 +1761,7 @@ final class PreloaderList {
         \Psalm\Type\Atomic\TResource::class,
         \Psalm\Type\Atomic\TScalar::class,
         \Psalm\Type\Atomic\TSingleLetter::class,
+        \Psalm\Type\Atomic\TStarProjection::class,
         \Psalm\Type\Atomic\TString::class,
         \Psalm\Type\Atomic\TTemplateIndexedAccess::class,
         \Psalm\Type\Atomic\TTemplateKeyOf::class,

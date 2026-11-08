@@ -41,6 +41,7 @@ use Psalm\Type\Atomic\TNonEmptyNonspecificLiteralString;
 use Psalm\Type\Atomic\TNonEmptyString;
 use Psalm\Type\Atomic\TNonspecificLiteralInt;
 use Psalm\Type\Atomic\TNonspecificLiteralString;
+use Psalm\Type\Atomic\TStarProjection;
 use Psalm\Type\Atomic\TString;
 use Psalm\Type\Atomic\TTemplateParam;
 use Psalm\Type\Atomic\TTemplateParamClass;
@@ -858,6 +859,14 @@ trait UnionTrait
             return false;
         }
         return true;
+    }
+
+    /**
+     * @psalm-mutation-free
+     */
+    public function isStarProjection(): bool
+    {
+        return count($this->types) === 1 && reset($this->types) instanceof TStarProjection;
     }
 
     /**
