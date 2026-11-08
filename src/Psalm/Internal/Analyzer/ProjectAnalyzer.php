@@ -1345,6 +1345,7 @@ final class ProjectAnalyzer
 
         $stmts = $this->codebase->getStatementsForFile(
             $file_analyzer->getFilePath(),
+            lazy_method_bodies: true,
         );
 
         $file_analyzer->populateCheckers($stmts);

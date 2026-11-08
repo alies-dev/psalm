@@ -9,6 +9,10 @@ use PhpParser;
 use PhpParser\ErrorHandler\Collecting;
 use PhpParser\Node;
 use PhpParser\Node\Stmt;
+use PhpParser\Node\Stmt\ClassMethod;
+use PhpParser\Node\Stmt\Class_;
+use PhpParser\Node\Stmt\Enum_;
+use PhpParser\Node\Stmt\Namespace_;
 use PhpParser\NodeVisitorAbstract;
 use PhpParser\Parser;
 use PhpParser\PhpVersion;
@@ -83,11 +87,19 @@ final class StatementsProvider
 
     /**
      * The statements of vendor files, which the parser cache doesn't keep, by path: the PHP version and the hash of
-     * the contents they were parsed from, and from the second request on the serialized statements
+     * the contents they were parsed from, and from the second request on the serialized statements, method bodies
+     * serialized apart (see LAZY_METHOD_BODY)
      *
      * @var array<string, array{array{int, string}, ?string}>
      */
     private array $vendor_statements = [];
+
+    /**
+     * The attribute holding the serialized statements of a method body left out of the statements of a vendor file,
+     * until hydrateMethodBody() puts them back: ProjectAnalyzer::getMethodMutations() analyses one method of a file
+     * thousands of times, and unserializing the bodies of all the others took most of the time
+     */
+    public const LAZY_METHOD_BODY = 'psalmLazyMethodBody';
 
     /**
      * Statements nesting deeper are not kept, as (un)serializing them could exhaust a small stack; vendor code
@@ -107,6 +119,8 @@ final class StatementsProvider
     }
 
     /**
+     * @param bool $lazy_method_bodies whether the bodies of the methods may be left out, for the caller to put back
+     *                                 with hydrateMethodBody() the ones it analyses
      * @return list<Stmt>
      */
     public function getStatementsForFile(
@@ -114,6 +128,7 @@ final class StatementsProvider
         int $analysis_php_version_id,
         bool $do_diff,
         ?Progress $progress = null,
+        bool $lazy_method_bodies = false,
     ): array {
         unset($this->errors[$file_path]);
 
@@ -137,7 +152,15 @@ final class StatementsProvider
             [$kept_parsed_from, $kept_statements] = $this->vendor_statements[$file_path] ?? [null, null];
 
             if ($kept_statements !== null && $kept_parsed_from === $parsed_from) {
-                return self::unserializeStatements($kept_statements);
+                $stmts = self::unserializeStatements($kept_statements);
+
+                if (!$lazy_method_bodies) {
+                    foreach (self::getKeptMethods($stmts) as $method) {
+                        self::hydrateMethodBody($method);
+                    }
+                }
+
+                return $stmts;
             }
 
             $progress->debug('Parsing ' . $file_path . " because we cannot use cache\n");
@@ -153,7 +176,7 @@ final class StatementsProvider
                 $this->vendor_statements[$file_path] = [
                     $parsed_from,
                     $kept_parsed_from === $parsed_from && self::getNesting($stmts) <= self::MAX_KEPT_NESTING
-                        ? self::serializeStatements($stmts)
+                        ? self::serializeKeptStatements($stmts)
                         : null,
                 ];
             }
@@ -574,7 +597,7 @@ final class StatementsProvider
     /**
      * What serialize() makes of the statements is safe to unserialize, whatever the file they were parsed from
      *
-     * @param list<Stmt> $stmts
+     * @param array<Stmt> $stmts
      * @psalm-taint-escape unserialize
      */
     private static function serializeStatements(array $stmts): string
@@ -591,6 +614,84 @@ final class StatementsProvider
         } finally {
             ini_set('serialize_precision', (string) $precision);
         }
+    }
+
+    /**
+     * Serializes the statements with the bodies of their kept methods serialized apart, each in its method's
+     * LAZY_METHOD_BODY attribute, leaving the statements as they were
+     *
+     * @param list<Stmt> $stmts
+     */
+    private static function serializeKeptStatements(array $stmts): string
+    {
+        $bodies = [];
+
+        foreach (self::getKeptMethods($stmts) as $method) {
+            if ($method->stmts !== null && $method->stmts !== []) {
+                $bodies[] = [$method, $method->stmts];
+                $method->setAttribute(self::LAZY_METHOD_BODY, self::serializeStatements($method->stmts));
+                $method->stmts = [];
+            }
+        }
+
+        try {
+            return self::serializeStatements($stmts);
+        } finally {
+            foreach ($bodies as [$method, $body]) {
+                $method->stmts = $body;
+                self::removeLazyMethodBody($method);
+            }
+        }
+    }
+
+    /**
+     * The methods of the classes and enums declared at the top level or in a namespace, whose analyzers
+     * FileAnalyzer::populateCheckers() makes without analysing them: the statements around the other class-likes
+     * (in an if, a function, ...) are analysed with their method bodies
+     *
+     * @param list<Stmt> $stmts
+     * @return list<ClassMethod>
+     * @psalm-capabilities read-props
+     */
+    private static function getKeptMethods(array $stmts): array
+    {
+        $methods = [];
+
+        foreach ($stmts as $stmt) {
+            foreach ($stmt instanceof Namespace_ ? $stmt->stmts : [$stmt] as $class) {
+                if ($class instanceof Class_ || $class instanceof Enum_) {
+                    foreach ($class->stmts as $class_stmt) {
+                        if ($class_stmt instanceof ClassMethod) {
+                            $methods[] = $class_stmt;
+                        }
+                    }
+                }
+            }
+        }
+
+        return $methods;
+    }
+
+    /**
+     * Puts back the body of a method of statements requested with lazy method bodies, unserialized afresh like the
+     * rest of a request's statements
+     */
+    public static function hydrateMethodBody(ClassMethod $method): void
+    {
+        /** @var string|null */
+        $body = $method->getAttribute(self::LAZY_METHOD_BODY);
+
+        if ($body !== null) {
+            $method->stmts = self::unserializeStatements($body);
+            self::removeLazyMethodBody($method);
+        }
+    }
+
+    private static function removeLazyMethodBody(ClassMethod $method): void
+    {
+        $attributes = $method->getAttributes();
+        unset($attributes[self::LAZY_METHOD_BODY]);
+        $method->setAttributes($attributes);
     }
 
     /**

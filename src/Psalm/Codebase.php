@@ -1002,15 +1002,20 @@ final class Codebase
     }
 
     /**
+     * @param bool $lazy_method_bodies internal: see StatementsProvider::getStatementsForFile()
      * @return list<PhpParser\Node\Stmt>
      */
-    public function getStatementsForFile(string $file_path, ?Progress $progress = null): array
-    {
+    public function getStatementsForFile(
+        string $file_path,
+        ?Progress $progress = null,
+        bool $lazy_method_bodies = false,
+    ): array {
         return $this->statements_provider->getStatementsForFile(
             $file_path,
             $this->analysis_php_version_id,
             $this->diff_methods || $this->diff_run || $this->language_server,
             $progress ?? $this->progress,
+            $lazy_method_bodies,
         );
     }
 

@@ -13,6 +13,7 @@ use Psalm\Codebase;
 use Psalm\Context;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\Provider\NodeDataProvider;
+use Psalm\Internal\Provider\StatementsProvider;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\PurityArguments;
 use Psalm\Internal\Type\TemplateDefaults;
@@ -186,6 +187,7 @@ abstract class ClassLikeAnalyzer extends SourceAnalyzer
             if ($stmt instanceof PhpParser\Node\Stmt\ClassMethod &&
                 strtolower($stmt->name->name) === strtolower($method_name)
             ) {
+                StatementsProvider::hydrateMethodBody($stmt);
                 $method_analyzer = new MethodAnalyzer($stmt, $this);
 
                 $method_analyzer->analyze($context, new NodeDataProvider(), null, true);
@@ -197,26 +199,30 @@ abstract class ClassLikeAnalyzer extends SourceAnalyzer
                         self::getFQCLNFromNameObject($trait, $this->source->getAliases()),
                     );
 
-                    $trait_file_analyzer = $project_analyzer->getFileAnalyzerForClassLike($fq_trait_name);
                     $trait_node = $codebase->classlikes->getTraitNode($fq_trait_name);
-                    $trait_storage = $codebase->classlike_storage_provider->get($fq_trait_name);
-                    $trait_aliases = $trait_storage->aliases;
+                    $trait_aliases = $codebase->classlike_storage_provider->get($fq_trait_name)->aliases;
 
                     if ($trait_aliases === null) {
                         continue;
                     }
 
-                    $trait_analyzer = new TraitAnalyzer(
-                        $trait_node,
-                        $trait_file_analyzer,
-                        $fq_trait_name,
-                        $trait_aliases,
-                    );
+                    $trait_file_analyzer = null;
+                    $trait_analyzer = null;
 
                     foreach ($trait_node->stmts as $trait_stmt) {
                         if ($trait_stmt instanceof PhpParser\Node\Stmt\ClassMethod &&
                             strtolower($trait_stmt->name->name) === strtolower($method_name)
                         ) {
+                            if ($trait_analyzer === null) {
+                                $trait_file_analyzer = $project_analyzer->getFileAnalyzerForClassLike($fq_trait_name);
+                                $trait_analyzer = new TraitAnalyzer(
+                                    $trait_node,
+                                    $trait_file_analyzer,
+                                    $fq_trait_name,
+                                    $trait_aliases,
+                                );
+                            }
+
                             $method_analyzer = new MethodAnalyzer($trait_stmt, $trait_analyzer);
 
                             $actual_method_id = $method_analyzer->getMethodId();
@@ -239,7 +245,7 @@ abstract class ClassLikeAnalyzer extends SourceAnalyzer
                         }
                     }
 
-                    $trait_file_analyzer->clearSourceBeforeDestruction();
+                    $trait_file_analyzer?->clearSourceBeforeDestruction();
                 }
             }
         }
