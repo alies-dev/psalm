@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Psalm\Internal\Analyzer;
 
 use Psalm\Storage\ImmutableNonCloneableTrait;
+use Psalm\Storage\UnserializeMemoryUsageSuppressionTrait;
 
 /**
  * @psalm-immutable
@@ -13,6 +14,7 @@ use Psalm\Storage\ImmutableNonCloneableTrait;
 final class DataFlowNodeData
 {
     use ImmutableNonCloneableTrait;
+    use UnserializeMemoryUsageSuppressionTrait;
 
     /**
      * @psalm-mutation-free
