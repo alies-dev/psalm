@@ -20,6 +20,7 @@ use Psalm\Internal\Fork\AnalyzerTask;
 use Psalm\Internal\Fork\InitAnalyzerTask;
 use Psalm\Internal\Fork\Pool;
 use Psalm\Internal\Fork\ShutdownAnalyzerTask;
+use Psalm\Internal\Provider\ClassLikeStorageProvider;
 use Psalm\Internal\Provider\FileProvider;
 use Psalm\Internal\Provider\FileStorageProvider;
 use Psalm\Internal\Provider\StatementsProvider;
@@ -83,6 +84,7 @@ use const PHP_INT_MAX;
  *      used_suppressions: array<string, array<int, bool>>,
  *      function_docblock_manipulators: array<string, array<int, FunctionDocblockManipulator>>,
  *      mutable_classes: array<string, CapabilitySet>,
+ *      used_traits: array<lowercase-string, true>,
  *      issue_handlers: array{type: string, index: int, count: int}[],
  * }
  */
@@ -174,6 +176,13 @@ final class Analyzer
      * @var array<string, CapabilitySet>
      */
     public array $mutable_classes = [];
+
+    /**
+     * The traits the classes this process analysed use, see ClassLikeStorage::$trait_used
+     *
+     * @var array<lowercase-string, true>
+     */
+    private array $used_traits = [];
 
     /**
      * @psalm-mutation-free
@@ -354,6 +363,8 @@ final class Analyzer
                 foreach ($pool_data['mutable_classes'] as $class => $capabilities) {
                     $this->addMutableClass($class, $capabilities);
                 }
+
+                $this->addUsedTraits($pool_data['used_traits']);
 
                 FunctionDocblockManipulator::addManipulators($pool_data['function_docblock_manipulators']);
 
@@ -1371,6 +1382,39 @@ final class Analyzer
     {
         $fqcln = strtolower($fqcln);
         $this->mutable_classes[$fqcln] = ($this->mutable_classes[$fqcln] ?? Capabilities::NONE) | $capabilities;
+    }
+
+    /**
+     * @psalm-external-mutation-free
+     */
+    public function addUsedTrait(string $fq_trait_name): void
+    {
+        $this->used_traits[strtolower($fq_trait_name)] = true;
+    }
+
+    /**
+     * @return array<lowercase-string, true>
+     * @psalm-mutation-free
+     */
+    public function getUsedTraits(): array
+    {
+        return $this->used_traits;
+    }
+
+    /**
+     * Marks the storages of the traits a worker found used, as its analysis marked its own copies.
+     *
+     * @param array<lowercase-string, true> $used_traits
+     */
+    public function addUsedTraits(array $used_traits): void
+    {
+        $classlike_storages = ClassLikeStorageProvider::getAll();
+
+        foreach ($used_traits as $fq_trait_name_lc => $_) {
+            if (isset($classlike_storages[$fq_trait_name_lc])) {
+                $classlike_storages[$fq_trait_name_lc]->trait_used = true;
+            }
+        }
     }
 
     /**
