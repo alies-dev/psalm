@@ -1117,6 +1117,10 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
         $uninitialized_properties = [];
         $uninitialized_typed_properties = [];
         $uninitialized_private_properties = false;
+        $uninitialized_property_names = [];
+        $fake_constructor_call = null;
+        $fake_stmt = null;
+        $inert_constructor_closure = null;
 
         foreach ($storage->appearing_property_ids as $property_name => $appearing_property_id) {
             $property_class_name = $codebase->properties->getDeclaringClassForProperty(
@@ -1188,6 +1192,7 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
 
             $uninitialized_variables[] = '$this->' . $property_name;
             $uninitialized_properties[$property_class_name . '::$' . $property_name] = $property;
+            $uninitialized_property_names[$property_name] = true;
 
             if ($property->type && !$property->hook_get) {
                 // Complain about all natively typed properties and all non-mixed docblock typed properties
@@ -1278,16 +1283,15 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
                         )],
                     ];
 
+                $fake_constructor_call = new VirtualStaticCall(
+                    new VirtualFullyQualified($constructor_declaring_fqcln),
+                    new VirtualIdentifier('__construct', $fake_constructor_attributes),
+                    $fake_constructor_stmt_args,
+                    $fake_call_attributes,
+                );
+
                 $fake_constructor_stmts = [
-                    new VirtualExpression(
-                        new VirtualStaticCall(
-                            new VirtualFullyQualified($constructor_declaring_fqcln),
-                            new VirtualIdentifier('__construct', $fake_constructor_attributes),
-                            $fake_constructor_stmt_args,
-                            $fake_call_attributes,
-                        ),
-                        $fake_call_attributes,
-                    ),
+                    new VirtualExpression($fake_constructor_call, $fake_call_attributes),
                 ];
 
                 $fake_stmt = new VirtualClassMethod(
@@ -1300,25 +1304,25 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
                     $fake_constructor_attributes,
                 );
 
-                $codebase->analyzer->disableMixedCounts();
-
-                $was_collecting_initializations = $class_context->collect_initializations;
-
-                $class_context->collect_initializations = true;
-                $class_context->collect_nonprivate_initializations = !$uninitialized_private_properties;
-
-                $constructor_analyzer = $this->analyzeClassMethod(
-                    $fake_stmt,
+                $inert_constructor_closure = InertConstructorClosure::find(
+                    $codebase,
                     $storage,
-                    $this,
+                    $storage->declaring_method_ids['__construct'],
+                    $uninitialized_property_names,
                     $class_context,
-                    $global_context,
-                    true,
                 );
 
-                $class_context->collect_initializations = $was_collecting_initializations;
+                if ($inert_constructor_closure !== null) {
+                    $fake_constructor_call->setAttribute(InertConstructorClosure::ATTRIBUTE, $inert_constructor_closure);
 
-                $codebase->analyzer->enableMixedCounts();
+                    $codebase->progress->debug(
+                        'Skipping the bodies of ' . $constructor_declaring_fqcln . '::__construct'
+                            . ' in the initialization of ' . $fq_class_name . "\n",
+                    );
+                }
+
+                // analysed below, where the properties it initialises are collected
+                $constructor_analyzer = new MethodAnalyzer($fake_stmt, $this);
             }
         }
 
@@ -1358,6 +1362,17 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
             $method_context->vars_in_scope['$this'] = new Union([$this_atomic_object_type]);
             $method_context->vars_possibly_in_scope['$this'] = true;
             $method_context->calling_method_id = strtolower($fq_class_name) . '::__construct';
+
+            if ($inert_constructor_closure !== null && $fake_stmt !== null && $fake_constructor_call !== null) {
+                assert($inert_constructor_closure->isSkipExact(
+                    $this,
+                    $fake_stmt,
+                    $fake_constructor_call,
+                    $method_context,
+                    $global_context,
+                    $uninitialized_property_names,
+                ));
+            }
 
             $constructor_analyzer->analyze(
                 $method_context,
@@ -1783,7 +1798,6 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
         SourceAnalyzer $source,
         Context $class_context,
         ?Context $global_context = null,
-        bool $is_fake = false,
     ): ?MethodAnalyzer {
         $config = Config::getInstance();
 
@@ -1885,7 +1899,6 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
             && $method_already_analyzed
             && !$class_context->collect_initializations
             && !$class_context->collect_mutations
-            && !$is_fake
         ) {
             $project_analyzer->progress->debug(
                 'Skipping analysis of pre-analyzed method ' . $analyzed_method_id . "\n",
@@ -1948,7 +1961,6 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
         if (!$method_already_analyzed
             && !$class_context->collect_initializations
             && !$class_context->collect_mutations
-            && !$is_fake
         ) {
             $codebase->analyzer->setAnalyzedMethod($included_file_path, $trait_safe_method_id);
         }

@@ -2045,6 +2045,25 @@ final class Config
             return false;
         }
 
+        if (!$this->canReportIssuesInFile($file_path)) {
+            return false;
+        }
+
+        if ($suppressible && $this->getReportingLevelForFile($issue_type, $file_path) === self::REPORT_SUPPRESS) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Whether the issues of some type can be reported in the file: the part of reportIssueInFile() that doesn't
+     * depend on the issue type
+     *
+     * @internal
+     */
+    public function canReportIssuesInFile(string $file_path): bool
+    {
         if ($this->mustBeIgnored($file_path)) {
             return false;
         }
@@ -2071,27 +2090,16 @@ final class Config
             }
         }
 
-        $any_file_path_matched = false;
-
         foreach ($dependent_files as $dependent_file_path) {
             if (((!$project_analyzer->full_run && $codebase->analyzer->canReportIssues($dependent_file_path))
                     || $project_analyzer->canReportIssues($dependent_file_path))
                 && ($file_path === $dependent_file_path || !$this->mustBeIgnored($dependent_file_path))
             ) {
-                $any_file_path_matched = true;
-                break;
+                return true;
             }
         }
 
-        if (!$any_file_path_matched) {
-            return false;
-        }
-
-        if ($suppressible && $this->getReportingLevelForFile($issue_type, $file_path) === self::REPORT_SUPPRESS) {
-            return false;
-        }
-
-        return true;
+        return false;
     }
 
     /**
