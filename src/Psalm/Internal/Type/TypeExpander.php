@@ -16,30 +16,38 @@ use Psalm\Storage\Capabilities;
 use Psalm\Type;
 use Psalm\Type\Atomic;
 use Psalm\Type\Atomic\TArray;
+use Psalm\Type\Atomic\TBool;
 use Psalm\Type\Atomic\TCallable;
 use Psalm\Type\Atomic\TClassConstant;
 use Psalm\Type\Atomic\TClassString;
 use Psalm\Type\Atomic\TClosure;
 use Psalm\Type\Atomic\TConditional;
 use Psalm\Type\Atomic\TEnumCase;
+use Psalm\Type\Atomic\TFalse;
+use Psalm\Type\Atomic\TFloat;
 use Psalm\Type\Atomic\TGenericObject;
 use Psalm\Type\Atomic\TGlobalConstant;
 use Psalm\Type\Atomic\TInt;
 use Psalm\Type\Atomic\TIntMask;
 use Psalm\Type\Atomic\TIntMaskOf;
+use Psalm\Type\Atomic\TIntRange;
 use Psalm\Type\Atomic\TIntersection;
 use Psalm\Type\Atomic\TIterable;
 use Psalm\Type\Atomic\TKeyOf;
 use Psalm\Type\Atomic\TKeyedArray;
 use Psalm\Type\Atomic\TLiteralClassString;
+use Psalm\Type\Atomic\TLiteralFloat;
 use Psalm\Type\Atomic\TLiteralInt;
+use Psalm\Type\Atomic\TLiteralString;
 use Psalm\Type\Atomic\TMixed;
 use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Type\Atomic\TNever;
 use Psalm\Type\Atomic\TNull;
 use Psalm\Type\Atomic\TObjectWithProperties;
 use Psalm\Type\Atomic\TPropertiesOf;
+use Psalm\Type\Atomic\TString;
 use Psalm\Type\Atomic\TTemplateParam;
+use Psalm\Type\Atomic\TTrue;
 use Psalm\Type\Atomic\TTypeAlias;
 use Psalm\Type\Atomic\TValueOf;
 use Psalm\Type\Atomic\TVoid;
@@ -63,6 +71,27 @@ use function strtolower;
 final class TypeExpander
 {
     /**
+     * Exact classes that expandAtomic() returns unchanged and isIntMask() rejects; their subclasses (class strings,
+     * int masks, ...) can expand.
+     */
+    private const UNEXPANDABLE_ATOMIC_CLASSES = [
+        TInt::class => true,
+        TLiteralInt::class => true,
+        TIntRange::class => true,
+        TFloat::class => true,
+        TLiteralFloat::class => true,
+        TString::class => true,
+        TLiteralString::class => true,
+        TBool::class => true,
+        TTrue::class => true,
+        TFalse::class => true,
+        TNull::class => true,
+        TMixed::class => true,
+        TVoid::class => true,
+        TNever::class => true,
+    ];
+
+    /**
      * @psalm-suppress InaccessibleProperty We just created the type
      */
     public static function expandUnion(
@@ -82,29 +111,33 @@ final class TypeExpander
         $int_mask_bits = $return_type->int_mask_bits;
 
         foreach ($return_type->getAtomicTypes() as $return_type_part) {
-            $is_int_mask = self::isIntMask($codebase, $return_type_part, $self_class);
+            if (isset(self::UNEXPANDABLE_ATOMIC_CLASSES[$return_type_part::class])) {
+                $new_return_type_parts[] = $return_type_part;
+            } else {
+                $is_int_mask = self::isIntMask($codebase, $return_type_part, $self_class);
 
-            $parts = self::expandAtomic(
-                $codebase,
-                $return_type_part,
-                $self_class,
-                $static_class_type,
-                $parent_class,
-                $evaluate_class_constants,
-                $evaluate_conditional_types,
-                $final,
-                $expand_generic,
-                $expand_templates,
-                $throw_on_unresolvable_constant,
-            );
+                $parts = self::expandAtomic(
+                    $codebase,
+                    $return_type_part,
+                    $self_class,
+                    $static_class_type,
+                    $parent_class,
+                    $evaluate_class_constants,
+                    $evaluate_conditional_types,
+                    $final,
+                    $expand_generic,
+                    $expand_templates,
+                    $throw_on_unresolvable_constant,
+                );
 
-            $part_int_mask_bits = $is_int_mask ? IntMask::getExpandedBits($parts) : null;
+                $part_int_mask_bits = $is_int_mask ? IntMask::getExpandedBits($parts) : null;
 
-            if ($part_int_mask_bits !== null) {
-                $int_mask_bits = ($int_mask_bits ?? 0) | $part_int_mask_bits;
+                if ($part_int_mask_bits !== null) {
+                    $int_mask_bits = ($int_mask_bits ?? 0) | $part_int_mask_bits;
+                }
+
+                $new_return_type_parts = [...$new_return_type_parts, ...$parts];
             }
-
-            $new_return_type_parts = [...$new_return_type_parts, ...$parts];
         }
 
         $fleshed_out_type = TypeCombiner::combine(
