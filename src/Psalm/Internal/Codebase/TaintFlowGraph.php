@@ -187,6 +187,17 @@ final class TaintFlowGraph extends DataFlowGraph
     private array $despecialized_calls = [];
 
     /**
+     * @param bool $keep_after_resolution whether connectSinksAndSources() keeps the edges and nodes, for
+     *                                    summarizeEdges() (--dump-taint-graph), rather than freeing them once the
+     *                                    resolution has taken what it walks
+     * @psalm-mutation-free
+     */
+    public function __construct(
+        private readonly bool $keep_after_resolution = false,
+    ) {
+    }
+
+    /**
      * Whether the taint nodes of a call to $storage at $call_location are specialized to the call site,
      * so that taint flowing into one call does not flow out of the other calls.
      *
@@ -878,6 +889,13 @@ final class TaintFlowGraph extends DataFlowGraph
 
         $this->sinks = [];
         $this->sources = [];
+
+        if (!$this->keep_after_resolution) {
+            // what the resolution leaves out of them is freed (see TaintFlowResolution::prepareGraph())
+            $this->forward_edges = [];
+            $this->nodes = [];
+            $this->specializations = [];
+        }
 
         $resolution->resolve($progress);
 

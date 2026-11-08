@@ -1404,7 +1404,7 @@ final class Psalm
         $project_analyzer->getCodebase()->all_functions_global = $config->all_functions_global;
 
         if ($config->run_taint_analysis || $run_taint_analysis) {
-            $project_analyzer->trackTaintedInputs();
+            $project_analyzer->trackTaintedInputs(isset($options['dump-taint-graph']));
         }
 
         if ($config->find_unused_psalm_suppress || isset($options['find-unused-psalm-suppress'])) {

@@ -20,6 +20,7 @@ use function array_merge;
 use function array_pop;
 use function array_slice;
 use function array_values;
+use function assert;
 use function count;
 use function explode;
 use function implode;
@@ -875,8 +876,8 @@ final class TaintFlowResolution
     }
 
     /**
-     * Restricts the resolution to the nodes from which a sink is reachable, and computes what it needs to
-     * know of the graph beforehand.
+     * Restricts the resolution to the nodes reachable from a source from which a sink is reachable, and computes
+     * what it needs to know of the graph beforehand.
      *
      * @psalm-capabilities read-props|write-this-props|write-refs
      */
@@ -885,26 +886,11 @@ final class TaintFlowResolution
         $reverse = $this->reverse_edges;
         $this->reverse_edges = null;
 
-        if ($reverse === null) {
-            $reverse = [];
+        foreach ($this->forward_edges as $from_id => $destinations) {
+            $this->linkSpecialization($from_id);
 
-            foreach ($this->forward_edges as $from_id => $destinations) {
-                $this->linkSpecialization($from_id);
-
-                foreach ($destinations as $to_id => $_) {
-                    $reverse[$to_id][$from_id] = true;
-                    $this->linkSpecialization($to_id);
-                }
-            }
-        } else {
-            // The specialization links among the reverse edges are links of $this->specialization_links too, which
-            // the searches below take either way, and computeObservableDepths() takes the actual edges only.
-            foreach ($this->forward_edges as $from_id => $destinations) {
-                $this->linkSpecialization($from_id);
-
-                foreach ($destinations as $to_id => $_) {
-                    $this->linkSpecialization($to_id);
-                }
+            foreach ($destinations as $to_id => $_) {
+                $this->linkSpecialization($to_id);
             }
         }
 
@@ -918,21 +904,72 @@ final class TaintFlowResolution
             $this->linkSpecializationByField($node);
         }
 
+        // The walk goes from the sources through the forward edges, the specialization links either way and the
+        // specializations of a node (see walk()). What is computed below for a node only depends on the nodes
+        // reachable from it that way, which are reached too if it is: the others are left out.
+        $reached = [];
+        $queue = [];
+
+        foreach ($this->sources as $id => $source) {
+            if ($source->taints !== 0) {
+                $reached[$id] = true;
+                $queue[] = $id;
+            }
+        }
+
+        while ($queue) {
+            $id = array_pop($queue);
+
+            foreach ($this->forward_edges[$id] ?? [] as $to_id => $_) {
+                if (!isset($reached[$to_id])) {
+                    $reached[$to_id] = true;
+                    $queue[] = $to_id;
+                }
+            }
+
+            foreach ($this->specialization_links[$id] ?? [] as $linked_id => $_) {
+                if (!isset($reached[$linked_id])) {
+                    $reached[$linked_id] = true;
+                    $queue[] = $linked_id;
+                }
+            }
+
+            foreach ($this->specializations[$id] ?? [] as $specialized_id) {
+                if (!isset($reached[$specialized_id])) {
+                    $reached[$specialized_id] = true;
+                    $queue[] = $specialized_id;
+                }
+            }
+        }
+
+        // The reverse edges of the nodes reached, unless linkGeneratorSends() built those of the whole graph: the
+        // specialization links among those are links of $this->specialization_links too, which the searches below
+        // take either way, and computeObservableDepths() only takes the actual edges.
+        if ($reverse === null) {
+            $reverse = [];
+
+            foreach ($reached as $from_id => $_) {
+                foreach ($this->forward_edges[$from_id] ?? [] as $to_id => $_) {
+                    $reverse[$to_id][$from_id] = true;
+                }
+            }
+        }
+
         // The search runs backwards from the sinks over the forward edges, treating specialization links
         // as bidirectional so that a node whose specialized or de-specialized form can reach a sink is
         // itself kept (the resolution walk maps freely between the two).
-        $queue = [];
-
         foreach ($this->sinks as $id => $_) {
-            $this->sink_reachable[$id] = true;
-            $queue[] = $id;
+            if (isset($reached[$id])) {
+                $this->sink_reachable[$id] = true;
+                $queue[] = $id;
+            }
         }
 
         while ($queue) {
             $id = array_pop($queue);
 
             foreach ($reverse[$id] ?? [] as $from_id => $_) {
-                if (!isset($this->sink_reachable[$from_id])) {
+                if (isset($reached[$from_id]) && !isset($this->sink_reachable[$from_id])) {
                     $this->sink_reachable[$from_id] = true;
                     $queue[] = $from_id;
                 }
@@ -946,10 +983,11 @@ final class TaintFlowResolution
             }
         }
 
+        // into a new array: pruning the graph's would copy all of it first
+        $forward_edges = [];
+
         foreach ($this->forward_edges as $from_id => $destinations) {
             if (!isset($this->sink_reachable[$from_id])) {
-                unset($this->forward_edges[$from_id]);
-
                 continue;
             }
 
@@ -962,18 +1000,25 @@ final class TaintFlowResolution
             }
 
             ksort($destinations, SORT_STRING);
-            $this->forward_edges[$from_id] = $destinations;
+            $forward_edges[$from_id] = $destinations;
         }
+
+        $this->forward_edges = $forward_edges;
+        $specializations = [];
 
         // The states, and so where flows converge (see enterConvergence()) and the traces of the flows
         // reported, depend on the order the call sites of a node are left through (see walk()).
-        foreach ($this->specializations as $id => $specializations) {
-            ksort($specializations, SORT_STRING);
-            $this->specializations[$id] = $specializations;
+        foreach ($this->specializations as $id => $map) {
+            if (isset($reached[$id])) {
+                ksort($map, SORT_STRING);
+                $specializations[$id] = $map;
+            }
         }
 
+        $this->specializations = $specializations;
+
         $this->computeObservableDepths($reverse);
-        $this->computeTaintAddingReachable($reverse);
+        $this->computeTaintAddingReachable($reverse, $reached);
     }
 
     /**
@@ -1161,9 +1206,10 @@ final class TaintFlowResolution
 
     /**
      * @param array<string, array<string, true>> $reverse
+     * @param array<string, true> $reached the nodes the walk can reach (see prepareGraph())
      * @psalm-external-mutation-free
      */
-    private function computeTaintAddingReachable(array $reverse): void
+    private function computeTaintAddingReachable(array $reverse, array $reached): void
     {
         $queue = [];
 
@@ -1182,7 +1228,7 @@ final class TaintFlowResolution
             $id = array_pop($queue);
 
             foreach ($reverse[$id] ?? [] as $from_id => $_) {
-                if (!isset($this->taint_adding_reachable[$from_id])) {
+                if (isset($reached[$from_id]) && !isset($this->taint_adding_reachable[$from_id])) {
                     $this->taint_adding_reachable[$from_id] = true;
                     $queue[] = $from_id;
                 }
@@ -1954,6 +2000,9 @@ final class TaintFlowResolution
         int $path_type,
         int $caller = -1,
     ): void {
+        // what prepareGraph() computes only holds for these
+        assert(isset($this->sink_reachable[$node_id]));
+
         if ($kept === 0 && $added === 0 && !isset($this->taint_adding_reachable[$node_id])) {
             return;
         }

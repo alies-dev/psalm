@@ -92,7 +92,9 @@ final class TaintDeterminismTest extends TestCase
         $file_path = (string) getcwd() . '/src/taint_determinism.php';
         $this->addFile($file_path, $code);
 
-        $this->analyzeFile($file_path, new Context(), false, true);
+        // the graph is kept once resolved, as for --dump-taint-graph
+        $this->project_analyzer->trackTaintedInputs(true);
+        $this->analyzeFile($file_path, new Context(), false);
 
         $taint_flow_graph = $this->project_analyzer->getCodebase()->taint_flow_graph;
         self::assertNotNull($taint_flow_graph);

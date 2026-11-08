@@ -550,9 +550,12 @@ final class ProjectAnalyzer
         );
     }
 
-    public function trackTaintedInputs(): void
+    /**
+     * @param bool $keep_graph whether the graph is kept once resolved, for --dump-taint-graph
+     */
+    public function trackTaintedInputs(bool $keep_graph = false): void
     {
-        $this->codebase->taint_flow_graph = new TaintFlowGraph();
+        $this->codebase->taint_flow_graph = new TaintFlowGraph($keep_graph);
     }
 
     public function trackUnusedSuppressions(): void
