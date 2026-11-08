@@ -493,12 +493,9 @@ final class Scanner
                 fn(string $taint_type): array => $this->codebase->registerTaintFromWorker($taint_type),
             );
 
-            // Wait for all tasks to complete and collect the results.
-            $forked_pool_data = $pool->runAll(new ShutdownScannerTask);
-
-            foreach ($forked_pool_data as $pool_data) {
-                $pool_data = $pool_data->await();
-
+            // The workers are killed before their results are unpacked: alive, they would hold their memory meanwhile,
+            // and exiting normally would write to every object they share with this process
+            foreach ($pool->runAllThenKill(new ShutdownScannerTask) as $pool_data) {
                 IssueBuffer::addIssues($pool_data['issues']);
 
                 $this->codebase->statements_provider->addChangedMembers(
