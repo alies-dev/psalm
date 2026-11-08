@@ -6,6 +6,9 @@ namespace Psalm\Tests\Storage;
 
 use Override;
 
+/**
+ * @psalm-immutable
+ */
 final class SerializationFixture extends SerializationFixtureParent
 {
     private array $private = [];

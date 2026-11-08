@@ -7,6 +7,9 @@ namespace Psalm\Tests\Storage;
 use Override;
 use Psalm\Storage\UnserializeMemoryUsageSuppressionTrait;
 
+/**
+ * @psalm-immutable
+ */
 final class SerializationFixtureUsingTraitAgain extends SerializationFixtureParent
 {
     use UnserializeMemoryUsageSuppressionTrait;

@@ -165,6 +165,8 @@ final class SerializationTest extends TestCase
 
     /**
      * @return iterable<string, array{SerializationFixtureParent}>
+     *
+     * @psalm-pure
      */
     public static function providerFixtures(): iterable
     {
