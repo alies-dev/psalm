@@ -30,8 +30,9 @@ use Throwable;
 use UnexpectedValueException;
 
 use function Amp\Future\await;
+use function array_diff_assoc;
 use function array_filter;
-use function array_merge;
+use function array_intersect_key;
 use function array_pop;
 use function ceil;
 use function class_exists;
@@ -69,19 +70,7 @@ use const SORT_STRING;
  * }
  *
  * @psalm-type  PoolData = array{
- *     classlikes_data:array{
- *         array<lowercase-string, bool>,
- *         array<lowercase-string, bool>,
- *         array<lowercase-string, bool>,
- *         array<string, bool>,
- *         array<lowercase-string, bool>,
- *         array<string, bool>,
- *         array<lowercase-string, bool>,
- *         array<string, bool>,
- *         array<string, bool>,
- *         array<lowercase-string, string>,
- *         array<string, bool>
- *     },
+ *     classlikes_data: ClassLikesThreadData,
  *     scanner_data: ThreadData,
  *     issues:array<string, list<IssueData>>,
  *     changed_members:array<string, array<string, bool>>,
@@ -102,6 +91,7 @@ use const SORT_STRING;
  * @internal
  *
  * Contains methods that aid in the scanning of Psalm's codebase
+ * @psalm-import-type ThreadData from ClassLikes as ClassLikesThreadData
  */
 final class Scanner
 {
@@ -896,6 +886,32 @@ final class Scanner
     }
 
     /**
+     * The entries that changed since $earlier, an earlier getThreadData(): adding them is adding all of them. A
+     * class-like whose storage is in $classlike_storage keeps its file even if unchanged: where it was declared
+     * elsewhere too, the storage the parent keeps decides the file.
+     *
+     * @param ThreadData $earlier
+     * @param array<string, ClassLikeStorage> $classlike_storage
+     * @return ThreadData
+     * @psalm-mutation-free
+     */
+    public function getThreadDataSince(array $earlier, array $classlike_storage): array
+    {
+        return [
+            array_diff_assoc($this->files_to_scan, $earlier[0]),
+            array_diff_assoc($this->files_to_deep_scan, $earlier[1]),
+            array_diff_assoc($this->classes_to_scan, $earlier[2]),
+            array_diff_assoc($this->classes_to_deep_scan, $earlier[3]),
+            array_diff_assoc($this->store_scan_failure, $earlier[4]),
+            array_diff_assoc($this->classlike_files, $earlier[5])
+                + array_intersect_key($this->classlike_files, $classlike_storage),
+            array_diff_assoc($this->deep_scanned_classlike_files, $earlier[6]),
+            array_diff_assoc($this->scanned_files, $earlier[7]),
+            array_diff_assoc($this->reflected_classlikes_lc, $earlier[8]),
+        ];
+    }
+
+    /**
      * @param ThreadData $thread_data
      * @psalm-external-mutation-free
      */
@@ -913,11 +929,11 @@ final class Scanner
             $reflected_classlikes_lc,
         ] = $thread_data;
 
-        $this->files_to_scan = array_merge($files_to_scan, $this->files_to_scan);
-        $this->files_to_deep_scan = array_merge($files_to_deep_scan, $this->files_to_deep_scan);
-        $this->classes_to_scan = array_merge($classes_to_scan, $this->classes_to_scan);
-        $this->classes_to_deep_scan = array_merge($classes_to_deep_scan, $this->classes_to_deep_scan);
-        $this->store_scan_failure = array_merge($store_scan_failure, $this->store_scan_failure);
+        $this->files_to_scan += $files_to_scan;
+        $this->files_to_deep_scan += $files_to_deep_scan;
+        $this->classes_to_scan += $classes_to_scan;
+        $this->classes_to_deep_scan += $classes_to_deep_scan;
+        $this->store_scan_failure += $store_scan_failure;
         // a class declared in several files belongs to the file whose declaration won
         foreach ($classlike_files as $fq_classlike_name_lc => $file_path) {
             if (isset($this->classlike_files[$fq_classlike_name_lc])
@@ -933,16 +949,13 @@ final class Scanner
             }
         }
 
-        $this->classlike_files = array_merge($classlike_files, $this->classlike_files);
-        $this->deep_scanned_classlike_files = array_merge(
-            $deep_scanned_classlike_files,
-            $this->deep_scanned_classlike_files,
-        );
+        $this->classlike_files += $classlike_files;
+        $this->deep_scanned_classlike_files += $deep_scanned_classlike_files;
         // a file scanned shallowly here and deep in a worker (or the other way round) was deep-scanned
         foreach ($scanned_files as $file_path => $deep) {
             $this->scanned_files[$file_path] = $deep || ($this->scanned_files[$file_path] ?? false);
         }
-        $this->reflected_classlikes_lc = array_merge($reflected_classlikes_lc, $this->reflected_classlikes_lc);
+        $this->reflected_classlikes_lc += $reflected_classlikes_lc;
     }
 
     /**

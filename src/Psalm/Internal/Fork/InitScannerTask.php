@@ -34,6 +34,7 @@ final class InitScannerTask implements Task
         ClassLikeStorageProvider::deleteAll();
 
         $statements_provider->resetDiffs();
+        InheritedScanState::take($codebase);
 
         $analyzer->progress->debug('Have initialised forked process for scanning' . PHP_EOL);
 
