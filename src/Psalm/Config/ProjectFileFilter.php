@@ -16,6 +16,13 @@ final class ProjectFileFilter extends FileFilter
 {
     private ?ProjectFileFilter $file_filter = null;
 
+    /**
+     * allows() by case sensitivity, then file name: it is asked about the same few files for every issue and call
+     *
+     * @var array{array<string, bool>, array<string, bool>}
+     */
+    private array $allows_cache = [[], []];
+
     #[Override]
     public static function loadFromXMLElement(
         SimpleXMLElement $e,
@@ -41,13 +48,17 @@ final class ProjectFileFilter extends FileFilter
     #[Override]
     public function allows(string $file_name, bool $case_sensitive = false): bool
     {
-        if ($this->inclusive && $this->file_filter) {
-            if (!$this->file_filter->allows($file_name, $case_sensitive)) {
-                return false;
-            }
+        if (isset($this->allows_cache[(int) $case_sensitive][$file_name])) {
+            return $this->allows_cache[(int) $case_sensitive][$file_name];
         }
 
-        return parent::allows($file_name, $case_sensitive);
+        $allows = (!$this->inclusive || !$this->file_filter || $this->file_filter->allows($file_name, $case_sensitive))
+            && parent::allows($file_name, $case_sensitive);
+
+        /** @psalm-suppress ImpurePropertyAssignment Cache */
+        $this->allows_cache[(int) $case_sensitive][$file_name] = $allows;
+
+        return $allows;
     }
 
     /**
@@ -62,6 +73,26 @@ final class ProjectFileFilter extends FileFilter
         }
 
         return false;
+    }
+
+    /**
+     * @psalm-external-mutation-free
+     */
+    #[Override]
+    public function addFile(string $file_name): void
+    {
+        parent::addFile($file_name);
+        $this->allows_cache = [[], []];
+    }
+
+    /**
+     * @psalm-external-mutation-free
+     */
+    #[Override]
+    public function addDirectory(string $dir_name): void
+    {
+        parent::addDirectory($dir_name);
+        $this->allows_cache = [[], []];
     }
 
     /**

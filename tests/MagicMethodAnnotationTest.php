@@ -5,12 +5,15 @@ declare(strict_types=1);
 namespace Psalm\Tests;
 
 use Override;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Psalm\Config;
 use Psalm\Context;
 use Psalm\Exception\CodeException;
 use Psalm\Tests\Traits\InvalidCodeAnalysisTestTrait;
 use Psalm\Tests\Traits\InvalidCodeAnalysisWithIssuesTestTrait;
 use Psalm\Tests\Traits\ValidCodeAnalysisTestTrait;
+
+use function implode;
 
 use const DIRECTORY_SEPARATOR;
 
@@ -107,6 +110,51 @@ final class MagicMethodAnnotationTest extends TestCase
         );
 
         $this->analyzeFile('somefile.php', new Context());
+    }
+
+    /**
+     * A pseudo-method starts on the first docblock line containing its normalized entry, or on the first docblock
+     * line when no line contains it.
+     */
+    #[DataProvider('providerLineEndings')]
+    public function testPhpDocMethodLine(string $eol): void
+    {
+        $this->addFile('somefile.php', implode($eol, [
+            '<?php',
+            '/**',
+            ' * Forwards foo(int $a) to the handler.',
+            ' * @method void foo(int $a)',
+            ' * @method void bar()',
+            ' * @method int bar()',
+            ' * @method  string   baz( int $x , string $y )',
+            ' * @method static void qux()',
+            ' */',
+            'class Child {}',
+        ]));
+
+        $codebase = $this->project_analyzer->getCodebase();
+        $codebase->scanFiles();
+        $storage = $codebase->classlike_storage_provider->get('Child');
+
+        $this->assertSame(
+            ['foo' => 3, 'bar' => 5, 'baz' => 2, 'qux' => 8],
+            [
+                'foo' => $storage->pseudo_methods['foo']->stmt_location?->raw_line_number,
+                'bar' => $storage->pseudo_methods['bar']->stmt_location?->raw_line_number,
+                'baz' => $storage->pseudo_methods['baz']->stmt_location?->raw_line_number,
+                'qux' => $storage->pseudo_static_methods['qux']->stmt_location?->raw_line_number,
+            ],
+        );
+        $this->assertSame('int', (string) $storage->pseudo_methods['bar']->return_type);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     * @psalm-pure
+     */
+    public static function providerLineEndings(): array
+    {
+        return ['lf' => ["\n"], 'crlf' => ["\r\n"]];
     }
 
     public function testAnnotationWithoutCallConfig(): void

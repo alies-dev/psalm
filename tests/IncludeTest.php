@@ -752,6 +752,22 @@ final class IncludeTest extends TestCase
                 ],
                 'error_message' => 'InvalidArgument',
             ],
+            'issueInAClosureOfAnIncludedFileIsInThatFile' => [
+                'files' => [
+                    (string) getcwd() . DIRECTORY_SEPARATOR . 'file1.php' => '<?php
+                        $f = function (): void {
+                            $g = function (): int {
+                                return "hello";
+                            };
+                        };',
+                    (string) getcwd() . DIRECTORY_SEPARATOR . 'file2.php' => '<?php
+                        require("file1.php");',
+                ],
+                'files_to_check' => [
+                    (string) getcwd() . DIRECTORY_SEPARATOR . 'file2.php',
+                ],
+                'error_message' => 'InvalidReturnStatement - file1.php:4:40',
+            ],
             'requireFunctionWithWeakTypes' => [
                 'files' => [
                     (string) getcwd() . DIRECTORY_SEPARATOR . 'file1.php' => '<?php

@@ -449,6 +449,23 @@ final class TypeCombiner
         bool $allow_mixed_union,
         int $literal_limit,
     ): ?Union {
+        // a string is none of the types checked before scalar absorption below
+        if ($type instanceof TString) {
+            $type_key = $type->getKey();
+
+            if (!isset($combination->value_types['scalar'])) {
+                self::scrapeStringProperties(
+                    $type_key,
+                    $type,
+                    $combination,
+                    $codebase,
+                    $literal_limit,
+                );
+            }
+
+            return null;
+        }
+
         if ($type instanceof TMixed) {
             if ($type->from_loop_isset) {
                 if ($combination->mixed_from_loop_isset === null) {
@@ -1001,18 +1018,6 @@ final class TypeCombiner
             return null;
         }
 
-        if ($type instanceof TString) {
-            self::scrapeStringProperties(
-                $type_key,
-                $type,
-                $combination,
-                $codebase,
-                $literal_limit,
-            );
-
-            return null;
-        }
-
         if ($type instanceof TInt) {
             self::scrapeIntProperties(
                 $type_key,
@@ -1122,7 +1127,10 @@ final class TypeCombiner
                     self::scrapeStringProperties($literal_key, $literal, $combination, $codebase, $literal_limit);
                 }
             } else {
-                $shared_classlikes = $codebase ? self::getSharedTypes($combination, $codebase) : [];
+                // only a literal class-string uses them, from the literals before they are dropped below
+                $shared_classlikes = $codebase && $type instanceof TLiteralClassString
+                    ? self::getSharedTypes($combination, $codebase)
+                    : [];
 
                 $combination->strings = null;
 
