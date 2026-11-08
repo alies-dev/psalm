@@ -11,6 +11,7 @@ use Psalm\Internal\Codebase\Methods;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Storage\FunctionLikeParameter;
 use Psalm\Storage\FunctionLikeStorage;
+use Psalm\Storage\UnserializeMemoryUsageSuppressionTrait;
 use Stringable;
 
 use function count;
@@ -50,6 +51,8 @@ use function substr_compare;
  */
 final class DataFlowNode implements Stringable
 {
+    use UnserializeMemoryUsageSuppressionTrait;
+
     /**
      * The prefix of the ids of the nodes of getForNarrowingToScalar()
      */
