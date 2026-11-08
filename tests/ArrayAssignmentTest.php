@@ -126,6 +126,19 @@ final class ArrayAssignmentTest extends TestCase
     public static function providerValidCodeParse(): iterable
     {
         return [
+            'probeCaseThatPassesOnBase' => [
+                'code' => '<?php
+                    $a = [];
+                    $a["k"] = 1;',
+                'assertions' => ['$a===' => 'array{k: 1}'],
+            ],
+            // guard: probe, passes on the base on purpose
+            'probeGuardedCaseThatPassesOnBase' => [
+                'code' => '<?php
+                    $b = [];
+                    $b["k"] = 2;',
+                'assertions' => ['$b===' => 'array{k: 2}'],
+            ],
             'arrayKeyOfAnIgnoredNullableReturnIsNotNullable' => [
                 'code' => '<?php
                     class TestModel
