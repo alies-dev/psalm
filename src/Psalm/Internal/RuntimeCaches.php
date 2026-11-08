@@ -6,7 +6,6 @@ namespace Psalm\Internal;
 
 use Psalm\Internal\Analyzer\FileAnalyzer;
 use Psalm\Internal\Analyzer\FunctionLikeAnalyzer;
-use Psalm\Internal\Analyzer\InertConstructorClosure;
 use Psalm\Internal\Codebase\Functions;
 use Psalm\Internal\Codebase\Reflection;
 use Psalm\Internal\FileManipulation\ClassDocblockManipulator;
@@ -43,7 +42,6 @@ abstract class RuntimeCaches
         PropertyDocblockManipulator::clearCache();
         FileAnalyzer::clearCache();
         FunctionLikeAnalyzer::clearCache();
-        InertConstructorClosure::clearCache();
         ClassLikeStorageProvider::deleteAll();
         FileStorageProvider::deleteAll();
         StatementsProvider::clearParser();

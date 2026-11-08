@@ -53,13 +53,6 @@ final class InertConstructorClosure
     public const ATTRIBUTE = 'psalm-inert-constructor-closure';
 
     /**
-     * The method summaries by file path, then lowercase method id, null for a body that isn't inert
-     *
-     * @var array<string, array<lowercase-string, MethodSummary|null>>
-     */
-    private static array $summaries = [];
-
-    /**
      * @param list<lowercase-string> $this_method_ids the methods the bodies call on `$this`, as `Class::method`
      * @param array<string, true> $property_names the properties the bodies fetch on `$this`
      * @param array<string, true> $file_paths the files of the bodies
@@ -463,11 +456,6 @@ final class InertConstructorClosure
                 || isset($owner_storage->constants[$member_name]);
     }
 
-    public static function clearCache(): void
-    {
-        self::$summaries = [];
-    }
-
     /**
      * Whether the analysis of code in the class can't be observed: no issue can be reported in its file, and it
      * isn't part of the project, whose members unused code detection checks
@@ -503,11 +491,11 @@ final class InertConstructorClosure
      */
     private static function getSummary(Codebase $codebase, string $file_path, string $method_id_lc): ?array
     {
-        if (!isset(self::$summaries[$file_path])) {
-            self::$summaries[$file_path] = self::summarizeFile($codebase, $file_path);
+        if (!isset($codebase->inert_constructor_summaries[$file_path])) {
+            $codebase->inert_constructor_summaries[$file_path] = self::summarizeFile($codebase, $file_path);
         }
 
-        return self::$summaries[$file_path][$method_id_lc] ?? null;
+        return $codebase->inert_constructor_summaries[$file_path][$method_id_lc] ?? null;
     }
 
     /**
