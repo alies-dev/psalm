@@ -1127,7 +1127,10 @@ final class TypeCombiner
                     self::scrapeStringProperties($literal_key, $literal, $combination, $codebase, $literal_limit);
                 }
             } else {
-                $shared_classlikes = $codebase ? self::getSharedTypes($combination, $codebase) : [];
+                // only a literal class-string uses them, from the literals before they are dropped below
+                $shared_classlikes = $codebase && $type instanceof TLiteralClassString
+                    ? self::getSharedTypes($combination, $codebase)
+                    : [];
 
                 $combination->strings = null;
 

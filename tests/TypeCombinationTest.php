@@ -134,6 +134,48 @@ final class TypeCombinationTest extends TestCase
     }
 
     /**
+     * @param non-empty-list<string> $types
+     */
+    #[DataProvider('providerStringCombinationWithClasses')]
+    public function testStringCombinationWithClasses(string $expected, string $expected_reversed, array $types): void
+    {
+        $this->addFile('somefile.php', '<?php
+            interface I {}
+            class P implements I {}
+            class A extends P {}
+            class B extends P {}
+            class C implements I {}
+            class D {}');
+        $codebase = $this->project_analyzer->getCodebase();
+        $codebase->scanFiles();
+
+        $atomics = array_map(self::getAtomic(...), $types);
+
+        $this->assertSame($expected, TypeCombiner::combine($atomics, $codebase, literal_limit: 1)->getId());
+        $this->assertSame(
+            $expected_reversed,
+            TypeCombiner::combine(array_reverse($atomics), $codebase, literal_limit: 1)->getId(),
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string, string, non-empty-list<string>}>
+     * @psalm-pure
+     */
+    public static function providerStringCombinationWithClasses(): iterable
+    {
+        return [
+            'sharedParentClass' => ['class-string<P>', 'class-string<P>', ['A::class', 'B::class']],
+            'sharedInterface' => ['class-string<I>', 'class-string<I>', ['A::class', 'C::class']],
+            'nothingShared' => ['class-string', 'class-string', ['A::class', 'D::class']],
+            'literalNamingAClass' => ['class-string<P>', 'string', ['"A"', 'B::class']],
+            'literalNamingNoClass' => ['class-string', 'string', ['"x"', 'B::class']],
+            'classStringBesideLiterals' => ['class-string<I>', 'class-string<I>', ['class-string<A>', 'B::class', 'C::class']],
+            'literalsNamingClasses' => ['string', 'string', ['"A"', '"B"', '"C"']],
+        ];
+    }
+
+    /**
      * Strings skip the checks for the types combined before them in TypeCombiner::scrapeTypeProperties(), which
      * holds while no string is one of those types.
      */
