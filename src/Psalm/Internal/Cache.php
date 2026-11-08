@@ -95,8 +95,20 @@ final class Cache
     private readonly string $dir;
     private readonly Serializer $serializer;
 
-    /** @var array<string, list{string, T}> */
+    /**
+     * The items of a cache without disk, for which this is the only copy
+     *
+     * @var array<string, list{string, T}>
+     */
     private array $cache = [];
+
+    /**
+     * The xxh128 of the hash of each entry of a cache on disk this process wrote or read, so that saving the same
+     * contents again is skipped without keeping the hash (a whole file for the parser cache) or the item
+     *
+     * @var array<string, string>
+     */
+    private array $digests = [];
 
     /**
      * Records of the consolidated data file in file order: key => [hash, offset, length]. A numeric key is an int.
@@ -115,8 +127,6 @@ final class Cache
     /** @var resource */
     private mixed $lock;
 
-    private readonly bool $arrayCache;
-
     public function __construct(
         Config $config,
         string $subdir,
@@ -125,7 +135,6 @@ final class Cache
     ) {
         $this->serializer = $config->getCacheSerializer();
         $this->consolidated_serializer = $this->serializer;
-        $this->arrayCache = $config->array_cache;
         if (!$persistent) {
             return;
         }
@@ -386,12 +395,8 @@ final class Cache
      */
     public function getHash(string $key): ?string
     {
-        if (isset($this->cache[$key])) {
-            return $this->cache[$key][0];
-        }
-
         if (!$this->persistent) {
-            return null;
+            return $this->cache[$key][0] ?? null;
         }
 
         $path = $this->dir . hash('xxh128', $key);
@@ -425,6 +430,7 @@ final class Cache
     public function hasItem(string $key): bool
     {
         return isset($this->cache[$key])
+            || isset($this->digests[$key])
             || isset($this->consolidated[$key])
             || ($this->persistent && file_exists($this->dir . hash('xxh128', $key)));
     }
@@ -432,15 +438,10 @@ final class Cache
     /** @return T|null */
     public function getItem(string $key, ?string $hash = ''): array|object|string|null
     {
-        if (isset($this->cache[$key])) {
-            $combined = $this->cache[$key];
-            if ($hash === null || $combined[0] === $hash) {
-                return $combined[1];
-            }
-        }
-
         if (!$this->persistent) {
-            return null;
+            $combined = $this->cache[$key] ?? null;
+
+            return $combined !== null && ($hash === null || $combined[0] === $hash) ? $combined[1] : null;
         }
 
         $entry = null;
@@ -464,9 +465,7 @@ final class Cache
 
         /** @var T $content */
         $content = ($from_consolidated ? $this->consolidated_serializer : $this->serializer)->unserialize($entry[3]);
-        if ($this->arrayCache) {
-            $this->cache[$key] = [$entry[1], $content];
-        }
+        $this->digests[$key] = hash('xxh128', $entry[1], true);
 
         return $content;
     }
@@ -478,7 +477,7 @@ final class Cache
      */
     public function forgetItem(string $key): void
     {
-        unset($this->cache[$key], $this->consolidated[$key]);
+        unset($this->cache[$key], $this->digests[$key], $this->consolidated[$key]);
     }
 
     /** @param T $item */
@@ -489,23 +488,24 @@ final class Cache
         if ($hash === null) {
             $hash = '';
         } elseif ((isset($this->cache[$key]) && $this->cache[$key][0] === $hash)
+            || (isset($this->digests[$key]) && $this->digests[$key] === hash('xxh128', $hash, true))
             || (isset($this->consolidated[$key]) && $this->consolidated[$key][0] === $hash)
         ) {
             return;
         }
-        if ($this->persistent) {
-            $payload = $this->serializer->serialize($item);
-            self::writeEntry(
-                $this->dir . hash('xxh128', $key),
-                self::buildHeader($hash, $key, $payload),
-                $payload,
-            );
-        }
-        // Without a disk cache the array is the only copy. With one, keep it only if arrayCache is on,
-        // otherwise a cold run holds every parsed AST and storage object in memory for nothing.
-        if (!$this->persistent || $this->arrayCache) {
+        if (!$this->persistent) {
             $this->cache[$key] = [$hash, $item];
+
+            return;
         }
+
+        $payload = $this->serializer->serialize($item);
+        self::writeEntry(
+            $this->dir . hash('xxh128', $key),
+            self::buildHeader($hash, $key, $payload),
+            $payload,
+        );
+        $this->digests[$key] = hash('xxh128', $hash, true);
     }
 
     /** @return array{string, string, string, string}|null see readRecord() */

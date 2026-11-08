@@ -281,17 +281,57 @@ final class CacheTest extends TestCase
         $in_memory = new ReflectionProperty(Cache::class, 'cache');
         self::assertSame($retained, $in_memory->getValue($cache) !== []);
         self::assertSame('item', $cache->getItem('key', 'hash'));
+        self::assertSame('hash', $cache->getHash('key'));
+        self::assertTrue($cache->hasItem('key'));
     }
 
     /**
+     * A cache on disk keeps no item, whatever arrayCache says: StatementsProvider keeps the statements it needs again
+     *
      * @return iterable<string, array{bool, bool, bool}>
      * @psalm-pure
      */
     public static function provideSaveItemRetention(): iterable
     {
-        yield 'persistent with array cache' => [true, true, true];
+        yield 'persistent with array cache' => [true, true, false];
         yield 'persistent without array cache' => [true, false, false];
+        yield 'not persistent with array cache' => [false, true, true];
         yield 'not persistent without array cache' => [false, false, true];
+    }
+
+    /** Saving what the entry already holds is skipped, also after the entry was read rather than written */
+    #[DataProvider('provideEntryKnownBy')]
+    public function testSavingTheSameHashAgainIsSkippedUntilTheItemIsForgotten(bool $known_by_reading): void
+    {
+        $this->newCache()->saveItem(self::KEY, 'item', 'hash');
+        $cache = $this->newCache();
+        if ($known_by_reading) {
+            self::assertSame('item', $cache->getItem(self::KEY, 'hash'));
+        } else {
+            $cache->saveItem(self::KEY, 'item', 'hash');
+        }
+        unlink($this->entryPath());
+
+        $cache->saveItem(self::KEY, 'another item', 'hash');
+        self::assertFileDoesNotExist($this->entryDirectory() . '/' . hash('xxh128', self::KEY));
+
+        $cache->saveItem(self::KEY, 'another item', 'another hash');
+        self::assertSame('another item', $this->newCache()->getItem(self::KEY, 'another hash'));
+
+        $cache->forgetItem(self::KEY);
+        unlink($this->entryPath());
+        $cache->saveItem(self::KEY, 'another item', 'another hash');
+        self::assertSame('another item', $this->newCache()->getItem(self::KEY, 'another hash'));
+    }
+
+    /**
+     * @return iterable<string, array{bool}>
+     * @psalm-pure
+     */
+    public static function provideEntryKnownBy(): iterable
+    {
+        yield 'written' => [false];
+        yield 'read' => [true];
     }
 
     /** The statements a parser cache without disk does not keep are parsed again, a change is still noticed */

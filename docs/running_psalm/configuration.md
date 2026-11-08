@@ -327,7 +327,7 @@ When `true`, Psalm will disable usage of the cache, the equivalent of running wi
   arrayCache="[bool]"
 >
 ```
-When `true`, Psalm keeps parsed files in memory between their uses. A file parsed while scanning it stays in memory until it is analysed, and the files used again and again (parent classes whose constructors are followed, for instance) stay in memory afterwards, up to 32 MB per process. Entries read from or written to the file cache are kept in memory too.
+When `true`, Psalm keeps parsed files in memory between their uses. A file parsed while scanning it stays in memory until it is analysed, and the files used again and again (parent classes whose constructors are followed, for instance) stay in memory afterwards, up to 32 MB per process.
 
 When `false`, Psalm keeps none of them: each use reads the file cache again, or parses the file again with `--no-cache`. This uses less memory and takes more time.
 
