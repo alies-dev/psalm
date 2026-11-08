@@ -500,12 +500,15 @@ final class Cache
         }
 
         $payload = $this->serializer->serialize($item);
-        self::writeEntry(
+        $written = self::writeEntry(
             $this->dir . hash('xxh128', $key),
             self::buildHeader($hash, $key, $payload),
             $payload,
         );
-        $this->digests[$key] = hash('xxh128', $hash, true);
+        // an entry that could not be replaced still holds what it held, so saving this hash again is not redundant
+        if ($written) {
+            $this->digests[$key] = hash('xxh128', $hash, true);
+        }
     }
 
     /** @return array{string, string, string, string}|null see readRecord() */
@@ -578,9 +581,10 @@ final class Cache
      * Replaces the entry with the record in one step, so that no reader or other writer sees a part of it.
      * The payload is written as it is: putting it in a string together with the header copies it.
      *
+     * @return bool false if the entry could not be replaced and was left as it was
      * @throws RuntimeException if the record could not be written
      */
-    private static function writeEntry(string $path, string $header, string $payload): void
+    private static function writeEntry(string $path, string $header, string $payload): bool
     {
         // 'x' never reuses the file of another writer
         $temp = $path . '.' . bin2hex(random_bytes(8)) . self::TEMP_SUFFIX;
@@ -601,7 +605,11 @@ final class Cache
         // the same contents, or it is fixed on the next run, so skipping the write is fine.
         if (!self::quietly(static fn(): bool => rename($temp, $path))) {
             self::quietly(static fn(): bool => unlink($temp));
+
+            return false;
         }
+
+        return true;
     }
 
     /**
