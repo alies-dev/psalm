@@ -2283,6 +2283,8 @@ final class ConfigTest extends TestCase
 
     /**
      * @return iterable<string, array{string, string, string}>
+     *
+     * @psalm-pure
      */
     public static function providerShortenFileName(): iterable
     {

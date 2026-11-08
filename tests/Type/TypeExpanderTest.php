@@ -32,6 +32,8 @@ final class TypeExpanderTest extends TestCase
 {
     /**
      * @return iterable<string, array{Closure(): non-empty-list<Atomic>, string}>
+     *
+     * @psalm-pure
      */
     public static function providerExpandUnion(): iterable
     {
