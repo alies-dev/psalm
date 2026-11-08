@@ -453,12 +453,14 @@ final class FunctionLikeNodeScanner
             // A polyfill of a native function the analysed version predates must not replace the
             // native signature (and its purity); the polyfill is still known through this file.
             if ($this->codebase->register_stub_files
-                || (($this->codebase->all_functions_global
-                        || ($this->codebase->register_autoload_files
-                            && !$this->codebase->functions->hasStubbedFunction($function_id)))
+                || (($this->codebase->all_functions_global || $this->codebase->register_autoload_files)
                     && InternalCallMapHandler::getIntroducingPhpVersionId($function_id) === null)
             ) {
-                $this->codebase->functions->addGlobalFunction($function_id, $storage);
+                $this->codebase->functions->addGlobalFunction(
+                    $function_id,
+                    $storage,
+                    $this->codebase->register_stub_files || $this->codebase->all_functions_global,
+                );
             }
 
             $this->file_storage->functions[$function_id] = $storage;
@@ -1116,6 +1118,7 @@ final class FunctionLikeNodeScanner
                         $this->codebase->functions->addGlobalFunction(
                             $function_id,
                             $this->file_storage->functions[$function_id],
+                            $this->codebase->register_stub_files,
                         );
                     }
 

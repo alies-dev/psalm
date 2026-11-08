@@ -1545,7 +1545,6 @@
       <code><![CDATA[self::$stubbed_functions]]></code>
       <code><![CDATA[self::$stubbed_functions]]></code>
       <code><![CDATA[self::$stubbed_functions]]></code>
-      <code><![CDATA[self::$stubbed_functions]]></code>
     </ImpureStaticProperty>
     <PossiblyUndefinedIntArrayOffset>
       <code><![CDATA[$stub]]></code>

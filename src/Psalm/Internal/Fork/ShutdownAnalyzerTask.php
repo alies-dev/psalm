@@ -55,6 +55,7 @@ final class ShutdownAnalyzerTask implements Task
             'used_suppressions'                          => $codebase->track_unused_suppressions ? IssueBuffer::getUsedSuppressions() : [],
             'function_docblock_manipulators'             => FunctionDocblockManipulator::getManipulators(),
             'mutable_classes'                            => $codebase->analyzer->mutable_classes,
+            'used_traits'                                => $codebase->analyzer->getUsedTraits(),
             'issue_handlers'                             => $codebase->config->getIssueHandlerSuppressions()
         ];
         // @codingStandardsIgnoreEnd

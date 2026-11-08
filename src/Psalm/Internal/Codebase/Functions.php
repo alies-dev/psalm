@@ -64,6 +64,7 @@ final class Functions
     public function __construct(
         private readonly FileStorageProvider $file_storage_provider,
         private readonly Reflection $reflection,
+        private readonly Scanner $scanner,
     ) {
         $this->return_type_provider = new FunctionReturnTypeProvider();
         $this->existence_provider = new FunctionExistenceProvider();
@@ -180,11 +181,19 @@ final class Functions
     }
 
     /**
-     * @psalm-external-mutation-free
+     * @param bool $replace false to register the function only if no function of that name is
+     * @psalm-capabilities read-props|write-this-props|write-props|write-refs
      */
-    public function addGlobalFunction(string $function_id, FunctionStorage $storage): void
+    public function addGlobalFunction(string $function_id, FunctionStorage $storage, bool $replace = true): void
     {
-        self::$stubbed_functions[strtolower($function_id)] = $storage;
+        $function_id_lc = strtolower($function_id);
+
+        if (!$replace && isset(self::$stubbed_functions[$function_id_lc])) {
+            return;
+        }
+
+        self::$stubbed_functions[$function_id_lc] = $storage;
+        $this->scanner->recordGlobalFunction($function_id, $storage, $replace);
     }
 
     /**
@@ -207,15 +216,6 @@ final class Functions
         }
 
         return false;
-    }
-
-    /**
-     * @param array<lowercase-string, FunctionStorage> $stubs
-     * @psalm-external-mutation-free
-     */
-    public function addGlobalFunctions(array $stubs): void
-    {
-        self::$stubbed_functions += $stubs;
     }
 
     /**

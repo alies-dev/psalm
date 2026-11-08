@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Psalm\Tests\Internal\Codebase;
 
 use Closure;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Psalm\CodeLocation\Raw;
 use Psalm\Context;
 use Psalm\Internal\Codebase\CodeUseGraph;
@@ -384,10 +385,55 @@ final class CodeUseGraphTest extends TestCase
     }
 
     /**
+     * @param list<string> $arrival the roots of the workers' analyses, in the order the workers finished in
+     */
+    #[DataProvider('providerMutationInfoArrival')]
+    public function testMergedMutationInfoIsTheAnalysisInTheGreatestRoot(array $arrival): void
+    {
+        // a single process analyses the roots in path order and keeps the last analysis
+        $method = CodeUseGraph::functionLikeNode('t\\c::m');
+        $graph = new CodeUseGraph();
+
+        foreach ($arrival as $root) {
+            $worker = new CodeUseGraph();
+            $worker->addMutationInfo($method, self::mutationInfo('/t.php', $root));
+            $graph->addGraph($worker);
+        }
+
+        self::assertSame('/b.php', $graph->getMutationInfo()[$method]['root']);
+    }
+
+    /**
+     * @return iterable<string, array{list<string>}>
+     * @psalm-pure
+     */
+    public static function providerMutationInfoArrival(): iterable
+    {
+        yield 'worker with the greatest root finishes last' => [['/a.php', '/b.php']];
+        yield 'worker with the greatest root finishes first' => [['/b.php', '/a.php']];
+    }
+
+    public function testMergedMutationInfoOfThisRunReplacesTheCachedOne(): void
+    {
+        $method = CodeUseGraph::functionLikeNode('t\\c::m');
+        $cached = new CodeUseGraph();
+        $cached->addMutationInfo($method, self::mutationInfo('/t.php', '/z.php'));
+        $graph = new CodeUseGraph();
+        $graph->loadCacheData($cached->getCacheData());
+
+        $worker = new CodeUseGraph();
+        $worker->addMutationInfo($method, self::mutationInfo('/t.php', '/a.php'));
+        $graph->addGraph($worker);
+
+        self::assertSame('/a.php', $graph->getMutationInfo()[$method]['root']);
+        self::assertTrue($graph->getMutationInfo()[$method]['fresh']);
+    }
+
+    /**
      * @return MutationInfo
      * @psalm-pure
      */
-    private static function mutationInfo(string $file_path): array
+    private static function mutationInfo(string $file_path, string $root = '/root.php'): array
     {
         return [
             'intrinsic' => 0,
@@ -401,6 +447,7 @@ final class CodeUseGraphTest extends TestCase
             'class' => null,
             'start' => 0,
             'fresh' => true,
+            'root' => $root,
             'report' => true,
         ];
     }

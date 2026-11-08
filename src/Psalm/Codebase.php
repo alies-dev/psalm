@@ -356,7 +356,7 @@ final class Codebase
 
         $this->loadAnalyzer();
 
-        $this->functions = new Functions($providers->file_storage_provider, $reflection);
+        $this->functions = new Functions($providers->file_storage_provider, $reflection, $this->scanner);
 
         $this->classlikes = new ClassLikes(
             $this->config,
@@ -1183,11 +1183,12 @@ final class Codebase
     }
 
     /**
-     * @psalm-external-mutation-free
+     * @psalm-capabilities read-props|write-this-props|write-props|write-refs
      */
     public function addGlobalConstantType(string $const_id, Union $type): void
     {
         self::$stubbed_constants[$const_id] = $type;
+        $this->scanner->recordGlobalConstant($const_id, $type);
     }
 
     /**
@@ -1219,11 +1220,12 @@ final class Codebase
     /**
      * The value of a global constant whose type depends on classes, e.g. an enum case, resolved when it is fetched
      *
-     * @psalm-capabilities read-globals|write-globals
+     * @psalm-capabilities read-globals|write-globals|read-props|write-props
      */
     public function addUnresolvedGlobalConstant(string $const_id, UnresolvedConstantComponent $value): void
     {
         self::$unresolved_stubbed_constants[$const_id] = $value;
+        $this->scanner->recordUnresolvedGlobalConstant($const_id, $value);
     }
 
     /**
