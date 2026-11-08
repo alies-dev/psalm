@@ -16,6 +16,7 @@ use PHPUnit\Framework\Attributes\Test;
 use Psalm\CodeLocation\Raw;
 use Psalm\Config;
 use Psalm\Config\IssueHandler;
+use Psalm\Config\ProjectFileFilter;
 use Psalm\Context;
 use Psalm\Exception\CodeException;
 use Psalm\Exception\ConfigException;
@@ -35,6 +36,7 @@ use Psalm\Tests\Config\Plugin\TestPluginIssueDefaultLevel;
 use Psalm\Tests\Internal\Provider\FakeParserCacheProvider;
 use Psalm\Tests\TestCase;
 use Psalm\Tests\TestConfig;
+use SimpleXMLElement;
 use Throwable;
 use UnexpectedValueException;
 
@@ -166,6 +168,77 @@ final class ConfigTest extends TestCase
         $this->assertTrue($config->isInProjectDirs((string) realpath('src/Psalm/Type.php')));
         $this->assertFalse($config->isInProjectDirs((string) realpath('src/Psalm/Internal/Analyzer/FileAnalyzer.php')));
         $this->assertFalse($config->isInProjectDirs((string) realpath('examples/TemplateScanner.php')));
+    }
+
+    public function testProjectFileFilterAnswersRepeatedQueriesAndQueriesAfterAChange(): void
+    {
+        $root = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR;
+        $filter = ProjectFileFilter::loadFromXMLElement(
+            new SimpleXMLElement(
+                '<projectFiles>
+                    <directory name="src" />
+                    <ignoreFiles>
+                        <directory name="src/Psalm/Internal/Analyzer" />
+                    </ignoreFiles>
+                </projectFiles>',
+            ),
+            $root,
+            true,
+        );
+        $type = $root . 'src/Psalm/Type.php';
+        $type_upper = $root . 'SRC/Psalm/Type.php';
+        $analyzer_upper = $root . 'src/Psalm/Internal/ANALYZER/FileAnalyzer.php';
+        $example = $root . 'examples/TemplateScanner.php';
+        $readme = $root . 'README.md';
+
+        $expected = [
+            'type' => true,
+            'type, case-sensitive' => true,
+            'upper type, case-sensitive' => false,
+            'upper type' => true,
+            'upper analyzer' => false,
+            'upper analyzer, case-sensitive' => true,
+            'upper analyzer forbidden' => true,
+            'upper analyzer forbidden, case-sensitive' => false,
+            'example' => false,
+            'readme' => false,
+        ];
+
+        for ($i = 0; $i < 2; $i++) {
+            $this->assertSame($expected, [
+                'type' => $filter->allows($type),
+                'type, case-sensitive' => $filter->allows($type, true),
+                'upper type, case-sensitive' => $filter->allows($type_upper, true),
+                'upper type' => $filter->allows($type_upper),
+                'upper analyzer' => $filter->allows($analyzer_upper),
+                'upper analyzer, case-sensitive' => $filter->allows($analyzer_upper, true),
+                'upper analyzer forbidden' => $filter->forbids($analyzer_upper),
+                'upper analyzer forbidden, case-sensitive' => $filter->forbids($analyzer_upper, true),
+                'example' => $filter->allows($example),
+                'readme' => $filter->allows($readme),
+            ]);
+        }
+
+        $filter->addDirectory($root . 'examples');
+        $filter->addFile($readme);
+
+        $this->assertTrue($filter->allows($example));
+        $this->assertTrue($filter->allows($readme, true));
+
+        $exclusive = ProjectFileFilter::loadFromXMLElement(
+            new SimpleXMLElement('<ignoreFiles><directory name="src" /></ignoreFiles>'),
+            $root,
+            false,
+        );
+
+        $this->assertTrue($exclusive->allows($example));
+        $this->assertTrue($exclusive->allows($readme));
+
+        $exclusive->addDirectory($root . 'examples');
+        $exclusive->addFile($readme);
+
+        $this->assertFalse($exclusive->allows($example));
+        $this->assertFalse($exclusive->allows($readme));
     }
 
     public function testIgnoreMissingProjectDirectory(): void
