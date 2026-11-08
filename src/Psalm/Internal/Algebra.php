@@ -17,6 +17,7 @@ use function array_pop;
 use function array_values;
 use function assert;
 use function count;
+use function implode;
 use function in_array;
 use function mt_rand;
 use function reset;
@@ -28,6 +29,11 @@ use function substr;
  */
 final class Algebra
 {
+    /**
+     * simplifyCNF counts and indexes literals above this many distinct clauses; both paths give the same result
+     */
+    private const INDEXED_CLAUSE_COUNT = 6;
+
     /**
      * @param array<string, non-empty-list<non-empty-list<Assertion>>>  $all_types
      * @return array<string, non-empty-list<non-empty-list<Assertion>>>
@@ -119,14 +125,30 @@ final class Algebra
             $cloned_clauses[$clause->hash] = $clause;
         }
 
+        // How many reconcilable non-wedge clauses of $cloned_clauses hold each literal and each list
+        // of variables. Pass 1 only scans for partners of a clause when these counts show that a
+        // partner exists, and every write to $cloned_clauses goes through setClause/unsetClause.
+        // Small formulas skip the counts and the indexes built from them, which cost more than they save.
+        [$literal_counts, $var_list_counts] = count($cloned_clauses) > self::INDEXED_CLAUSE_COUNT
+            ? self::countClauses($cloned_clauses)
+            : [null, null];
+
         // remove impossible types
         foreach ($cloned_clauses as $clause_a_hash => $clause_a) {
             if (!$clause_a->reconcilable || $clause_a->wedge) {
                 continue;
             }
             $clause_a_keys = array_keys($clause_a->possibilities);
+            $clause_a_in_state = ($cloned_clauses[$clause_a_hash] ?? null) === $clause_a;
 
             if (count($clause_a->possibilities) !== 1 || count(array_values($clause_a->possibilities)[0]) !== 1) {
+                // a partner has the same variables, and both hold one negated literal of one of them
+                if ($var_list_counts !== null
+                    && ($var_list_counts[implode("\0", $clause_a_keys)] ?? 0) === ($clause_a_in_state ? 1 : 0)
+                ) {
+                    continue;
+                }
+
                 foreach ($cloned_clauses as $clause_b) {
                     if ($clause_a === $clause_b || !$clause_b->reconcilable || $clause_b->wedge) {
                         continue;
@@ -155,7 +177,7 @@ final class Algebra
                         }
 
                         if (count($opposing_keys) === 1) {
-                            unset($cloned_clauses[$clause_a_hash]);
+                            self::unsetClause($cloned_clauses, $literal_counts, $var_list_counts, $clause_a_hash);
 
                             $clause_a = $clause_a->removePossibilities($opposing_keys[0]);
 
@@ -163,7 +185,7 @@ final class Algebra
                                 continue 2;
                             }
 
-                            $cloned_clauses[$clause_a->hash] = $clause_a;
+                            self::setClause($cloned_clauses, $literal_counts, $var_list_counts, $clause_a);
                         }
                     }
                 }
@@ -176,6 +198,16 @@ final class Algebra
             $negated_clause_type = $only_type->getNegation();
             $negated_clause_type_string = (string)$negated_clause_type;
 
+            // a partner holds the negated literal
+            if ($literal_counts !== null
+                && ($literal_counts[$clause_var][$negated_clause_type_string] ?? 0)
+                === ($clause_a_in_state && isset($clause_a->possibilities[$clause_var][$negated_clause_type_string])
+                    ? 1
+                    : 0)
+            ) {
+                continue;
+            }
+
             foreach ($cloned_clauses as $clause_b_hash => $clause_b) {
                 if ($clause_a === $clause_b || !$clause_b->reconcilable || $clause_b->wedge) {
                     continue;
@@ -187,13 +219,13 @@ final class Algebra
                     if (isset($clause_var_possibilities[$negated_clause_type_string])) {
                         unset($clause_var_possibilities[$negated_clause_type_string]);
 
-                        unset($cloned_clauses[$clause_b_hash]);
+                        self::unsetClause($cloned_clauses, $literal_counts, $var_list_counts, $clause_b_hash);
 
                         if (!$clause_var_possibilities) {
                             $updated_clause = $clause_b->removePossibilities($clause_var);
 
                             if ($updated_clause) {
-                                $cloned_clauses[$updated_clause->hash] = $updated_clause;
+                                self::setClause($cloned_clauses, $literal_counts, $var_list_counts, $updated_clause);
                             }
                         } else {
                             $updated_clause = $clause_b->addPossibilities(
@@ -201,44 +233,32 @@ final class Algebra
                                 $clause_var_possibilities,
                             );
 
-                            $cloned_clauses[$updated_clause->hash] = $updated_clause;
+                            self::setClause($cloned_clauses, $literal_counts, $var_list_counts, $updated_clause);
                         }
                     }
                 }
             }
         }
 
-        $simplified_clauses = [];
+        $simplified_clauses = self::removeRedundantClauses($cloned_clauses);
 
-        foreach ($cloned_clauses as $clause_a) {
-            $is_redundant = false;
+        return array_values(self::removeResolvedClauses($simplified_clauses));
+    }
 
-            foreach ($cloned_clauses as $clause_b) {
-                if ($clause_a === $clause_b
-                    || !$clause_b->reconcilable
-                    || $clause_b->wedge
-                    || $clause_a->wedge
-                ) {
-                    continue;
-                }
-
-                if ($clause_a->contains($clause_b)) {
-                    $is_redundant = true;
-                    break;
-                }
-            }
-
-            if (!$is_redundant) {
-                $simplified_clauses[$clause_a->hash] = $clause_a;
-            }
-        }
-
+    /**
+     * simplify (A || X) && (!A || Y) && (X || Y)
+     * to
+     * simplify (A || X) && (!A || Y)
+     * where X and Y are sets of orred terms
+     *
+     * @param array<array-key, Clause> $simplified_clauses
+     * @return array<array-key, Clause>
+     * @psalm-pure
+     */
+    private static function removeResolvedClauses(array $simplified_clauses): array
+    {
         $clause_count = count($simplified_clauses);
 
-        // simplify (A || X) && (!A || Y) && (X || Y)
-        // to
-        // simplify (A || X) && (!A || Y)
-        // where X and Y are sets of orred terms
         if ($clause_count > 2 && $clause_count < 256) {
             $clauses = array_values($simplified_clauses);
             for ($i = 0; $i < $clause_count; $i++) {
@@ -305,7 +325,130 @@ final class Algebra
             }
         }
 
-        return array_values($simplified_clauses);
+        return $simplified_clauses;
+    }
+
+    /**
+     * Drops each non-wedge clause that contains another reconcilable non-wedge clause.
+     *
+     * @param array<array-key, Clause> $cloned_clauses
+     * @return array<array-key, Clause>
+     * @psalm-pure
+     */
+    private static function removeRedundantClauses(array $cloned_clauses): array
+    {
+        $simplified_clauses = [];
+
+        foreach ($cloned_clauses as $clause_a) {
+            $is_redundant = false;
+
+            foreach ($cloned_clauses as $clause_b) {
+                if ($clause_a === $clause_b
+                    || !$clause_b->reconcilable
+                    || $clause_b->wedge
+                    || $clause_a->wedge
+                ) {
+                    continue;
+                }
+
+                if ($clause_a->contains($clause_b)) {
+                    $is_redundant = true;
+                    break;
+                }
+            }
+
+            if (!$is_redundant) {
+                $simplified_clauses[$clause_a->hash] = $clause_a;
+            }
+        }
+
+        return $simplified_clauses;
+    }
+
+    /**
+     * @param array<array-key, Clause> $clauses
+     * @return array{array<array-key, array<array-key, int>>, array<string, int>}
+     * @psalm-pure
+     */
+    private static function countClauses(array $clauses): array
+    {
+        $literal_counts = [];
+        $var_list_counts = [];
+
+        foreach ($clauses as $clause) {
+            self::countClause($literal_counts, $var_list_counts, $clause, 1);
+        }
+
+        return [$literal_counts, $var_list_counts];
+    }
+
+    /**
+     * @param array<array-key, array<array-key, int>> $literal_counts
+     * @param array<string, int> $var_list_counts
+     * @psalm-capabilities write-refs
+     */
+    private static function countClause(
+        array &$literal_counts,
+        array &$var_list_counts,
+        Clause $clause,
+        int $delta,
+    ): void {
+        if (!$clause->reconcilable || $clause->wedge) {
+            return;
+        }
+
+        foreach ($clause->possibilities as $var => $possibilities) {
+            foreach ($possibilities as $key => $_) {
+                $literal_counts[$var][$key] = ($literal_counts[$var][$key] ?? 0) + $delta;
+            }
+        }
+
+        $var_list = implode("\0", array_keys($clause->possibilities));
+        $var_list_counts[$var_list] = ($var_list_counts[$var_list] ?? 0) + $delta;
+    }
+
+    /**
+     * @param array<array-key, Clause> $clauses
+     * @param array<array-key, array<array-key, int>>|null $literal_counts
+     * @param array<string, int>|null $var_list_counts
+     * @psalm-capabilities write-refs
+     */
+    private static function setClause(
+        array &$clauses,
+        ?array &$literal_counts,
+        ?array &$var_list_counts,
+        Clause $clause,
+    ): void {
+        if ($literal_counts !== null && $var_list_counts !== null) {
+            if (isset($clauses[$clause->hash])) {
+                self::countClause($literal_counts, $var_list_counts, $clauses[$clause->hash], -1);
+            }
+
+            self::countClause($literal_counts, $var_list_counts, $clause, 1);
+        }
+
+        $clauses[$clause->hash] = $clause;
+    }
+
+    /**
+     * @param array<array-key, Clause> $clauses
+     * @param array<array-key, array<array-key, int>>|null $literal_counts
+     * @param array<string, int>|null $var_list_counts
+     * @psalm-capabilities write-refs
+     */
+    private static function unsetClause(
+        array &$clauses,
+        ?array &$literal_counts,
+        ?array &$var_list_counts,
+        int|string $hash,
+    ): void {
+        if (isset($clauses[$hash])) {
+            if ($literal_counts !== null && $var_list_counts !== null) {
+                self::countClause($literal_counts, $var_list_counts, $clauses[$hash], -1);
+            }
+
+            unset($clauses[$hash]);
+        }
     }
 
     /**
