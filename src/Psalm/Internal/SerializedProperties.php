@@ -12,6 +12,7 @@ use ReflectionProperty;
  * from the class using the trait.
  *
  * @internal
+ * @psalm-immutable
  */
 final class SerializedProperties
 {
