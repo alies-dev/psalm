@@ -35,7 +35,11 @@ trait UnserializeMemoryUsageSuppressionTrait
      */
     public function __unserialize(array $properties): void
     {
-        $special_keys = SerializedProperties::getSpecialKeys(static::class, self::class);
+        // Read on every unserialized object, so not through a method call. A class's own __unserialize() wins over
+        // its parents', so static::class always comes with the same self::class.
+        /** @psalm-suppress ImpureStaticProperty Used for caching */
+        $special_keys = SerializedProperties::$special_keys[static::class]
+            ??= SerializedProperties::findSpecialKeys(static::class, self::class);
 
         if ($special_keys === []) {
             /** @psalm-suppress MixedAssignment */
