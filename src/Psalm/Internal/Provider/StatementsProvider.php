@@ -36,6 +36,7 @@ use Throwable;
 use function abs;
 use function array_fill_keys;
 use function array_intersect_key;
+use function array_key_first;
 use function array_map;
 use function array_merge;
 use function array_values;
@@ -44,6 +45,7 @@ use function hash;
 use function ini_set;
 use function max;
 use function md5;
+use function memory_get_usage;
 use function serialize;
 use function str_starts_with;
 use function strlen;
@@ -106,6 +108,40 @@ final class StatementsProvider
      * hardly ever nests more than 32 levels
      */
     private const MAX_KEPT_NESTING = 128;
+
+    /** Bytes of statements kept for project files requested more than once, see keepStatements() */
+    public int $kept_statements_budget = 32 * 1_024 * 1_024;
+
+    private const MAX_REQUESTED_FILES = 65_536;
+
+    /** The project file the scanner is getting the statements of, for this process to analyse it */
+    private ?string $hand_off_file = null;
+
+    /**
+     * Statements of project files scanned for analysis in this process, until the next request (the analysis)
+     * takes them: the contents they were parsed from, the statements and the parse errors
+     *
+     * @var array<string, array{string, list<Stmt>, list<PhpParser\Error>}>
+     */
+    private array $handed_off = [];
+
+    /**
+     * Statements of project files requested more than once, least recently used first: the contents they were
+     * parsed from, the statements, the parse errors and what keeping them costs
+     *
+     * @var array<string, array{string, list<Stmt>, list<PhpParser\Error>, int}>
+     */
+    private array $kept = [];
+
+    private int $kept_bytes = 0;
+
+    /**
+     * Project files requested once already: only those requested again are kept, so that files needed once don't
+     * push out the ones needed again and again
+     *
+     * @var array<string, true>
+     */
+    private array $requested = [];
 
     private static ?Parser $parser = null;
 
@@ -187,13 +223,157 @@ final class StatementsProvider
             return $stmts;
         }
 
-        $cached = $this->parser_cache_provider->loadStatementsFromCache(
+        if (!$config->array_cache) {
+            return $this->fetchStatements(
+                $this->parser_cache_provider,
+                $file_path,
+                $file_contents,
+                $analysis_php_version_id,
+                $do_diff,
+                $progress,
+            )[0];
+        }
+
+        $kept = $this->takeKeptStatements($file_path, $file_contents);
+        if ($kept !== null) {
+            return $this->useCachedStatements($file_path, $file_contents, ...$kept);
+        }
+
+        $memory_before = memory_get_usage();
+        [$stmts, $parse_errors] = $this->fetchStatements(
+            $this->parser_cache_provider,
+            $file_path,
+            $file_contents,
+            $analysis_php_version_id,
+            $do_diff,
+            $progress,
+        );
+        $this->keepStatements($file_path, $file_contents, $stmts, $parse_errors, $memory_before);
+
+        return $stmts;
+    }
+
+    /**
+     * Statements of the next request for the file are kept until the request after it, which is how the analysis
+     * of a file gets the statements its scan parsed.
+     *
+     * @psalm-external-mutation-free
+     */
+    public function handOff(?string $file_path): void
+    {
+        $this->hand_off_file = $file_path;
+    }
+
+    /**
+     * For when the files this process scanned were analysed in other processes
+     *
+     * @psalm-external-mutation-free
+     */
+    public function dropHandedOff(): void
+    {
+        $this->handed_off = [];
+    }
+
+    /**
+     * @return array{list<Stmt>, list<PhpParser\Error>}|null
+     * @psalm-external-mutation-free
+     */
+    private function takeKeptStatements(string $file_path, string $file_contents): ?array
+    {
+        if (isset($this->handed_off[$file_path])) {
+            [$parsed_from, $stmts, $parse_errors] = $this->handed_off[$file_path];
+            unset($this->handed_off[$file_path]);
+            $this->requested[$file_path] = true;
+
+            if ($parsed_from === $file_contents) {
+                return [$stmts, $parse_errors];
+            }
+        }
+
+        if (isset($this->kept[$file_path])) {
+            $entry = $this->kept[$file_path];
+            unset($this->kept[$file_path]);
+
+            if ($entry[0] === $file_contents) {
+                $this->kept[$file_path] = $entry;
+
+                return [$entry[1], $entry[2]];
+            }
+
+            $this->kept_bytes -= $entry[3];
+        }
+
+        return null;
+    }
+
+    /**
+     * Requests served from what is kept get the same statements, which analysers may have changed attributes of;
+     * that is what every request got when the parser cache kept all of them in memory.
+     *
+     * @param list<Stmt> $stmts
+     * @param list<PhpParser\Error> $parse_errors
+     */
+    private function keepStatements(
+        string $file_path,
+        string $file_contents,
+        array $stmts,
+        array $parse_errors,
+        int $memory_before,
+    ): void {
+        if ($this->hand_off_file === $file_path) {
+            $this->hand_off_file = null;
+            $this->handed_off[$file_path] = [$file_contents, $stmts, $parse_errors];
+
+            return;
+        }
+
+        if (!isset($this->requested[$file_path])) {
+            if (count($this->requested) >= self::MAX_REQUESTED_FILES) {
+                $this->requested = [];
+            }
+
+            $this->requested[$file_path] = true;
+
+            return;
+        }
+
+        // the statements were just read or parsed, so the memory growth is about what keeping them costs
+        $bytes = max(1_024, memory_get_usage() - $memory_before);
+
+        if ($bytes > $this->kept_statements_budget) {
+            return;
+        }
+
+        while ($this->kept && $this->kept_bytes + $bytes > $this->kept_statements_budget) {
+            $oldest = array_key_first($this->kept);
+            $this->kept_bytes -= $this->kept[$oldest][3];
+            unset($this->kept[$oldest]);
+        }
+
+        $this->kept[$file_path] = [$file_contents, $stmts, $parse_errors, $bytes];
+        $this->kept_bytes += $bytes;
+    }
+
+    /**
+     * @return array{list<Stmt>, list<PhpParser\Error>} the statements and the errors the parser recovered from
+     */
+    private function fetchStatements(
+        ParserCacheProvider $parser_cache_provider,
+        string $file_path,
+        string $file_contents,
+        int $analysis_php_version_id,
+        bool $do_diff,
+        Progress $progress,
+    ): array {
+        $cached = $parser_cache_provider->loadStatementsFromCache(
             $file_path,
             $file_contents,
         );
 
         if ($cached !== null) {
-            return $this->useCachedStatements($file_path, $file_contents, ...$cached);
+            $progress->debug("Loading $file_path from the parser cache\n");
+
+            return [$this->useCachedStatements($file_path, $file_contents, ...$cached), $cached[1]];
         }
 
         $progress->debug("Parsing $file_path because the cache is absent or outdated\n");
@@ -203,9 +383,9 @@ final class StatementsProvider
         $existing_statements_copy = null;
         $file_changes = null;
         if ($do_diff) {
-            $existing_file_contents = $this->parser_cache_provider->getHash($file_path);
+            $existing_file_contents = $parser_cache_provider->getHash($file_path);
 
-            $existing = $this->parser_cache_provider->loadStatementsFromCache(
+            $existing = $parser_cache_provider->loadStatementsFromCache(
                 $file_path,
                 $existing_file_contents,
             );
@@ -214,7 +394,7 @@ final class StatementsProvider
 
             // Race condition, another thread wrote the same data we already have
             if ($existing_file_contents === $file_contents && $existing !== null) {
-                return $this->useCachedStatements($file_path, $file_contents, ...$existing);
+                return [$this->useCachedStatements($file_path, $file_contents, ...$existing), $existing[1]];
             }
 
             $file_changes = null;
@@ -313,15 +493,17 @@ final class StatementsProvider
             $this->errors[$file_path] = true;
         }
 
-        $this->parser_cache_provider->saveStatementsToCache(
+        // The statements a cache without disk keeps are only read back to diff them with the next contents, and not by
+        // a process that never asks for them again
+        $parser_cache_provider->saveStatementsToCache(
             $file_path,
             $file_contents,
             $stmts,
             $parse_errors,
-            $this->keep_new_statements_without_disk,
+            $do_diff && $this->keep_new_statements_without_disk,
         );
 
-        return $stmts;
+        return [$stmts, $parse_errors];
     }
 
     /**

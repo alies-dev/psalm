@@ -823,6 +823,11 @@ final class Scanner
 
         $this->scanned_files[$file_path] = $will_analyze;
 
+        // A scanning process that is forked dies with what it keeps, the analysis runs in another one
+        if ($will_analyze && !$this->is_forked && $this->codebase->analyzer->willAnalyze($file_path)) {
+            $this->codebase->statements_provider->handOff($file_path);
+        }
+
         $file_scanner->scan(
             $this->codebase,
             $file_storage,
@@ -860,6 +865,8 @@ final class Scanner
                 }
             }
         }
+
+        $this->codebase->statements_provider->handOff(null);
 
         if (!$from_cache) {
             if (!$file_storage->has_visitor_issues && $this->file_storage_provider->cache) {

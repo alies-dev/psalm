@@ -257,6 +257,14 @@ final class Analyzer
         return isset($this->files_with_analysis_results[$file_path]);
     }
 
+    /**
+     * @psalm-mutation-free
+     */
+    public function willAnalyze(string $file_path): bool
+    {
+        return isset($this->files_to_analyze[$file_path]);
+    }
+
     public function analyzeFiles(
         ProjectAnalyzer $project_analyzer,
         int $pool_size,
@@ -352,6 +360,8 @@ final class Analyzer
             // Wait for all tasks to complete and collect the results.
             await($pool->runAll(new InitAnalyzerTask));
             $pool->run($this->getFilesInPoolOrder($pool_size), AnalyzerTask::class, $task_done_closure);
+            // The workers inherited what this process scanned and analysed it
+            $codebase->statements_provider->dropHandedOff();
             $this->progress->debug('Collecting forked analysis results' . "\n");
             $this->progress->startPhase(Phase::MERGING_THREAD_RESULTS);
             $this->progress->expand($pool->threads);

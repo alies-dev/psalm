@@ -184,12 +184,14 @@ final class CacheConsolidationTest extends TestCase
 
         $reader = $this->newCache();
         $in_memory = new ReflectionProperty(Cache::class, 'cache');
-        $this->assertSame([], $in_memory->getValue($reader));
+        $digests = new ReflectionProperty(Cache::class, 'digests');
+        $this->assertSame([], $digests->getValue($reader));
 
         $this->assertSame(['item a'], $reader->getItem('a', 'hash a'));
-        $in_memory_entries = $in_memory->getValue($reader);
-        $this->assertIsArray($in_memory_entries);
-        $this->assertSame(['a'], array_keys($in_memory_entries));
+        $this->assertSame([], $in_memory->getValue($reader));
+        $known_entries = $digests->getValue($reader);
+        $this->assertIsArray($known_entries);
+        $this->assertSame(['a'], array_keys($known_entries));
     }
 
     public function testConsolidatingAgainMergesNewerEntriesAndDropsTheOldDataFile(): void

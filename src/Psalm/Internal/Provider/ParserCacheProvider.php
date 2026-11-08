@@ -26,7 +26,14 @@ final class ParserCacheProvider
      */
     private readonly Cache $stmtCache;
 
-    public function __construct(Config $config, string $composerLock, bool $persistent = true)
+    /**
+     * Contents of files whose statements a cache without disk did not keep, which they were parsed from
+     *
+     * @var array<string, string>
+     */
+    private array $parsed_contents = [];
+
+    public function __construct(Config $config, string $composerLock, private readonly bool $persistent = true)
     {
         $deps = [
             $composerLock,
@@ -66,7 +73,7 @@ final class ParserCacheProvider
 
     public function getHash(string $file_path): ?string
     {
-        return $this->stmtCache->getHash($file_path);
+        return $this->parsed_contents[$file_path] ?? $this->stmtCache->getHash($file_path);
     }
 
     /**
@@ -86,16 +93,24 @@ final class ParserCacheProvider
     /**
      * @param  list<PhpParser\Node\Stmt>        $stmts
      * @param  list<PhpParser\Error>            $parse_errors
-     * @param  bool                             $keep_without_disk whether to keep the statements in memory without a
-     *                                                             disk cache, see {@see Cache::saveItem()}
+     * @param  bool                             $keep_statements whether a cache without disk keeps the statements,
+     *     rather than only the contents they were parsed from
      */
     public function saveStatementsToCache(
         string $file_path,
         string $file_content_hash,
         array $stmts,
         array $parse_errors,
-        bool $keep_without_disk = true,
+        bool $keep_statements = true,
     ): void {
+        if (!$this->persistent && !$keep_statements) {
+            $this->stmtCache->forgetItem($file_path);
+            $this->parsed_contents[$file_path] = $file_content_hash;
+
+            return;
+        }
+
+        unset($this->parsed_contents[$file_path]);
         $this->stmtCache->saveItem(
             $file_path,
             [
@@ -106,7 +121,6 @@ final class ParserCacheProvider
                 ),
             ],
             $file_content_hash,
-            $keep_without_disk,
         );
     }
 }

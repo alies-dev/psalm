@@ -48,7 +48,7 @@ final class FakeParserCacheProvider extends ParserCacheProvider
         string $file_content_hash,
         array $stmts,
         array $parse_errors,
-        bool $keep_without_disk = true,
+        bool $keep_statements = true,
     ): void {
         if (str_ends_with($file_path, '.phpstub')) {
             self::$stub_statements[self::getKey($file_path)] = [$file_content_hash, serialize($stmts), $parse_errors];

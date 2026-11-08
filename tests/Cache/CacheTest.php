@@ -281,40 +281,79 @@ final class CacheTest extends TestCase
         $in_memory = new ReflectionProperty(Cache::class, 'cache');
         self::assertSame($retained, $in_memory->getValue($cache) !== []);
         self::assertSame('item', $cache->getItem('key', 'hash'));
+        self::assertSame('hash', $cache->getHash('key'));
+        self::assertTrue($cache->hasItem('key'));
     }
 
     /**
+     * A cache on disk keeps no item, whatever arrayCache says: StatementsProvider keeps the statements it needs again
+     *
      * @return iterable<string, array{bool, bool, bool}>
      * @psalm-pure
      */
     public static function provideSaveItemRetention(): iterable
     {
-        yield 'persistent with array cache' => [true, true, true];
+        yield 'persistent with array cache' => [true, true, false];
         yield 'persistent without array cache' => [true, false, false];
+        yield 'not persistent with array cache' => [false, true, true];
         yield 'not persistent without array cache' => [false, false, true];
     }
 
-    /** A scanning process stops keeping the items only memory would keep, not those of a disk cache */
-    #[DataProvider('provideDroppingMemoryOnlyItems')]
-    public function testDroppingMemoryOnlyItems(bool $persistent, ?string $item): void
+    /** Saving what the entry already holds is skipped, also after the entry was read rather than written */
+    #[DataProvider('provideEntryKnownBy')]
+    public function testSavingTheSameHashAgainIsSkippedUntilTheItemIsForgotten(bool $known_by_reading): void
     {
-        /** @var Cache<string> $cache */
-        $cache = new Cache($this->newConfig(), 'test', [], $persistent);
-        $cache->saveItem('key', 'item', 'hash', false);
+        $this->newCache()->saveItem(self::KEY, 'item', 'hash');
+        $cache = $this->newCache();
+        if ($known_by_reading) {
+            self::assertSame('item', $cache->getItem(self::KEY, 'hash'));
+        } else {
+            $cache->saveItem(self::KEY, 'item', 'hash');
+        }
+        unlink($this->entryPath());
 
-        $in_memory = new ReflectionProperty(Cache::class, 'cache');
-        self::assertSame($persistent, $in_memory->getValue($cache) !== []);
-        self::assertSame($item, $cache->getItem('key', 'hash'));
+        $cache->saveItem(self::KEY, 'another item', 'hash');
+        self::assertFileDoesNotExist($this->entryDirectory() . '/' . hash('xxh128', self::KEY));
+
+        $cache->saveItem(self::KEY, 'another item', 'another hash');
+        self::assertSame('another item', $this->newCache()->getItem(self::KEY, 'another hash'));
+
+        $cache->forgetItem(self::KEY);
+        unlink($this->entryPath());
+        $cache->saveItem(self::KEY, 'another item', 'another hash');
+        self::assertSame('another item', $this->newCache()->getItem(self::KEY, 'another hash'));
     }
 
     /**
-     * @return iterable<string, array{bool, ?string}>
+     * @return iterable<string, array{bool}>
      * @psalm-pure
      */
-    public static function provideDroppingMemoryOnlyItems(): iterable
+    public static function provideEntryKnownBy(): iterable
     {
-        yield 'without a disk cache' => [false, null];
-        yield 'with a disk cache and the array cache' => [true, 'item'];
+        yield 'written' => [false];
+        yield 'read' => [true];
+    }
+
+    /** The statements a parser cache without disk does not keep are parsed again, a change is still noticed */
+    public function testParserCacheWithoutDiskKeepsOnlyTheContentsOfStatementsItDoesNotKeep(): void
+    {
+        $provider = new ParserCacheProvider($this->newConfig(), '', false);
+        $provider->saveStatementsToCache(self::KEY, 'contents', [], [], false);
+
+        self::assertNull($provider->loadStatementsFromCache(self::KEY, 'contents'));
+        self::assertSame('contents', $provider->getHash(self::KEY));
+        self::assertFalse($provider->hasChanged(self::KEY, 'contents'));
+        self::assertTrue($provider->hasChanged(self::KEY, 'new contents'));
+
+        $provider->saveStatementsToCache(self::KEY, 'new contents', [], []);
+
+        self::assertSame([[], []], $provider->loadStatementsFromCache(self::KEY, 'new contents'));
+        self::assertSame('new contents', $provider->getHash(self::KEY));
+
+        $provider->saveStatementsToCache(self::KEY, 'newer contents', [], [], false);
+
+        self::assertNull($provider->loadStatementsFromCache(self::KEY, null));
+        self::assertSame('newer contents', $provider->getHash(self::KEY));
     }
 
     /** Callers such as ParserCacheProvider keep the previous file contents as the hash to compare them */

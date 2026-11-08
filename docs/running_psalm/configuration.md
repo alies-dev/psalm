@@ -327,11 +327,9 @@ When `true`, Psalm will disable usage of the cache, the equivalent of running wi
   arrayCache="[bool]"
 >
 ```
-When `false`, Psalm will disable usage of the array cache. 
+When `true`, Psalm keeps parsed files in memory between their uses. A file parsed while scanning it stays in memory until it is analysed, and the files used again and again (parent classes whose constructors are followed, for instance) stay in memory afterwards, up to 32 MB per process.
 
-The array cache is used together with the file cache to avoid re-loading cache entries when re-scanning the same file, which offers a nice performance improvement.
-
-A cache created by [`--consolidate-cache`](./command_line_usage.md#consolidating-the-cache) is only read when the array cache is enabled.
+When `false`, Psalm keeps none of them: each use reads the file cache again, or parses the file again with `--no-cache`. This uses less memory and takes more time.
 
 Defaults to `true`.
 
