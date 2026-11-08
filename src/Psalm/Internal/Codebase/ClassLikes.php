@@ -53,8 +53,8 @@ use ReflectionClass;
 use ReflectionProperty;
 use UnexpectedValueException;
 
-use function array_filter;
 use function array_diff_assoc;
+use function array_filter;
 use function array_merge;
 use function array_pop;
 use function count;
