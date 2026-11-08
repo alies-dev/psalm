@@ -118,6 +118,7 @@ use const PHP_VERSION_ID;
 
 /**
  * @api
+ * @psalm-import-type MethodSummary from InertConstructorClosure
  */
 final class Codebase
 {
@@ -312,6 +313,15 @@ final class Codebase
      * @var array<int, string>
      */
     public array $custom_taints = [];
+
+    /**
+     * The method summaries InertConstructorClosure takes from the files by path, then lowercase method id, null
+     * for a body that isn't inert. Reset when the files are reloaded.
+     *
+     * @internal
+     * @var array<string, array<lowercase-string, MethodSummary|null>>
+     */
+    public array $inert_constructor_summaries = [];
 
     /**
      * Set (only) while scanning inside a forked worker process: the channel back to the parent, used to
@@ -867,7 +877,7 @@ final class Codebase
         $this->file_reference_provider->loadReferenceCache(false);
 
         FunctionLikeAnalyzer::clearCache();
-        InertConstructorClosure::clearCache();
+        $this->inert_constructor_summaries = [];
 
         if ($force || !$this->statements_provider->parser_cache_provider) {
             $diff_files = $candidate_files;
