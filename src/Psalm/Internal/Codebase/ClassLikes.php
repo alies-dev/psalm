@@ -54,6 +54,7 @@ use ReflectionProperty;
 use UnexpectedValueException;
 
 use function array_filter;
+use function array_diff_assoc;
 use function array_merge;
 use function array_pop;
 use function count;
@@ -87,6 +88,17 @@ use const T_WHITESPACE;
  *
  * Handles information about classes, interfaces and traits
  * @psalm-import-type CapabilitySet from Capabilities
+ * @psalm-type ThreadData = array{
+ *     array<lowercase-string, bool>,
+ *     array<lowercase-string, bool>,
+ *     array<lowercase-string, bool>,
+ *     array<string, bool>,
+ *     array<lowercase-string, bool>,
+ *     array<string, bool>,
+ *     array<lowercase-string, bool>,
+ *     array<string, bool>,
+ *     array<string, bool>,
+ * }
  */
 final class ClassLikes
 {
@@ -2725,17 +2737,7 @@ final class ClassLikes
     }
 
     /**
-     * @return array{
-     *     array<lowercase-string, bool>,
-     *     array<lowercase-string, bool>,
-     *     array<lowercase-string, bool>,
-     *     array<string, bool>,
-     *     array<lowercase-string, bool>,
-     *     array<string, bool>,
-     *     array<lowercase-string, bool>,
-     *     array<string, bool>,
-     *     array<string, bool>,
-     * }
+     * @return ThreadData
      * @psalm-mutation-free
      */
     public function getThreadData(): array
@@ -2754,17 +2756,29 @@ final class ClassLikes
     }
 
     /**
-     * @param array{
-     *     0: array<lowercase-string, bool>,
-     *     1: array<lowercase-string, bool>,
-     *     2: array<lowercase-string, bool>,
-     *     3: array<string, bool>,
-     *     4: array<lowercase-string, bool>,
-     *     5: array<string, bool>,
-     *     6: array<lowercase-string, bool>,
-     *     7: array<string, bool>,
-     *     8: array<string, bool>,
-     * } $thread_data
+     * The entries that changed since $earlier, an earlier getThreadData(): adding them is adding all of them
+     *
+     * @param ThreadData $earlier
+     * @return ThreadData
+     * @psalm-mutation-free
+     */
+    public function getThreadDataSince(array $earlier): array
+    {
+        return [
+            array_diff_assoc($this->existing_classlikes_lc, $earlier[0]),
+            array_diff_assoc($this->existing_classes_lc, $earlier[1]),
+            array_diff_assoc($this->existing_traits_lc, $earlier[2]),
+            array_diff_assoc($this->existing_traits, $earlier[3]),
+            array_diff_assoc($this->existing_enums_lc, $earlier[4]),
+            array_diff_assoc($this->existing_enums, $earlier[5]),
+            array_diff_assoc($this->existing_interfaces_lc, $earlier[6]),
+            array_diff_assoc($this->existing_interfaces, $earlier[7]),
+            array_diff_assoc($this->existing_classes, $earlier[8]),
+        ];
+    }
+
+    /**
+     * @param ThreadData $thread_data
      * @psalm-external-mutation-free
      */
     public function addThreadData(array $thread_data): void
@@ -2781,32 +2795,34 @@ final class ClassLikes
             $existing_classes,
         ] = $thread_data;
 
-        $this->existing_classlikes_lc = self::mergeThreadData($existing_classlikes_lc, $this->existing_classlikes_lc);
-        $this->existing_classes_lc = self::mergeThreadData($existing_classes_lc, $this->existing_classes_lc);
-        $this->existing_traits_lc = self::mergeThreadData($existing_traits_lc, $this->existing_traits_lc);
-        $this->existing_traits = self::mergeThreadData($existing_traits, $this->existing_traits);
-        $this->existing_enums_lc = self::mergeThreadData($existing_enums_lc, $this->existing_enums_lc);
-        $this->existing_enums = self::mergeThreadData($existing_enums, $this->existing_enums);
-        $this->existing_interfaces_lc = self::mergeThreadData($existing_interfaces_lc, $this->existing_interfaces_lc);
-        $this->existing_interfaces = self::mergeThreadData($existing_interfaces, $this->existing_interfaces);
-        $this->existing_classes = self::mergeThreadData($existing_classes, $this->existing_classes);
+        self::mergeThreadData($this->existing_classlikes_lc, $existing_classlikes_lc);
+        self::mergeThreadData($this->existing_classes_lc, $existing_classes_lc);
+        self::mergeThreadData($this->existing_traits_lc, $existing_traits_lc);
+        self::mergeThreadData($this->existing_traits, $existing_traits);
+        self::mergeThreadData($this->existing_enums_lc, $existing_enums_lc);
+        self::mergeThreadData($this->existing_enums, $existing_enums);
+        self::mergeThreadData($this->existing_interfaces_lc, $existing_interfaces_lc);
+        self::mergeThreadData($this->existing_interfaces, $existing_interfaces);
+        self::mergeThreadData($this->existing_classes, $existing_classes);
     }
 
     /**
+     * Adds the entries of $more to $merged in place, so that merging costs what $more holds: an entry true in either
+     * is true
+     *
      * @template T as string|lowercase-string
-     * @param array<T, bool> $old
-     * @param array<T, bool> $new
-     * @return array<T, bool>
-     * @psalm-pure
+     * @param array<T, bool> $merged
+     * @param array<T, bool> $more
+     * @param-out array<T, bool> $merged
+     * @psalm-capabilities write-refs
      */
-    private static function mergeThreadData(array $old, array $new): array
+    private static function mergeThreadData(array &$merged, array $more): void
     {
-        foreach ($new as $name => $value) {
-            if (!isset($old[$name]) || (!$old[$name] && $value)) {
-                $old[$name] = $value;
+        foreach ($more as $name => $value) {
+            if (!isset($merged[$name]) || (!$merged[$name] && $value)) {
+                $merged[$name] = $value;
             }
         }
-        return $old;
     }
 
     /**

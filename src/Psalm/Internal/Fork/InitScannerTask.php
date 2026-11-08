@@ -9,8 +9,6 @@ use Amp\Parallel\Worker\Task;
 use Amp\Sync\Channel;
 use Override;
 use Psalm\Internal\Analyzer\ProjectAnalyzer;
-use Psalm\Internal\Provider\ClassLikeStorageProvider;
-use Psalm\Internal\Provider\FileStorageProvider;
 
 use const PHP_EOL;
 
@@ -30,10 +28,11 @@ final class InitScannerTask implements Task
         $statements_provider = $codebase->statements_provider;
 
         $codebase->scanner->isForked();
-        FileStorageProvider::deleteAll();
-        ClassLikeStorageProvider::deleteAll();
-
         $statements_provider->resetDiffs();
+        InheritedScanState::take($codebase);
+        // this process scans each file once and never sends statements to the parent: kept only in memory, they would
+        // be kept for nothing
+        $statements_provider->parser_cache_provider?->dropNewStatementsWithoutDisk();
 
         $analyzer->progress->debug('Have initialised forked process for scanning' . PHP_EOL);
 

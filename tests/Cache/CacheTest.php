@@ -294,6 +294,30 @@ final class CacheTest extends TestCase
         yield 'not persistent without array cache' => [false, false, true];
     }
 
+    /** A scanning process stops keeping the items only memory would keep, not those of a disk cache */
+    #[DataProvider('provideDroppingMemoryOnlyItems')]
+    public function testDroppingMemoryOnlyItems(bool $persistent, ?string $item): void
+    {
+        /** @var Cache<string> $cache */
+        $cache = new Cache($this->newConfig(), 'test', [], $persistent);
+        $cache->dropMemoryOnlyItems();
+        $cache->saveItem('key', 'item', 'hash');
+
+        $in_memory = new ReflectionProperty(Cache::class, 'cache');
+        self::assertSame($persistent, $in_memory->getValue($cache) !== []);
+        self::assertSame($item, $cache->getItem('key', 'hash'));
+    }
+
+    /**
+     * @return iterable<string, array{bool, ?string}>
+     * @psalm-pure
+     */
+    public static function provideDroppingMemoryOnlyItems(): iterable
+    {
+        yield 'without a disk cache' => [false, null];
+        yield 'with a disk cache and the array cache' => [true, 'item'];
+    }
+
     /** Callers such as ParserCacheProvider keep the previous file contents as the hash to compare them */
     public function testGetHashReturnsTheStoredHashAndNotThePayload(): void
     {

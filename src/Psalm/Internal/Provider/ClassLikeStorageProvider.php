@@ -197,6 +197,21 @@ final class ClassLikeStorageProvider
     }
 
     /**
+     * Empties the provider like deleteAll(), handing what it held to the caller instead of freeing it
+     *
+     * @return list{array<string, ClassLikeStorage>, array<string, ClassLikeStorage>}
+     * @psalm-capabilities read-globals|write-globals
+     */
+    public static function detachAll(): array
+    {
+        $detached = [self::$storage, self::$new_storage];
+        self::$storage = [];
+        self::$new_storage = [];
+
+        return $detached;
+    }
+
+    /**
      * @psalm-external-mutation-free
      */
     public static function populated(): void
