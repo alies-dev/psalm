@@ -30,6 +30,7 @@
   </file>
   <file src="src/Psalm/CodeLocation.php">
     <ImpureFunctionCall>
+      <code><![CDATA[__unserialize]]></code>
       <code><![CDATA[calculateRealLocation]]></code>
     </ImpureFunctionCall>
     <RiskyTruthyFalsyComparison>
