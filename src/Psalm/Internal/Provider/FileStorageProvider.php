@@ -148,6 +148,20 @@ final class FileStorageProvider
     }
 
     /**
+     * Empties the provider like deleteAll(), handing what it held to the caller instead of freeing it
+     *
+     * @return array<lowercase-string, FileStorage>
+     * @psalm-capabilities read-globals|write-globals
+     */
+    public static function detachAll(): array
+    {
+        $detached = self::$storage;
+        self::$storage = [];
+
+        return $detached;
+    }
+
+    /**
      * @psalm-external-mutation-free
      */
     public static function populated(): void

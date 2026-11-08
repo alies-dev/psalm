@@ -9,20 +9,28 @@ use Psalm\Codebase;
 use Psalm\Internal\Analyzer\IssueData;
 use Psalm\Internal\Codebase\ClassLikes;
 use Psalm\Internal\Codebase\Scanner;
+use Psalm\Internal\Provider\ClassLikeStorageProvider;
+use Psalm\Internal\Provider\FileStorageProvider;
 use Psalm\Internal\Scanner\UnresolvedConstantComponent;
 use Psalm\IssueBuffer;
+use Psalm\Storage\ClassLikeStorage;
+use Psalm\Storage\FileStorage;
 use Psalm\Storage\FunctionStorage;
 use Psalm\Type\Union;
 
 /**
  * The state a scanning process was forked with: it sends the parent back only what changed since.
  *
- * Taking it costs nothing, as the arrays are shared until the process changes them.
+ * Taking it costs nothing, as the arrays are shared until the process changes them. The process scans as if it knew
+ * no storages, as the parent merges every process's own; the inherited ones are kept here rather than freed, as
+ * freeing them would write to each, copying the memory it shares with the parent.
  *
  * @internal
  * @psalm-import-type ThreadData from Scanner
  * @psalm-import-type ThreadData from ClassLikes as ClassLikesThreadData
  * @psalm-type Inherited = array{
+ *     file_storage: array<lowercase-string, FileStorage>,
+ *     classlike_storage: list{array<string, ClassLikeStorage>, array<string, ClassLikeStorage>},
  *     classlikes_data: ClassLikesThreadData,
  *     scanner_data: ThreadData,
  *     issues: array<string, list<IssueData>>,
@@ -48,6 +56,8 @@ final class InheritedScanState
         $taint_flow_graph = $codebase->taint_flow_graph;
 
         self::$inherited = [
+            'file_storage' => FileStorageProvider::detachAll(),
+            'classlike_storage' => ClassLikeStorageProvider::detachAll(),
             'classlikes_data' => $codebase->classlikes->getThreadData(),
             'scanner_data' => $codebase->scanner->getThreadData(),
             'issues' => IssueBuffer::getIssuesData(),
