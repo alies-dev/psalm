@@ -887,6 +887,14 @@ final class ClassLikes
 
             $class_node = CodeUseGraph::classNode($fq_class_name_lc);
 
+            $interface_storages = [];
+            foreach ($classlike_storage->class_implements as $fq_interface_name_lc => $_) {
+                if ($this->classlike_storage_provider->has($fq_interface_name_lc)) {
+                    $interface_storages[$fq_interface_name_lc]
+                        = $this->classlike_storage_provider->get($fq_interface_name_lc);
+                }
+            }
+
             // calls to an overridden parent or interface method may end up in the overriding method
             foreach ($classlike_storage->declaring_method_ids as $method_name => $declaring_method_id) {
                 $method_id_lc = strtolower((string) $declaring_method_id);
@@ -919,20 +927,14 @@ final class ClassLikes
 
                 $parent_method_ids = $classlike_storage->overridden_method_ids[$method_name] ?? [];
 
-                foreach ($classlike_storage->class_implements as $fq_interface_name_lc => $_) {
-                    if (!isset($parent_method_ids[$fq_interface_name_lc])) {
-                        try {
-                            $interface_storage = $this->classlike_storage_provider->get($fq_interface_name_lc);
-                        } catch (InvalidArgumentException) {
-                            continue;
-                        }
-
-                        if (isset($interface_storage->methods[$method_name])) {
-                            $parent_method_ids[$fq_interface_name_lc] = new MethodIdentifier(
-                                $interface_storage->name,
-                                $method_name,
-                            );
-                        }
+                foreach ($interface_storages as $fq_interface_name_lc => $interface_storage) {
+                    if (!isset($parent_method_ids[$fq_interface_name_lc])
+                        && isset($interface_storage->methods[$method_name])
+                    ) {
+                        $parent_method_ids[$fq_interface_name_lc] = new MethodIdentifier(
+                            $interface_storage->name,
+                            $method_name,
+                        );
                     }
                 }
 
