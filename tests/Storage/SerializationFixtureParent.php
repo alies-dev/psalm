@@ -6,6 +6,9 @@ namespace Psalm\Tests\Storage;
 
 use Psalm\Storage\UnserializeMemoryUsageSuppressionTrait;
 
+/**
+ * @psalm-immutable
+ */
 abstract class SerializationFixtureParent
 {
     use UnserializeMemoryUsageSuppressionTrait;
@@ -27,5 +30,21 @@ abstract class SerializationFixtureParent
         $this->public = 1;
         $this->protected = 'protected';
         $this->parent_private = 'parent private';
+    }
+
+    /**
+     * The values of the properties of the fixture, to compare the objects before and after serialization
+     *
+     * @return array<string, mixed>
+     */
+    public function describe(): array
+    {
+        return [
+            'public' => $this->public,
+            'protected' => $this->protected,
+            'parent_private' => $this->parent_private,
+            'uninitialized_is_set' => isset($this->uninitialized),
+            'parent_readonly' => $this->parent_readonly,
+        ];
     }
 }

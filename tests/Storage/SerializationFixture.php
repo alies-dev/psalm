@@ -4,6 +4,11 @@ declare(strict_types=1);
 
 namespace Psalm\Tests\Storage;
 
+use Override;
+
+/**
+ * @psalm-immutable
+ */
 final class SerializationFixture extends SerializationFixtureParent
 {
     private array $private = [];
@@ -15,5 +20,14 @@ final class SerializationFixture extends SerializationFixtureParent
     {
         parent::__construct('parent readonly');
         $this->private = ['private'];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    #[Override]
+    public function describe(): array
+    {
+        return [...parent::describe(), 'private' => $this->private, 'readonly' => $this->readonly];
     }
 }
