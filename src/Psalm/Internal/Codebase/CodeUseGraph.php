@@ -777,6 +777,17 @@ final class CodeUseGraph
     }
 
     /**
+     * Returns the nodes $node_id references, with the type of the edge.
+     *
+     * @return array<string, string>
+     * @psalm-mutation-free
+     */
+    public function getReferencedNodes(string $node_id): array
+    {
+        return $this->forward_edges[$node_id] ?? [];
+    }
+
+    /**
      * Returns only references made by code that is reachable from an entry point.
      *
      * @return array<string, true>

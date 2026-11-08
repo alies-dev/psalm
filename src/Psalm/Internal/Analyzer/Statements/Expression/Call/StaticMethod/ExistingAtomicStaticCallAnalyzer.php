@@ -11,6 +11,7 @@ use Psalm\Codebase;
 use Psalm\Config;
 use Psalm\Context;
 use Psalm\FileManipulation;
+use Psalm\Internal\Analyzer\InertConstructorClosure;
 use Psalm\Internal\Analyzer\Statements\Expression\Call\ByRefArgumentAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\Call\CallPurityResolver;
 use Psalm\Internal\Analyzer\Statements\Expression\Call\ClassTemplateParamCollector;
@@ -93,7 +94,12 @@ final class ExistingAtomicStaticCallAnalyzer
             $statements_analyzer->getSuppressedIssues(),
         );
 
-        if ($class_storage->user_defined
+        /** @var InertConstructorClosure|null */
+        $inert_constructor_closure = $stmt->getAttribute(InertConstructorClosure::ATTRIBUTE);
+
+        if ($inert_constructor_closure !== null) {
+            $inert_constructor_closure->addReferences($codebase, $context);
+        } elseif ($class_storage->user_defined
             && $context->self
             && ($context->collect_mutations || $context->collect_initializations)
         ) {

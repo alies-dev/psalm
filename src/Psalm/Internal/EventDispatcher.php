@@ -22,6 +22,7 @@ use Psalm\Plugin\EventHandler\BeforeExpressionAnalysisInterface;
 use Psalm\Plugin\EventHandler\BeforeFileAnalysisInterface;
 use Psalm\Plugin\EventHandler\BeforeStatementAnalysisInterface;
 use Psalm\Plugin\EventHandler\ClassFilePathProviderInterface;
+use Psalm\Plugin\EventHandler\DynamicFunctionStorageProviderInterface;
 use Psalm\Plugin\EventHandler\Event\AddRemoveTaintsEvent;
 use Psalm\Plugin\EventHandler\Event\AfterAnalysisEvent;
 use Psalm\Plugin\EventHandler\Event\AfterClassLikeAnalysisEvent;
@@ -40,6 +41,17 @@ use Psalm\Plugin\EventHandler\Event\BeforeExpressionAnalysisEvent;
 use Psalm\Plugin\EventHandler\Event\BeforeFileAnalysisEvent;
 use Psalm\Plugin\EventHandler\Event\BeforeStatementAnalysisEvent;
 use Psalm\Plugin\EventHandler\Event\StringInterpreterEvent;
+use Psalm\Plugin\EventHandler\FunctionExistenceProviderInterface;
+use Psalm\Plugin\EventHandler\FunctionParamsProviderInterface;
+use Psalm\Plugin\EventHandler\FunctionReturnTypeProviderInterface;
+use Psalm\Plugin\EventHandler\MethodCapabilitiesProviderInterface;
+use Psalm\Plugin\EventHandler\MethodExistenceProviderInterface;
+use Psalm\Plugin\EventHandler\MethodParamsProviderInterface;
+use Psalm\Plugin\EventHandler\MethodReturnTypeProviderInterface;
+use Psalm\Plugin\EventHandler\MethodVisibilityProviderInterface;
+use Psalm\Plugin\EventHandler\PropertyExistenceProviderInterface;
+use Psalm\Plugin\EventHandler\PropertyTypeProviderInterface;
+use Psalm\Plugin\EventHandler\PropertyVisibilityProviderInterface;
 use Psalm\Plugin\EventHandler\RemoveTaintsInterface;
 use Psalm\Plugin\EventHandler\StringInterpreterInterface;
 use Psalm\Type\Atomic\TLiteralString;
@@ -202,6 +214,39 @@ final class EventDispatcher
     public array $remove_taints_checks = [];
 
     /**
+     * The plugin hooks that can run while a function-like is analysed: event handlers and providers
+     */
+    private const STATEMENT_ANALYSIS_HOOKS = [
+        AddTaintsInterface::class,
+        AfterClassLikeExistenceCheckInterface::class,
+        AfterEveryFunctionCallAnalysisInterface::class,
+        AfterExpressionAnalysisInterface::class,
+        AfterFunctionCallAnalysisInterface::class,
+        AfterFunctionLikeAnalysisInterface::class,
+        AfterMethodCallAnalysisInterface::class,
+        AfterStatementAnalysisInterface::class,
+        BeforeAddIssueInterface::class,
+        BeforeExpressionAnalysisInterface::class,
+        BeforeStatementAnalysisInterface::class,
+        DynamicFunctionStorageProviderInterface::class,
+        FunctionExistenceProviderInterface::class,
+        FunctionParamsProviderInterface::class,
+        FunctionReturnTypeProviderInterface::class,
+        MethodCapabilitiesProviderInterface::class,
+        MethodExistenceProviderInterface::class,
+        MethodParamsProviderInterface::class,
+        MethodReturnTypeProviderInterface::class,
+        MethodVisibilityProviderInterface::class,
+        PropertyExistenceProviderInterface::class,
+        PropertyTypeProviderInterface::class,
+        PropertyVisibilityProviderInterface::class,
+        RemoveTaintsInterface::class,
+        StringInterpreterInterface::class,
+    ];
+
+    private bool $has_statement_analysis_hooks = false;
+
+    /**
      * @param class-string $class
      * @psalm-external-mutation-free
      */
@@ -286,6 +331,22 @@ final class EventDispatcher
         if (is_subclass_of($class, ClassFilePathProviderInterface::class)) {
             $this->file_path_provider_interface[] = $class;
         }
+
+        foreach (self::STATEMENT_ANALYSIS_HOOKS as $interface) {
+            if (is_subclass_of($class, $interface)) {
+                $this->has_statement_analysis_hooks = true;
+            }
+        }
+    }
+
+    /**
+     * Whether a plugin registered a hook, event handler or provider, that can run while a function-like is analysed
+     *
+     * @psalm-mutation-free
+     */
+    public function hasStatementAnalysisHooks(): bool
+    {
+        return $this->has_statement_analysis_hooks;
     }
 
     /**
