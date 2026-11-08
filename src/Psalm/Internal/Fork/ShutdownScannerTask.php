@@ -46,9 +46,7 @@ final class ShutdownScannerTask implements Task
             'classlike_storage' => $codebase->classlike_storage_provider->getAll(),
             'file_storage' => $codebase->file_storage_provider->getAll(),
             'taint_data' => $codebase->taint_flow_graph,
-            'global_constants' => $codebase->getAllStubbedConstants(),
-            'unresolved_global_constants' => $codebase->getAllUnresolvedGlobalConstants(),
-            'global_functions' => $codebase->functions->getAllStubbedFunctions(),
+            'global_registrations' => $codebase->scanner->getGlobalRegistrations(),
         ];
     }
 }

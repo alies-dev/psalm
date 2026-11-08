@@ -796,12 +796,13 @@ final class ClassLikes
     }
 
     /**
-     * @psalm-external-mutation-free
+     * @psalm-capabilities read-props|write-this-props|write-props|write-refs
      */
     public function addClassAlias(string $fq_class_name, string $alias_name): void
     {
         $this->classlike_aliases_map[strtolower($alias_name)] = $fq_class_name;
         $this->existing_classlike_aliases[$alias_name] = true;
+        $this->scanner->recordClassAlias($fq_class_name, $alias_name);
     }
 
     /** @psalm-mutation-free */
@@ -2737,8 +2738,6 @@ final class ClassLikes
      *     array<lowercase-string, bool>,
      *     array<string, bool>,
      *     array<string, bool>,
-     *     array<lowercase-string, string>,
-     *     array<string, bool>,
      * }
      * @psalm-mutation-free
      */
@@ -2754,8 +2753,6 @@ final class ClassLikes
             $this->existing_interfaces_lc,
             $this->existing_interfaces,
             $this->existing_classes,
-            $this->classlike_aliases_map,
-            $this->existing_classlike_aliases,
         ];
     }
 
@@ -2770,8 +2767,6 @@ final class ClassLikes
      *     6: array<lowercase-string, bool>,
      *     7: array<string, bool>,
      *     8: array<string, bool>,
-     *     9: array<lowercase-string, string>,
-     *     10: array<string, bool>,
      * } $thread_data
      * @psalm-external-mutation-free
      */
@@ -2787,8 +2782,6 @@ final class ClassLikes
             $existing_interfaces_lc,
             $existing_interfaces,
             $existing_classes,
-            $classlike_aliases_map,
-            $existing_classlike_aliases,
         ] = $thread_data;
 
         $this->existing_classlikes_lc = self::mergeThreadData($existing_classlikes_lc, $this->existing_classlikes_lc);
@@ -2800,11 +2793,6 @@ final class ClassLikes
         $this->existing_interfaces_lc = self::mergeThreadData($existing_interfaces_lc, $this->existing_interfaces_lc);
         $this->existing_interfaces = self::mergeThreadData($existing_interfaces, $this->existing_interfaces);
         $this->existing_classes = self::mergeThreadData($existing_classes, $this->existing_classes);
-        $this->classlike_aliases_map += $classlike_aliases_map;
-        $this->existing_classlike_aliases = self::mergeThreadData(
-            $existing_classlike_aliases,
-            $this->existing_classlike_aliases,
-        );
     }
 
     /**

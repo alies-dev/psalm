@@ -75,7 +75,7 @@ if (!class_exists(Lazy::class, false)) {
         foreach ($arrival as $process) {
             [$file_path, $classlike_storages] = $processes[$process];
             $codebase->scanner->addThreadData([[], [], [], [], [], ['lib\lazy' => $file_path], [], [], []]);
-            $pool_results[] = ['file_storage' => [], 'classlike_storage' => $classlike_storages];
+            $pool_results[] = ['file_storage' => [], 'classlike_storage' => $classlike_storages, 'global_registrations' => []];
         }
 
         $codebase->scanner->addPoolResults(
