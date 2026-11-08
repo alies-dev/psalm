@@ -7,8 +7,16 @@ namespace Psalm\Tests\Storage;
 use Closure;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\RequiresPhpExtension;
+use Psalm\CodeLocation;
+use Psalm\CodeLocation\Raw;
 use Psalm\Internal\Analyzer\ClassLikeAnalyzer;
 use Psalm\Internal\MethodIdentifier;
+use Psalm\Internal\Scanner\UnresolvedConstant\ClassConstant;
+use Psalm\Internal\Scanner\UnresolvedConstant\ScalarValue;
+use Psalm\Internal\Scanner\UnresolvedConstant\UnresolvedAdditionOp;
+use Psalm\Internal\Type\TypeAlias\LinkableTypeAlias;
+use Psalm\Issue\InvalidDocblock;
+use Psalm\Issue\TaintedHtml;
 use Psalm\Storage\Assertion\HasArrayKey;
 use Psalm\Storage\Assertion\IsType;
 use Psalm\Storage\ClassLikeStorage;
@@ -21,6 +29,7 @@ use Psalm\Type\Atomic\TLiteralString;
 use Psalm\Type\Atomic\TNamedObject;
 
 use function array_map;
+use function file_get_contents;
 use function igbinary_serialize;
 use function igbinary_unserialize;
 use function is_array;
@@ -62,9 +71,31 @@ final class SerializationTest extends TestCase
             $storage->classlikes_in_file = ['foo' => 'Foo'];
             return $storage;
         }];
+        yield 'CodeLocation' => [self::location(...)];
+        yield 'unresolved constant' => [static fn(): object => new UnresolvedAdditionOp(
+            new ScalarValue(1),
+            new ClassConstant('Foo', 'BAR'),
+        )];
+        yield 'type alias' => [static fn(): object => new LinkableTypeAlias('Foo', 'Bar', 1, 2, 3)];
+        yield 'docblock issue' => [static fn(): object => new InvalidDocblock('message', self::location())];
+        yield 'issue with a readonly property' => [
+            static fn(): object => new TaintedHtml('message', self::location(), [], 'journey'),
+        ];
         yield 'atomic' => [static fn(): object => new TNamedObject('Foo', true)];
         yield 'assertion' => [static fn(): object => new IsType(new TLiteralString('a'))];
         yield 'assertion with a readonly property' => [static fn(): object => new HasArrayKey('a')];
+    }
+
+    /**
+     * A location with the properties it computes from the file
+     */
+    private static function location(): CodeLocation
+    {
+        $location = (new Raw((string) file_get_contents(__FILE__), __FILE__, 'SerializationTest.php', 200, 210))
+            ->setCommentLine(2);
+        self::assertNotSame('', $location->getSnippet());
+
+        return $location;
     }
 
     /**
