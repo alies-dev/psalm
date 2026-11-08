@@ -6,6 +6,47 @@ namespace Psalm\Internal;
 
 use Psalm\Exception\ComplicatedExpressionException;
 use Psalm\Storage\Assertion;
+use Psalm\Storage\Assertion\Any;
+use Psalm\Storage\Assertion\ArrayKeyDoesNotExist;
+use Psalm\Storage\Assertion\ArrayKeyExists;
+use Psalm\Storage\Assertion\DoesNotHaveAtLeastCount;
+use Psalm\Storage\Assertion\DoesNotHaveExactCount;
+use Psalm\Storage\Assertion\DoesNotHaveMethod;
+use Psalm\Storage\Assertion\Empty_;
+use Psalm\Storage\Assertion\Falsy;
+use Psalm\Storage\Assertion\HasArrayKey;
+use Psalm\Storage\Assertion\HasAtLeastCount;
+use Psalm\Storage\Assertion\HasExactCount;
+use Psalm\Storage\Assertion\HasIntOrStringArrayAccess;
+use Psalm\Storage\Assertion\HasMethod;
+use Psalm\Storage\Assertion\HasStringArrayAccess;
+use Psalm\Storage\Assertion\InArray;
+use Psalm\Storage\Assertion\IsAClass;
+use Psalm\Storage\Assertion\IsClassEqual;
+use Psalm\Storage\Assertion\IsClassNotEqual;
+use Psalm\Storage\Assertion\IsCountable;
+use Psalm\Storage\Assertion\IsEqualIsset;
+use Psalm\Storage\Assertion\IsGreaterThan;
+use Psalm\Storage\Assertion\IsGreaterThanOrEqualTo;
+use Psalm\Storage\Assertion\IsIdentical;
+use Psalm\Storage\Assertion\IsIsset;
+use Psalm\Storage\Assertion\IsLessThan;
+use Psalm\Storage\Assertion\IsLessThanOrEqualTo;
+use Psalm\Storage\Assertion\IsLooselyEqual;
+use Psalm\Storage\Assertion\IsNotAClass;
+use Psalm\Storage\Assertion\IsNotCountable;
+use Psalm\Storage\Assertion\IsNotIdentical;
+use Psalm\Storage\Assertion\IsNotIsset;
+use Psalm\Storage\Assertion\IsNotLooselyEqual;
+use Psalm\Storage\Assertion\IsNotType;
+use Psalm\Storage\Assertion\IsType;
+use Psalm\Storage\Assertion\NestedAssertions;
+use Psalm\Storage\Assertion\NonEmpty;
+use Psalm\Storage\Assertion\NonEmptyCountable;
+use Psalm\Storage\Assertion\NotInArray;
+use Psalm\Storage\Assertion\NotNestedAssertions;
+use Psalm\Storage\Assertion\NotNonEmptyCountable;
+use Psalm\Storage\Assertion\Truthy;
 use Psalm\Type\Atomic\TArray;
 use Psalm\Type\Atomic\TKeyedArray;
 use UnexpectedValueException;
@@ -19,7 +60,9 @@ use function assert;
 use function count;
 use function implode;
 use function in_array;
+use function ksort;
 use function mt_rand;
+use function range;
 use function reset;
 use function strcspn;
 use function substr;
@@ -240,9 +283,9 @@ final class Algebra
             }
         }
 
-        $simplified_clauses = self::removeRedundantClauses($cloned_clauses);
+        $simplified_clauses = self::removeRedundantClauses($cloned_clauses, $literal_counts);
 
-        return array_values(self::removeResolvedClauses($simplified_clauses));
+        return array_values(self::removeResolvedClauses($simplified_clauses, $literal_counts !== null));
     }
 
     /**
@@ -255,15 +298,26 @@ final class Algebra
      * @return array<array-key, Clause>
      * @psalm-pure
      */
-    private static function removeResolvedClauses(array $simplified_clauses): array
+    private static function removeResolvedClauses(array $simplified_clauses, bool $indexed): array
     {
         $clause_count = count($simplified_clauses);
 
         if ($clause_count > 2 && $clause_count < 256) {
             $clauses = array_values($simplified_clauses);
+            $partners = $indexed ? self::getNegatedLiteralPartners($clauses) : null;
+
             for ($i = 0; $i < $clause_count; $i++) {
                 $clause_a = $clauses[$i];
-                for ($k = $i + 1; $k < $clause_count; $k++) {
+
+                if ($partners !== null) {
+                    $clause_a_partners = $partners[$i] ?? [];
+                } elseif ($i + 1 < $clause_count) {
+                    $clause_a_partners = range($i + 1, $clause_count - 1);
+                } else {
+                    $clause_a_partners = [];
+                }
+
+                foreach ($clause_a_partners as $k) {
                     $clause_b = $clauses[$k];
                     $common_keys = array_keys(
                         array_intersect_key($clause_a->possibilities, $clause_b->possibilities),
@@ -329,37 +383,80 @@ final class Algebra
     }
 
     /**
-     * Drops each non-wedge clause that contains another reconcilable non-wedge clause.
+     * Drops each non-wedge clause that contains another reconcilable non-wedge clause, i.e. a subset of its
+     * literals. With $literal_counts, each such candidate is indexed under its rarest literal, which the
+     * subset shares.
      *
      * @param array<array-key, Clause> $cloned_clauses
+     * @param array<array-key, array<array-key, int>>|null $literal_counts
      * @return array<array-key, Clause>
      * @psalm-pure
      */
-    private static function removeRedundantClauses(array $cloned_clauses): array
+    private static function removeRedundantClauses(array $cloned_clauses, ?array $literal_counts): array
     {
-        $simplified_clauses = [];
+        $candidates_by_literal = [];
+        $unindexed_candidates = [];
 
-        foreach ($cloned_clauses as $clause_a) {
-            $is_redundant = false;
-
-            foreach ($cloned_clauses as $clause_b) {
-                if ($clause_a === $clause_b
-                    || !$clause_b->reconcilable
-                    || $clause_b->wedge
-                    || $clause_a->wedge
-                ) {
+        if ($literal_counts === null) {
+            $unindexed_candidates = $cloned_clauses;
+        } else {
+            foreach ($cloned_clauses as $clause) {
+                if (!$clause->reconcilable || $clause->wedge) {
                     continue;
                 }
 
-                if ($clause_a->contains($clause_b)) {
-                    $is_redundant = true;
-                    break;
+                $anchor_var = null;
+                $anchor_key = null;
+                $anchor_count = 0;
+
+                foreach ($clause->possibilities as $var => $possibilities) {
+                    foreach ($possibilities as $key => $_) {
+                        if ($anchor_key === null || $literal_counts[$var][$key] < $anchor_count) {
+                            $anchor_var = $var;
+                            $anchor_key = $key;
+                            $anchor_count = $literal_counts[$var][$key];
+                        }
+                    }
+                }
+
+                if ($anchor_var === null || $anchor_key === null) {
+                    $unindexed_candidates[] = $clause;
+                } else {
+                    $candidates_by_literal[$anchor_var][$anchor_key][] = $clause;
+                }
+            }
+        }
+
+        $simplified_clauses = [];
+
+        foreach ($cloned_clauses as $clause_a) {
+            if (!$clause_a->wedge) {
+                foreach ($unindexed_candidates as $clause_b) {
+                    if ($clause_a !== $clause_b
+                        && $clause_b->reconcilable
+                        && !$clause_b->wedge
+                        && $clause_a->contains($clause_b)
+                    ) {
+                        continue 2;
+                    }
+                }
+
+                foreach ($clause_a->possibilities as $var => $possibilities) {
+                    if (!isset($candidates_by_literal[$var])) {
+                        continue;
+                    }
+
+                    foreach ($possibilities as $key => $_) {
+                        foreach ($candidates_by_literal[$var][$key] ?? [] as $clause_b) {
+                            if ($clause_a !== $clause_b && $clause_a->contains($clause_b)) {
+                                continue 4;
+                            }
+                        }
+                    }
                 }
             }
 
-            if (!$is_redundant) {
-                $simplified_clauses[$clause_a->hash] = $clause_a;
-            }
+            $simplified_clauses[$clause_a->hash] = $clause_a;
         }
 
         return $simplified_clauses;
@@ -449,6 +546,180 @@ final class Algebra
 
             unset($clauses[$hash]);
         }
+    }
+
+    /**
+     * For each position i, the positions k > i of the clauses that pass 3 of simplifyCNF can combine with
+     * clause i: on a variable where both hold a single literal, the literal of i may be the negation of the
+     * literal of k. Null when a literal has an assertion class getNegationFamily() does not know.
+     *
+     * @param list<Clause> $clauses
+     * @return array<int, list<int>>|null
+     * @psalm-pure
+     */
+    private static function getNegatedLiteralPartners(array $clauses): ?array
+    {
+        $literals = [];
+        $families = [];
+        $opposite_families = [];
+
+        foreach ($clauses as $i => $clause) {
+            foreach ($clause->possibilities as $var => $possibilities) {
+                if (count($possibilities) !== 1) {
+                    continue;
+                }
+
+                $assertion = reset($possibilities);
+                $family = self::getNegationFamily($assertion);
+
+                if ($family === null) {
+                    return null;
+                }
+
+                if ($family === false) {
+                    continue;
+                }
+
+                $literals[] = [$i, $var, $family[0], $family[1], $assertion];
+                $families[$var][$family[0]] = true;
+                $opposite_families[$var][$family[1]] = true;
+            }
+        }
+
+        $buckets = [];
+        $queries = [];
+
+        foreach ($literals as [$i, $var, $family, $opposite_family, $assertion]) {
+            $can_be_negated = isset($opposite_families[$var][$family]);
+            $can_negate = isset($families[$var][$opposite_family]);
+
+            if (!$can_be_negated && !$can_negate) {
+                continue;
+            }
+
+            $payload = self::getNegationPayload($assertion);
+
+            if ($can_be_negated) {
+                $buckets[$var][$family . "\0" . $payload][] = $i;
+            }
+
+            if ($can_negate) {
+                $queries[$i][] = [$var, $opposite_family . "\0" . $payload];
+            }
+        }
+
+        $partners = [];
+
+        foreach ($queries as $i => $clause_queries) {
+            $clause_partners = [];
+
+            foreach ($clause_queries as [$var, $bucket]) {
+                foreach ($buckets[$var][$bucket] ?? [] as $k) {
+                    if ($k > $i) {
+                        $clause_partners[$k] = true;
+                    }
+                }
+            }
+
+            if ($clause_partners) {
+                ksort($clause_partners);
+                $partners[$i] = array_keys($clause_partners);
+            }
+        }
+
+        return $partners;
+    }
+
+    /**
+     * The family of an assertion and the family of the assertions it can be the negation of, such that
+     * $a->isNegationOf($b) implies getNegationFamily($a)[1] === getNegationFamily($b)[0] and equal
+     * getNegationPayload(). False when isNegationOf() is always false, null for an unknown class.
+     *
+     * @return array{string, string}|false|null
+     * @psalm-pure
+     */
+    private static function getNegationFamily(Assertion $assertion): array|false|null
+    {
+        return match ($assertion::class) {
+            IsIdentical::class => ['=', '!='],
+            IsNotIdentical::class => ['!=', '='],
+            IsLooselyEqual::class => ['~', '!~'],
+            IsNotLooselyEqual::class => ['!~', '~'],
+            IsType::class => ['type', '!type'],
+            IsNotType::class => ['!type', 'type'],
+            InArray::class => ['in-array', '!in-array'],
+            NotInArray::class => ['!in-array', 'in-array'],
+            IsAClass::class => ['isa', '!isa'],
+            IsNotAClass::class => ['!isa', 'isa'],
+            IsClassEqual::class => ['get-class', '!get-class'],
+            IsClassNotEqual::class => ['!get-class', 'get-class'],
+            HasAtLeastCount::class => ['at-least', '!at-least'],
+            DoesNotHaveAtLeastCount::class => ['!at-least', 'at-least'],
+            HasExactCount::class => ['exact-count', '!exact-count'],
+            DoesNotHaveExactCount::class => ['!exact-count', 'exact-count'],
+            HasMethod::class => ['method', '!method'],
+            DoesNotHaveMethod::class => ['!method', 'method'],
+            IsGreaterThan::class => ['>', '<='],
+            IsLessThanOrEqualTo::class => ['<=', '>'],
+            IsLessThan::class => ['<', '>='],
+            IsGreaterThanOrEqualTo::class => ['>=', '<'],
+            Truthy::class => ['truthy', 'falsy'],
+            Falsy::class => ['falsy', 'truthy'],
+            NonEmpty::class => ['non-empty', 'empty'],
+            Empty_::class => ['empty', 'non-empty'],
+            IsCountable::class => ['countable', '!countable'],
+            IsNotCountable::class => ['!countable', 'countable'],
+            NonEmptyCountable::class => ['non-empty-countable', '!non-empty-countable'],
+            NotNonEmptyCountable::class => ['!non-empty-countable', 'non-empty-countable'],
+            ArrayKeyExists::class => ['array-key-exists', '!array-key-exists'],
+            ArrayKeyDoesNotExist::class => ['!array-key-exists', 'array-key-exists'],
+            IsIsset::class => ['isset', '!isset'],
+            // IsNotIsset::isNegationOf() accepts another IsNotIsset, and not IsIsset
+            IsNotIsset::class => ['!isset', '!isset'],
+            Any::class,
+            IsEqualIsset::class,
+            HasArrayKey::class,
+            HasIntOrStringArrayAccess::class,
+            HasStringArrayAccess::class,
+            NestedAssertions::class,
+            NotNestedAssertions::class => false,
+            default => null,
+        };
+    }
+
+    /**
+     * What isNegationOf() compares besides the class, or a coarser key of it.
+     *
+     * @psalm-pure
+     */
+    private static function getNegationPayload(Assertion $assertion): string
+    {
+        return match (true) {
+            $assertion instanceof IsIdentical,
+            $assertion instanceof IsNotIdentical,
+            $assertion instanceof IsLooselyEqual,
+            $assertion instanceof IsNotLooselyEqual,
+            $assertion instanceof IsType,
+            $assertion instanceof IsNotType,
+            $assertion instanceof InArray,
+            $assertion instanceof NotInArray => $assertion->type->getId(),
+            // isNegationOf() compares the Atomic instances, which then have the same id
+            $assertion instanceof IsAClass,
+            $assertion instanceof IsNotAClass => ($assertion->allow_string ? 's' : '') . $assertion->type->getId(),
+            $assertion instanceof IsClassEqual,
+            $assertion instanceof IsClassNotEqual => $assertion->type,
+            $assertion instanceof HasAtLeastCount,
+            $assertion instanceof DoesNotHaveAtLeastCount,
+            $assertion instanceof HasExactCount,
+            $assertion instanceof DoesNotHaveExactCount => (string) $assertion->count,
+            $assertion instanceof HasMethod,
+            $assertion instanceof DoesNotHaveMethod => $assertion->method,
+            $assertion instanceof IsGreaterThan,
+            $assertion instanceof IsLessThanOrEqualTo,
+            $assertion instanceof IsLessThan,
+            $assertion instanceof IsGreaterThanOrEqualTo => (string) $assertion->value,
+            default => '',
+        };
     }
 
     /**

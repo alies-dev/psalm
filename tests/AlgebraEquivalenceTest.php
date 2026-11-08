@@ -99,6 +99,34 @@ final class AlgebraEquivalenceTest extends TestCase
         }
     }
 
+    public function testResolutionMatchesReferenceForEveryPairOfAssertions(): void
+    {
+        $pool = self::makeAssertionPool();
+        $truthy = new Truthy();
+        $falsy = new Falsy();
+
+        foreach ($pool as $a) {
+            foreach ($pool as $b) {
+                // (A || $w) && (B || $u) && ($w || $u) loses its last clause when A is the negation of B;
+                // unrelated clauses make it large enough for the indexed path
+                $clauses = [
+                    new Clause(['$v' => [(string) $a => $a], '$w' => ['!falsy' => $truthy]], 1, 1),
+                    new Clause(['$v' => [(string) $b => $b], '$u' => ['!falsy' => $truthy]], 2, 2),
+                    new Clause(['$w' => ['!falsy' => $truthy], '$u' => ['!falsy' => $truthy]], 3, 3),
+                ];
+
+                for ($i = 0; $i < 6; $i++) {
+                    $clauses[] = new Clause(['$x' . $i => ['falsy' => $falsy]], 4, 4);
+                }
+
+                $expected = self::describe(self::simplify(true, $clauses), $clauses);
+                $actual = self::describe(self::simplify(false, $clauses), $clauses);
+
+                $this->assertSame($expected, $actual, "$a and $b");
+            }
+        }
+    }
+
     /**
      * @return list<Assertion>
      */
