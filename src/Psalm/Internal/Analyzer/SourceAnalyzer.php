@@ -28,6 +28,11 @@ abstract class SourceAnalyzer implements StatementsSource
 {
     protected SourceAnalyzer $source;
 
+    /** the sources are set once, so their file is asked only once instead of on every code location */
+    private ?string $source_file_name = null;
+
+    private ?string $source_file_path = null;
+
     /**
      * @psalm-external-mutation-free
      */
@@ -88,14 +93,16 @@ abstract class SourceAnalyzer implements StatementsSource
     #[Override]
     public function getFileName(): string
     {
-        return $this->source->getFileName();
+        /** @psalm-suppress ImpurePropertyAssignment Cache */
+        return $this->source_file_name ??= $this->source->getFileName();
     }
 
     /** @psalm-mutation-free */
     #[Override]
     public function getFilePath(): string
     {
-        return $this->source->getFilePath();
+        /** @psalm-suppress ImpurePropertyAssignment Cache */
+        return $this->source_file_path ??= $this->source->getFilePath();
     }
 
     /** @psalm-mutation-free */
