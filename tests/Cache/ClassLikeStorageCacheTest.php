@@ -93,7 +93,8 @@ final class ClassLikeStorageCacheTest extends TestCase
         self::assertSame($dir . 'Sqlite.php', $providers->file_storage_provider->get($dir . 'Sqlite.php')->file_path);
         self::assertSame(
             $dir . 'Sqlite.php',
-            $providers->file_storage_provider->cache?->getLatestFromCache($dir . 'Sqlite.php', self::CODE)?->file_path,
+            $providers->file_storage_provider->cache?->getLatestFromCache($dir . 'Sqlite.php', self::CODE, true)
+                ?->file_path,
         );
     }
 

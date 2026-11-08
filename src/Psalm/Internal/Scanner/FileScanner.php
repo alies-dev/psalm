@@ -67,14 +67,15 @@ class FileScanner implements FileSource
             $progress->debug('Scanning ' . $file_storage->file_path . "\n");
         }
 
+        // set first: the storages of the class-likes are cached during the traversal, for the depth of the scan
+        $file_storage->deep_scan = $this->will_analyze;
+
         $traverser = new NodeTraverser();
         $traverser->addVisitor(
             new ReflectorVisitor($codebase, $this, $file_storage),
         );
 
         $traverser->traverse($stmts);
-
-        $file_storage->deep_scan = $this->will_analyze;
     }
 
     /** @psalm-mutation-free */

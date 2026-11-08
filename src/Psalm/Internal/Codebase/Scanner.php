@@ -798,15 +798,30 @@ final class Scanner
 
         $file_contents = $this->file_provider->getContents($file_path);
 
-        $from_cache = $this->file_storage_provider->has($file_path, $file_contents);
+        $scanned_storage = $this->file_storage_provider->has($file_path)
+            ? $this->file_storage_provider->get($file_path)
+            : null;
 
-        if (!$from_cache) {
-            $this->file_storage_provider->create($file_path);
+        // a deep scan of a file scanned shallowly takes a new storage, from the cache or the scan, and doesn't add to
+        // the one of the shallow scan: the populator may have changed that one, and the cache keeps it as it was
+        $file_storage = $this->file_storage_provider->exhume($file_path, $file_contents, $will_analyze);
+        $from_cache = $file_storage !== null;
+
+        if ($file_storage === null) {
+            $file_storage = $this->file_storage_provider->create($file_path);
+        } elseif ($scanned_storage !== null && $scanned_storage !== $file_storage) {
+            // the storages of the class-likes the shallow scan of the file found make way for the cached deep ones
+            foreach ($scanned_storage->classlikes_in_file as $fq_classlike_name_lc => $_) {
+                if ($this->codebase->classlike_storage_provider->has($fq_classlike_name_lc)
+                    && $this->codebase->classlike_storage_provider->get($fq_classlike_name_lc)
+                        ->stmt_location?->file_path === $file_path
+                ) {
+                    $this->codebase->classlike_storage_provider->remove($fq_classlike_name_lc);
+                }
+            }
         }
 
         $this->scanned_files[$file_path] = $will_analyze;
-
-        $file_storage = $this->file_storage_provider->get($file_path);
 
         $file_scanner->scan(
             $this->codebase,
