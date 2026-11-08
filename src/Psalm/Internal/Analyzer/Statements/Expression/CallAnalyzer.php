@@ -24,6 +24,7 @@ use Psalm\Internal\Type\Comparator\TypeComparisonResult;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\TemplateBound;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
+use Psalm\Internal\Type\TemplateLowerBound;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
 use Psalm\Internal\Type\TypeExpander;
@@ -333,6 +334,18 @@ abstract class CallAnalyzer
             if (!$context->isSuppressingExceptions($statements_analyzer)) {
                 $context->mergeFunctionExceptions($method_storage, $code_location);
             }
+        }
+
+        if ($method_storage) {
+            TemplateLowerBound::declare(
+                $template_result,
+                $method_storage,
+                $codebase,
+                $class_storage->name,
+                $class_storage->name,
+                $class_storage->parent_class,
+                $class_storage->final,
+            );
         }
 
         if (ArgumentsAnalyzer::analyze(

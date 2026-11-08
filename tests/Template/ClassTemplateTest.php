@@ -4374,6 +4374,137 @@ final class ClassTemplateTest extends TestCase
                 'ignored_issues' => [],
                 'php_version' => '8.0',
             ],
+            'superLowerBoundOnMethodTemplateAcceptsSupertypes' => [
+                'code' => '<?php
+                    class Animal {}
+                    class Dog extends Animal {}
+                    class Puppy extends Dog {}
+
+                    /** @template T */
+                    final class Box {
+                        /**
+                         * @template TNeedle super T
+                         * @param TNeedle $needle
+                         */
+                        public function contains(mixed $needle): bool {
+                            return $needle === null;
+                        }
+                    }
+
+                    /** @param Box<Dog> $b */
+                    function check(Box $b): void {
+                        $b->contains(new Animal());
+                        $b->contains(new Dog());
+                        $b->contains(new Puppy());
+                    }',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundResolvesAgainstClassTemplates' => [
+                'code' => '<?php
+                    class X {}
+
+                    /**
+                     * @template TKey of array-key
+                     * @template TValue
+                     */
+                    final class Map {
+                        /**
+                         * @template TLookupKey super TKey
+                         * @param TLookupKey $key
+                         */
+                        public function get(mixed $key): mixed {
+                            return null;
+                        }
+
+                        /**
+                         * @template TLookupKey super TKey
+                         * @param TLookupKey $key
+                         */
+                        public function has(mixed $key): bool {
+                            return false;
+                        }
+                    }
+
+                    /** @param Map<never, never> $m */
+                    function fromNever(Map $m): void {
+                        $m->get("x");
+                        $m->get(1);
+                        $m->has("x");
+                    }
+
+                    /** @param Map<int<0, 1>, X> $m */
+                    function fromRange(Map $m, int $someInt): void {
+                        $m->get($someInt);
+                        $m->get(0);
+                        $m->has($someInt);
+                    }
+
+                    /** @param Map<int, X> $m */
+                    function fromInt(Map $m): void {
+                        $m->get(5);
+                        $m->has(5);
+                    }',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundExpandsContextualBounds' => [
+                'code' => '<?php
+                    class C {
+                        /**
+                         * @template T super self
+                         * @param T $x
+                         */
+                        public function fromSelf(mixed $x): void {}
+
+                        /**
+                         * @template T super static
+                         * @param T $x
+                         */
+                        public function fromStatic(mixed $x): void {}
+                    }
+
+                    class D extends C {
+                        /**
+                         * @template T super parent
+                         * @param T $x
+                         */
+                        public function fromParent(mixed $x): void {}
+                    }
+
+                    (new C())->fromSelf(new C());
+                    (new C())->fromStatic(new C());
+                    (new D())->fromParent(new C());',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundAcceptsForeignTemplateReceiver' => [
+                'code' => '<?php
+                    class Dog {}
+
+                    /** @template V */
+                    final class Box {
+                        /**
+                         * @template T super V
+                         * @param T $x
+                         */
+                        public function lower(mixed $x): void {}
+                    }
+
+                    /**
+                     * @template U as Dog
+                     * @param Box<U> $box
+                     */
+                    function check(Box $box): void {
+                        $box->lower(new Dog());
+                    }',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
         ];
     }
 
@@ -4381,6 +4512,81 @@ final class ClassTemplateTest extends TestCase
     public function providerInvalidCodeParse(): iterable
     {
         return [
+            'superLowerBoundKeepsForeignTemplateReceiver' => [
+                'code' => '<?php
+                    class Dog {}
+
+                    /** @template V */
+                    final class Box {
+                        /**
+                         * @template T super V
+                         * @param T $x
+                         */
+                        public function lower(mixed $x): void {}
+                    }
+
+                    /**
+                     * @template U as Dog
+                     * @param Box<U> $box
+                     */
+                    function check(Box $box): void {
+                        $box->lower("bad");
+                    }',
+                'error_message' => 'InvalidArgument - src/somefile.php:18:37 - Argument 1 of Box::lower'
+                    . ' expects T super U:fn-check as Dog, but \'bad\' provided',
+                'error_levels' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundRejectsDisjointMethodArgument' => [
+                'code' => '<?php
+                    class Animal {}
+                    class Dog extends Animal {}
+
+                    /** @template T */
+                    final class Box {
+                        /**
+                         * @template TNeedle super T
+                         * @param TNeedle $needle
+                         */
+                        public function contains(mixed $needle): bool {
+                            return $needle === null;
+                        }
+                    }
+
+                    /** @param Box<Dog> $b */
+                    function check(Box $b): void {
+                        $b->contains("dog");
+                    }',
+                'error_message' => 'InvalidArgument - src/somefile.php:18:38 - Argument 1 of Box::contains'
+                    . ' expects TNeedle super Dog, but \'dog\' provided',
+                'error_levels' => [],
+                'php_version' => '8.0',
+            ],
+            'superLowerBoundRejectsDisjointKeyAgainstClassTemplate' => [
+                'code' => '<?php
+                    /**
+                     * @template TKey of array-key
+                     * @template TValue
+                     */
+                    final class Map {
+                        /**
+                         * @template TLookupKey super TKey
+                         * @param TLookupKey $key
+                         */
+                        public function get(mixed $key): mixed {
+                            return null;
+                        }
+                    }
+
+                    /** @param Map<int, string> $m */
+                    function check(Map $m): void {
+                        $m->get("name");
+                    }',
+                'error_message' => 'InvalidArgument - src/somefile.php:18:33 - Argument 1 of Map::get'
+                    . ' expects TLookupKey super int, but \'name\' provided',
+                'error_levels' => [],
+                'php_version' => '8.0',
+            ],
             'restrictTemplateInputWithClassString' => [
                 'code' => '<?php
                     /** @template T as object */

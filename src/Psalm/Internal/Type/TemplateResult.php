@@ -48,6 +48,14 @@ final class TemplateResult
     public array $upper_bounds_unintersectable_types = [];
 
     /**
+     * Lower bounds declared by `super` templates, keyed like $template_types.
+     * Unlike $lower_bounds these are not inferred from arguments.
+     *
+     * @var array<string, array<string, Union>>
+     */
+    public array $declared_lower_bounds = [];
+
+    /**
      * @param  array<string, array<string, Union>> $template_types
      * @param  array<string, array<string, Union>> $lower_bounds
      */
@@ -71,6 +79,7 @@ final class TemplateResult
         $lower_bounds = array_replace_recursive($instance->lower_bounds, $result->lower_bounds);
         $instance->lower_bounds = $lower_bounds;
         $instance->template_types = [...$instance->template_types, ...$result->template_types];
+        $instance->declared_lower_bounds = [...$instance->declared_lower_bounds, ...$result->declared_lower_bounds];
 
         return $instance;
     }

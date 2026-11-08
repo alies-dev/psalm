@@ -28,6 +28,7 @@ use Psalm\Internal\Type\Comparator\CallableTypeComparator;
 use Psalm\Internal\Type\Comparator\TypeComparisonResult;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\TemplateBound;
+use Psalm\Internal\Type\TemplateLowerBound;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
 use Psalm\Internal\Type\TypeExpander;
@@ -64,12 +65,14 @@ use Psalm\Type\Atomic\TKeyedArray;
 use Psalm\Type\Atomic\TLiteralString;
 use Psalm\Type\Atomic\TMixed;
 use Psalm\Type\Atomic\TNamedObject;
+use Psalm\Type\Atomic\TTemplateParam;
 use Psalm\Type\Atomic\TTypeVariable;
 use Psalm\Type\Union;
 use UnexpectedValueException;
 
 use function array_diff;
 use function array_filter;
+use function array_values;
 use function count;
 use function explode;
 use function implode;
@@ -337,6 +340,8 @@ final class ArgumentAnalyzer
             $static_classlike_storage->final ?? false,
             true,
         );
+
+        $template_param_type = $param_type;
 
         if ($class_generic_params) {
             // here we're replacing the param types and arg types with the bound
@@ -681,6 +686,22 @@ final class ArgumentAnalyzer
             return null;
         }
 
+        if ($template_result
+            && $template_result->declared_lower_bounds
+            && !$arg instanceof VirtualArg
+        ) {
+            self::verifyDeclaredLowerBounds(
+                $statements_analyzer,
+                $template_result,
+                $bindable_template_params,
+                $template_param_type,
+                $arg_value_type,
+                $argument_offset,
+                new CodeLocation($statements_analyzer->getSource(), $arg->value),
+                $cased_method_id,
+            );
+        }
+
         if (self::verifyType(
             $statements_analyzer,
             $arg_value_type,
@@ -703,6 +724,127 @@ final class ArgumentAnalyzer
         }
 
         return null;
+    }
+
+    /**
+     * An argument for a `super` template is only an error when it can never overlap the declared
+     * lower bound, or when a callable parameter caps the template below the bound.
+     *
+     * @param list<TTemplateParam> $bindable_template_params
+     */
+    private static function verifyDeclaredLowerBounds(
+        StatementsAnalyzer $statements_analyzer,
+        TemplateResult $template_result,
+        array $bindable_template_params,
+        Union $param_type,
+        Union $arg_type,
+        int $argument_offset,
+        CodeLocation $arg_location,
+        ?string $cased_method_id,
+    ): void {
+        $codebase = $statements_analyzer->getCodebase();
+
+        // the part of the argument that a concrete union arm accepts does not bind the template
+        $concrete_arms = array_filter(
+            $param_type->getAtomicTypes(),
+            static fn(Atomic $atomic): bool => !(new Union([$atomic]))->getTemplateTypes(),
+        );
+
+        if ($concrete_arms) {
+            $concrete_type = new Union(array_values($concrete_arms));
+            $binding_atomics = array_filter(
+                $arg_type->getAtomicTypes(),
+                static fn(Atomic $atomic): bool => !UnionTypeComparator::isContainedBy(
+                    $codebase,
+                    new Union([$atomic]),
+                    $concrete_type,
+                ),
+            );
+
+            if (!$binding_atomics) {
+                return;
+            }
+
+            $arg_type = new Union(array_values($binding_atomics));
+        }
+
+        // infer the templates from this argument alone
+        $inferred_from_arg = new TemplateResult($template_result->template_types, []);
+
+        TemplateStandinTypeReplacer::fillTemplateResult(
+            $param_type,
+            $inferred_from_arg,
+            $codebase,
+            $statements_analyzer,
+            $arg_type,
+            $argument_offset,
+        );
+
+        if ($arg_type->hasCallableType()) {
+            // the parameters of a callable argument cap the template from above
+            TemplateStandinTypeReplacer::fillTemplateResult(
+                $param_type,
+                $inferred_from_arg,
+                $codebase,
+                $statements_analyzer,
+                $arg_type,
+                $argument_offset,
+                null,
+                null,
+                false,
+            );
+        }
+
+        // a bound refers to other templates by their widened value
+        $widened_result = clone $template_result;
+        $widened_result->lower_bounds = TemplateLowerBound::widenInferredBounds($template_result, $codebase);
+
+        foreach ($bindable_template_params as $template_type) {
+            $declared_bound = $template_result->declared_lower_bounds
+                [$template_type->param_name]
+                [$template_type->defining_class] ?? null;
+
+            $bound = $declared_bound
+                ? TemplateLowerBound::resolve($declared_bound, $widened_result, $codebase)
+                : null;
+
+            if (!$bound) {
+                continue;
+            }
+
+            $inferred_bounds = $inferred_from_arg->lower_bounds
+                [$template_type->param_name]
+                [$template_type->defining_class] ?? null;
+            $inferred = $inferred_bounds
+                ? TemplateStandinTypeReplacer::getMostSpecificTypeFromBounds($inferred_bounds, $codebase)
+                : null;
+            $upper_bound = $inferred_from_arg->upper_bounds
+                [$template_type->param_name]
+                [$template_type->defining_class]->type ?? null;
+
+            if ($inferred
+                && !$inferred->isNever()
+                && !UnionTypeComparator::canExpressionTypesBeIdentical($codebase, $inferred, $bound)
+            ) {
+                $provided = $inferred;
+            } elseif ($upper_bound && !UnionTypeComparator::isContainedBy($codebase, $bound, $upper_bound)) {
+                $provided = $upper_bound;
+            } else {
+                continue;
+            }
+
+            IssueBuffer::maybeAdd(
+                new InvalidArgument(
+                    'Argument ' . ($argument_offset + 1)
+                        . ($cased_method_id !== null ? ' of ' . $cased_method_id : '')
+                        . ' expects ' . $template_type->param_name . ' super ' . $bound->getId()
+                        . ', but ' . $provided->getId() . ' provided',
+                    $arg_location,
+                    $cased_method_id,
+                ),
+                $statements_analyzer->getSuppressedIssues(),
+            );
+        }
     }
 
     /**

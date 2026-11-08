@@ -359,6 +359,20 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             (bool) $template_types,
         );
 
+        foreach ($storage->template_lower_bounds as $bound_map) {
+            foreach ($bound_map as $bound) {
+                if ($bound->check(
+                    $this->source,
+                    new CodeLocation($this, $this->function),
+                    $this->suppressed_issues,
+                    [],
+                    false,
+                ) === false) {
+                    $check_stmts = false;
+                }
+            }
+        }
+
         if ($byref_uses) {
             $ref_context = clone $context;
             $var = '$__tmp_byref_closure_if__' . (int) $this->function->getAttribute('startFilePos');

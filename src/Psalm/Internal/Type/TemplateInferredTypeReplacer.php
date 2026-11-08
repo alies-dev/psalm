@@ -58,7 +58,9 @@ final class TemplateInferredTypeReplacer
 
         $is_mixed = false;
 
-        $inferred_lower_bounds = $template_result->lower_bounds ?: [];
+        $inferred_lower_bounds = $template_result->declared_lower_bounds && $codebase
+            ? TemplateLowerBound::widenInferredBounds($template_result, $codebase)
+            : $template_result->lower_bounds;
 
         $types = [];
 

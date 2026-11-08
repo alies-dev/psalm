@@ -1545,8 +1545,16 @@ final class FunctionLikeDocblockScanner
                     new CodeLocation($file_scanner, $stmt, null, true),
                 );
             } else {
+                $template_id = 'fn-' . strtolower($cased_function_id);
+
+                // `super` bounds from below, so the template itself stays unbounded from above
+                if ($template_map[1] === 'super') {
+                    $storage->template_lower_bounds[$template_name] = [$template_id => $template_type];
+                    $template_type = Type::getMixed();
+                }
+
                 $storage->template_types[$template_name] = [
-                    'fn-' . strtolower($cased_function_id) => $template_type,
+                    $template_id => $template_type,
                 ];
             }
         }

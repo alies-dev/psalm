@@ -95,6 +95,14 @@ abstract class FunctionLikeStorage implements HasAttributesInterface, Stringable
     public ?array $template_types = null;
 
     /**
+     * The lower bounds of templates declared with `@template T super Bound`, keyed like $template_types.
+     * A bound may reference templates of the declaring class, so it is resolved per call.
+     *
+     * @var array<string, non-empty-array<string, Union>>
+     */
+    public array $template_lower_bounds = [];
+
+    /**
      * @var array<int, Possibilities>
      */
     public array $assertions = [];
