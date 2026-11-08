@@ -17,6 +17,7 @@ use function uksort;
  * files estimated to be the most expensive start first.
  *
  * @internal
+ * @psalm-pure
  */
 final class AnalysisOrder
 {
@@ -26,7 +27,6 @@ final class AnalysisOrder
      * @param Closure[_](string): int $cost_of estimated cost of a file; files estimated at 0 are never moved
      * @return array<string, string> the $count most expensive files, most expensive first and ties broken by path,
      *                               then the rest in their original order
-     * @psalm-pure
      */
     public static function mostExpensiveFirst(array $files, int $count, Closure $cost_of): array
     {
