@@ -10,10 +10,6 @@ use PHPUnit\Framework\Attributes\RequiresPhpExtension;
 use Psalm\CodeLocation;
 use Psalm\CodeLocation\Raw;
 use Psalm\Internal\Analyzer\ClassLikeAnalyzer;
-use Psalm\Internal\Analyzer\DataFlowNodeData;
-use Psalm\Internal\Analyzer\IssueData;
-use Psalm\Internal\DataFlow\DataFlowNode;
-use Psalm\Internal\DataFlow\Path;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Scanner\UnresolvedConstant\ClassConstant;
 use Psalm\Internal\Scanner\UnresolvedConstant\ScalarValue;
@@ -33,7 +29,6 @@ use Psalm\Type;
 use Psalm\Type\Atomic\TInt;
 use Psalm\Type\Atomic\TLiteralString;
 use Psalm\Type\Atomic\TNamedObject;
-use Psalm\Type\TaintKind;
 use Psalm\Type\Union;
 
 use function array_map;
@@ -101,29 +96,6 @@ final class SerializationTest extends TestCase
         }];
         yield 'array shape' => [static fn(): object => Type::parseString('array{a: int, b?: list<string>}')];
         yield 'assertion with a readonly property' => [static fn(): object => new HasArrayKey('a')];
-        yield 'taint node' => [
-            static fn(): object => DataFlowNode::getForTaint('$_GET', self::location(), TaintKind::INPUT_HTML),
-        ];
-        yield 'path' => [static fn(): object => new Path('arg', 2, TaintKind::INPUT_HTML)];
-        yield 'issue data' => [static fn(): object => new IssueData(
-            IssueData::SEVERITY_ERROR,
-            1,
-            2,
-            'TaintedHtml',
-            'message',
-            'a.php',
-            '/a.php',
-            'snippet',
-            'selected',
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            245,
-            taint_trace: [new DataFlowNodeData('$_GET', 1, 1, 'a.php', '/a.php', 'snippet', 3, 4, 5, 7, 8)],
-        )];
     }
 
     /**

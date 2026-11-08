@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Psalm\Internal\DataFlow;
 
 use Psalm\Storage\ImmutableNonCloneableTrait;
-use Psalm\Storage\UnserializeMemoryUsageSuppressionTrait;
 
 /**
  * @internal
@@ -14,7 +13,6 @@ use Psalm\Storage\UnserializeMemoryUsageSuppressionTrait;
 final class Path
 {
     use ImmutableNonCloneableTrait;
-    use UnserializeMemoryUsageSuppressionTrait;
 
     /**
      * @psalm-mutation-free

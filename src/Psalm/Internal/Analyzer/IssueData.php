@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Psalm\Internal\Analyzer;
 
-use Psalm\Storage\UnserializeMemoryUsageSuppressionTrait;
-
 use function str_pad;
 
 use const STR_PAD_LEFT;
@@ -15,8 +13,6 @@ use const STR_PAD_LEFT;
  */
 final class IssueData
 {
-    use UnserializeMemoryUsageSuppressionTrait;
-
     public const SEVERITY_INFO = 'info';
     public const SEVERITY_ERROR = 'error';
 
