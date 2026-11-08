@@ -129,6 +129,8 @@ final class AlgebraEquivalenceTest extends TestCase
 
     /**
      * @return list<Assertion>
+     *
+     * @psalm-pure
      */
     private static function makeAssertionPool(): array
     {
