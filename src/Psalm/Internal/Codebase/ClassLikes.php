@@ -2446,14 +2446,11 @@ final class ClassLikes
                 $method_id = $declaring_method_id;
             }
 
-            if ($method_storage->location
-                && !$project_analyzer->canReportIssues($method_storage->location->file_path)
-                && !$codebase->analyzer->canReportIssues($method_storage->location->file_path)
-            ) {
-                continue;
-            }
-
-            if ($declaring_classlike_storage->is_trait) {
+            if (!$codebase->analyzer->canReportInferredParamTypes(
+                $project_analyzer,
+                $declaring_classlike_storage,
+                $method_storage->location,
+            )) {
                 continue;
             }
 

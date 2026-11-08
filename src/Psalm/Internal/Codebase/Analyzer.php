@@ -6,6 +6,7 @@ namespace Psalm\Internal\Codebase;
 
 use InvalidArgumentException;
 use PhpParser;
+use Psalm\CodeLocation;
 use Psalm\Codebase;
 use Psalm\Config;
 use Psalm\FileManipulation;
@@ -20,6 +21,7 @@ use Psalm\Internal\Fork\AnalyzerTask;
 use Psalm\Internal\Fork\InitAnalyzerTask;
 use Psalm\Internal\Fork\Pool;
 use Psalm\Internal\Fork\ShutdownAnalyzerTask;
+use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Provider\FileProvider;
 use Psalm\Internal\Provider\FileStorageProvider;
 use Psalm\Internal\Provider\StatementsProvider;
@@ -27,6 +29,7 @@ use Psalm\IssueBuffer;
 use Psalm\Progress\Phase;
 use Psalm\Progress\Progress;
 use Psalm\Storage\Capabilities;
+use Psalm\Storage\ClassLikeStorage;
 use Psalm\Type;
 use Psalm\Type\Union;
 use SebastianBergmann\Diff\Differ;
@@ -171,6 +174,17 @@ final class Analyzer
     public array $possible_method_param_types = [];
 
     /**
+     * Set once the files whose issues can be reported are final for the run. Adding files turns it off, so if they
+     * grow anyway, every method's usages are recorded from then on.
+     */
+    private bool $infer_param_types_of_reportable_methods_only = false;
+
+    /**
+     * @var array<lowercase-string, bool>
+     */
+    private array $param_type_inference_targets = [];
+
+    /**
      * @var array<string, CapabilitySet>
      */
     public array $mutable_classes = [];
@@ -194,6 +208,7 @@ final class Analyzer
     {
         $this->files_to_analyze += $files_to_analyze;
         $this->files_with_analysis_results += $files_to_analyze;
+        $this->infer_param_types_of_reportable_methods_only = false;
     }
 
     /**
@@ -203,6 +218,18 @@ final class Analyzer
     public function addFilesToShowResults(array $files_to_analyze): void
     {
         $this->files_with_analysis_results += $files_to_analyze;
+        $this->infer_param_types_of_reportable_methods_only = false;
+    }
+
+    /**
+     * Records usage-inferred param types only for the methods whose MissingParamType can be reported or fixed
+     *
+     * @psalm-external-mutation-free
+     */
+    public function inferParamTypesOfReportableMethodsOnly(): void
+    {
+        $this->infer_param_types_of_reportable_methods_only = true;
+        $this->param_type_inference_targets = [];
     }
 
     /**
@@ -1361,6 +1388,67 @@ final class Analyzer
     public function getPossibleMethodParamTypes(): array
     {
         return $this->possible_method_param_types;
+    }
+
+    /**
+     * @psalm-capabilities read-props|write-this-props|write-refs
+     */
+    public function addPossibleMethodParamType(
+        Codebase $codebase,
+        MethodIdentifier $declaring_method_id,
+        int $offset,
+        Union $type,
+    ): void {
+        $method_id_lc = strtolower((string) $declaring_method_id);
+
+        if ($this->infer_param_types_of_reportable_methods_only
+            && !($this->param_type_inference_targets[$method_id_lc]
+                ??= $this->isParamTypeInferenceTarget($codebase, $declaring_method_id))
+        ) {
+            return;
+        }
+
+        $this->possible_method_param_types[$method_id_lc][$offset] = Type::combineUnionTypes(
+            $this->possible_method_param_types[$method_id_lc][$offset] ?? null,
+            $type,
+            $codebase,
+        );
+    }
+
+    /**
+     * @psalm-capabilities read-props
+     */
+    private function isParamTypeInferenceTarget(Codebase $codebase, MethodIdentifier $declaring_method_id): bool
+    {
+        try {
+            $class_storage = $codebase->classlike_storage_provider->get($declaring_method_id->fq_class_name);
+        } catch (InvalidArgumentException) {
+            return true;
+        }
+
+        $method_storage = $class_storage->methods[$declaring_method_id->method_name] ?? null;
+
+        return $method_storage === null || $this->canReportInferredParamTypes(
+            ProjectAnalyzer::getInstance(),
+            $class_storage,
+            $method_storage->location,
+        );
+    }
+
+    /**
+     * Whether ClassLikes::findPossibleMethodParamTypes() uses the usage-inferred param types of a method
+     *
+     * @psalm-mutation-free
+     */
+    public function canReportInferredParamTypes(
+        ProjectAnalyzer $project_analyzer,
+        ClassLikeStorage $declaring_class_storage,
+        ?CodeLocation $method_location,
+    ): bool {
+        return $method_location !== null
+            && !$declaring_class_storage->is_trait
+            && ($project_analyzer->canReportIssues($method_location->file_path)
+                || $this->canReportIssues($method_location->file_path));
     }
 
     /**
