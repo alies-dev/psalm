@@ -25,8 +25,11 @@ use Psalm\Storage\FunctionLikeParameter;
 use Psalm\Storage\MethodStorage;
 use Psalm\Storage\PropertyStorage;
 use Psalm\Tests\TestCase;
+use Psalm\Type;
+use Psalm\Type\Atomic\TInt;
 use Psalm\Type\Atomic\TLiteralString;
 use Psalm\Type\Atomic\TNamedObject;
+use Psalm\Type\Union;
 
 use function array_map;
 use function file_get_contents;
@@ -83,6 +86,15 @@ final class SerializationTest extends TestCase
         ];
         yield 'atomic' => [static fn(): object => new TNamedObject('Foo', true)];
         yield 'assertion' => [static fn(): object => new IsType(new TLiteralString('a'))];
+        yield 'Union' => [static function (): object {
+            $type = new Union([new TInt(), new TLiteralString('a'), new TNamedObject('Foo')], ['by_ref' => true]);
+            // fills the caches of the ids
+            self::assertSame("'a'|Foo|int", $type->getId());
+            self::assertSame("'a'|Foo|int", $type->getId(true));
+
+            return $type;
+        }];
+        yield 'array shape' => [static fn(): object => Type::parseString('array{a: int, b?: list<string>}')];
         yield 'assertion with a readonly property' => [static fn(): object => new HasArrayKey('a')];
     }
 
