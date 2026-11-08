@@ -117,6 +117,9 @@ final class Cache
 
     private readonly bool $arrayCache;
 
+    /** Whether items are kept without a disk cache, where the array is their only copy */
+    private bool $keepMemoryOnlyItems = true;
+
     public function __construct(
         Config $config,
         string $subdir,
@@ -481,6 +484,16 @@ final class Cache
         unset($this->cache[$key], $this->consolidated[$key]);
     }
 
+    /**
+     * Without a disk cache, stops keeping the items saved from now on, for a process that never asks for them again
+     *
+     * @psalm-external-mutation-free
+     */
+    public function dropMemoryOnlyItems(): void
+    {
+        $this->keepMemoryOnlyItems = false;
+    }
+
     /** @param T $item */
     public function saveItem(string $key, array|object|string $item, ?string $hash = null): void
     {
@@ -503,7 +516,7 @@ final class Cache
         }
         // Without a disk cache the array is the only copy. With one, keep it only if arrayCache is on,
         // otherwise a cold run holds every parsed AST and storage object in memory for nothing.
-        if (!$this->persistent || $this->arrayCache) {
+        if ($this->persistent ? $this->arrayCache : $this->keepMemoryOnlyItems) {
             $this->cache[$key] = [$hash, $item];
         }
     }
