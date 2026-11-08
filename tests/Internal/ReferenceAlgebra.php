@@ -17,6 +17,8 @@ use function reset;
 /**
  * Verbatim copy of Algebra::simplifyCNF before it was indexed, used as the oracle of
  * AlgebraEquivalenceTest. A semantic change to Algebra::simplifyCNF must be made here too.
+ *
+ * @psalm-capabilities read-props|write-this-props|write-refs
  */
 final class ReferenceAlgebra
 {
