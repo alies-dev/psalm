@@ -34,6 +34,8 @@ final class ShutdownAnalyzerTask implements Task
 
         $project_analyzer->progress->debug('Gathering data for forked process'."\n");
 
+        $codebase->taint_flow_graph?->forgetAnalysisState();
+
         // @codingStandardsIgnoreStart
         return [
             'issues'                                     => IssueBuffer::getIssuesData(),

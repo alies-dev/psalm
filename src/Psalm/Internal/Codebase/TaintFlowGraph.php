@@ -449,12 +449,18 @@ final class TaintFlowGraph extends DataFlowGraph
         }
 
         if ($existing->type === $path->type) {
-            $this->forward_edges[$from_id][$to_id] = new Path(
-                $path->type,
-                min($existing->length, $path->length),
-                ($existing->added_taints & ~$existing->removed_taints) | ($path->added_taints & ~$path->removed_taints),
-                $existing->removed_taints & $path->removed_taints,
-            );
+            $length = min($existing->length, $path->length);
+            $added_taints = ($existing->added_taints & ~$existing->removed_taints)
+                | ($path->added_taints & ~$path->removed_taints);
+            $removed_taints = $existing->removed_taints & $path->removed_taints;
+
+            // e.g. the same path from another file: the existing one is the merged one already
+            if ($length !== $existing->length
+                || $added_taints !== $existing->added_taints
+                || $removed_taints !== $existing->removed_taints
+            ) {
+                $this->forward_edges[$from_id][$to_id] = new Path($path->type, $length, $added_taints, $removed_taints);
+            }
 
             return;
         }
@@ -647,16 +653,49 @@ final class TaintFlowGraph extends DataFlowGraph
     }
 
     /**
+     * Forgets what only the analysis of the files reads, which addGraph() doesn't merge: before a forked worker
+     * sends its graph to the main process
+     *
+     * @psalm-external-mutation-free
+     */
+    public function forgetAnalysisState(): void
+    {
+        $this->output_streams = [];
+        $this->string_starts = [];
+        $this->empty_arrays = [];
+        $this->empty_dispatches = [];
+    }
+
+    /**
+     * Adds the entries of $source whose keys $target doesn't have, as `+=` does (the values are never null)
+     *
+     * @template T
+     * @param array<string, T> $target
+     * @param array<string, T> $source
+     * @param-out array<string, T> $target
+     * @psalm-capabilities write-refs
+     */
+    private static function addMissing(array &$target, array $source): void
+    {
+        foreach ($source as $key => $value) {
+            if (!isset($target[$key])) {
+                $target[$key] = $value;
+            }
+        }
+    }
+
+    /**
      * @psalm-external-mutation-free
      */
     public function addGraph(self $other): void
     {
-        $this->sources += $other->sources;
-        $this->sinks += $other->sinks;
-        $this->nodes += $other->nodes;
-        $this->specialized_calls += $other->specialized_calls;
-        $this->generator_sent_nodes += $other->generator_sent_nodes;
-        $this->shared_state += $other->shared_state;
+        // not `+=`: an operation assigned to a typed property copies the array it is on
+        self::addMissing($this->sources, $other->sources);
+        self::addMissing($this->sinks, $other->sinks);
+        self::addMissing($this->nodes, $other->nodes);
+        self::addMissing($this->specialized_calls, $other->specialized_calls);
+        self::addMissing($this->generator_sent_nodes, $other->generator_sent_nodes);
+        self::addMissing($this->shared_state, $other->shared_state);
 
         foreach ($other->generator_sends as $key => $map) {
             $this->generator_sends[$key] = ($this->generator_sends[$key] ?? []) + $map;
@@ -676,7 +715,11 @@ final class TaintFlowGraph extends DataFlowGraph
             $from = $this->nodes[$key] ?? $this->sources[$key] ?? null;
 
             foreach ($map as $to_id => $path) {
-                $this->mergePath($key, $from, $to_id, $path);
+                if (isset($this->forward_edges[$key][$to_id])) {
+                    $this->mergePath($key, $from, $to_id, $path);
+                } else {
+                    $this->forward_edges[$key][$to_id] = $path;
+                }
             }
         }
 
