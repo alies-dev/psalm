@@ -1313,7 +1313,10 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
                 );
 
                 if ($inert_constructor_closure !== null) {
-                    $fake_constructor_call->setAttribute(InertConstructorClosure::ATTRIBUTE, $inert_constructor_closure);
+                    $fake_constructor_call->setAttribute(
+                        InertConstructorClosure::ATTRIBUTE,
+                        $inert_constructor_closure,
+                    );
 
                     $codebase->progress->debug(
                         'Skipping the bodies of ' . $constructor_declaring_fqcln . '::__construct'
