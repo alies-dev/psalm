@@ -49,6 +49,7 @@ use function posix_getrlimit;
 use function posix_setrlimit;
 use function preg_match;
 use function restore_error_handler;
+use function rmdir;
 use function scandir;
 use function set_error_handler;
 use function sort;
@@ -497,8 +498,13 @@ final class CacheTest extends TestCase
         $expected = [hash('xxh128', self::KEY), 'lock'];
         sort($expected);
         self::assertSame($expected, self::namesIn($directory));
-        // the next lookup in this process does not have to read the disk for it
-        self::assertSame('payload', $cache->getItem(self::KEY, 'hash'));
+        // a cache on disk keeps no item, and the entry that was not replaced holds nothing to read
+        self::assertNull($cache->getItem(self::KEY, 'hash'));
+
+        // nothing is recorded for an entry that was not written: once it can be replaced the same hash is saved
+        rmdir($directory . '/' . hash('xxh128', self::KEY));
+        $cache->saveItem(self::KEY, 'payload', 'hash');
+        self::assertSame('payload', $this->newCache()->getItem(self::KEY, 'hash'));
     }
 
     /** A writer that died before renaming leaves its file behind: it is not the entry, whatever it holds */
