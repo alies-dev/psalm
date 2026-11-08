@@ -807,6 +807,8 @@ final class TaintFlowResolution
      * @param array<string, true> $specialized_calls
      * @param array<string, true> $despecialized_calls
      * @param array<string, true> $shared_state see TaintFlowGraph::addSharedState()
+     * @param array<string, array<string, true>>|null $reverse_edges the edges from their destinations to their
+     *     origins, with specialization links among them, if TaintFlowGraph::linkGeneratorSends() needed them
      * @psalm-capabilities read-props
      */
     public function __construct(
@@ -822,6 +824,7 @@ final class TaintFlowResolution
         private readonly Config $config,
         private readonly ProjectAnalyzer $project_analyzer,
         private readonly Codebase $codebase,
+        private ?array $reverse_edges = null,
     ) {
         // NO_OPEN_ASSIGNMENTS and CALL_OPEN_ASSIGNMENTS
         $this->internOpenAssignments([[], []], [self::NO_CALL, self::NO_CALL]);
@@ -879,14 +882,29 @@ final class TaintFlowResolution
      */
     private function prepareGraph(): void
     {
-        $reverse = [];
+        $reverse = $this->reverse_edges;
+        $this->reverse_edges = null;
 
-        foreach ($this->forward_edges as $from_id => $destinations) {
-            $this->linkSpecialization($from_id);
+        if ($reverse === null) {
+            $reverse = [];
 
-            foreach ($destinations as $to_id => $_) {
-                $reverse[$to_id][$from_id] = true;
-                $this->linkSpecialization($to_id);
+            foreach ($this->forward_edges as $from_id => $destinations) {
+                $this->linkSpecialization($from_id);
+
+                foreach ($destinations as $to_id => $_) {
+                    $reverse[$to_id][$from_id] = true;
+                    $this->linkSpecialization($to_id);
+                }
+            }
+        } else {
+            // The specialization links among the reverse edges are links of $this->specialization_links too, which
+            // the searches below take either way, and computeObservableDepths() takes the actual edges only.
+            foreach ($this->forward_edges as $from_id => $destinations) {
+                $this->linkSpecialization($from_id);
+
+                foreach ($destinations as $to_id => $_) {
+                    $this->linkSpecialization($to_id);
+                }
             }
         }
 

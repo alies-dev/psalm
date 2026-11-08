@@ -838,10 +838,11 @@ final class TaintFlowGraph extends DataFlowGraph
 
         $this->despecializeImpureCalls($codebase);
 
+        $reverse = null;
+
         if ($this->generator_sends) {
             $reverse = $this->getReverseEdges();
             $this->linkGeneratorSends($reverse);
-            unset($reverse);
         }
 
         // Remove all specializations without an outgoing edge
@@ -869,7 +870,11 @@ final class TaintFlowGraph extends DataFlowGraph
             Config::getInstance(),
             $project_analyzer,
             $codebase,
+            $reverse,
         );
+
+        // the resolution frees it once it is done with it
+        unset($reverse);
 
         $this->sinks = [];
         $this->sources = [];
@@ -904,6 +909,9 @@ final class TaintFlowGraph extends DataFlowGraph
         // the graphs of the forked workers are merged in any order: keep the edges added the same
         ksort($this->generator_sends);
 
+        // the nodes whose origins in $reverse are sorted (see sortOrigins())
+        $sorted = [];
+
         foreach ($this->generator_sends as $send_id => $generator_ids) {
             ksort($generator_ids);
 
@@ -929,6 +937,7 @@ final class TaintFlowGraph extends DataFlowGraph
                 if (isset($this->generator_sent_nodes[$unspecialized_id])) {
                     $new_predecessors = $this->linkGeneratorSend(
                         $reverse,
+                        $sorted,
                         $send_node,
                         $unspecialized_id,
                         $specialization_key,
@@ -945,6 +954,8 @@ final class TaintFlowGraph extends DataFlowGraph
 
                     continue;
                 }
+
+                self::sortOrigins($reverse, $sorted, $id);
 
                 foreach ($reverse[$id] ?? [] as $from_id => $_) {
                     $from_calls = $calls;
@@ -998,11 +1009,14 @@ final class TaintFlowGraph extends DataFlowGraph
      *
      * @param array<string, array<string, true>> $reverse see getReverseEdges()
      * @param-out array<string, array<string, true>> $reverse
+     * @param array<string, true> $sorted see sortOrigins()
+     * @param-out array<string, true> $sorted
      * @return array<string, string> the nodes that got a new predecessor in $reverse => that predecessor
      * @psalm-capabilities read-props|write-this-props|write-props|write-refs
      */
     private function linkGeneratorSend(
         array &$reverse,
+        array &$sorted,
         DataFlowNode $send_node,
         string $return_node_id,
         ?string $specialization_key,
@@ -1025,12 +1039,15 @@ final class TaintFlowGraph extends DataFlowGraph
             }
 
             $this->addNode($sent_node);
+            self::sortOrigins($reverse, $sorted, $sent_node->id);
+            self::sortOrigins($reverse, $sorted, self::splitSpecializedId($sent_node->id)[0]);
             self::linkSpecialization($reverse, $sent_node->id);
         }
 
         $this->addPath($send_node, $sent_node, 'generator-send');
 
         if (!isset($reverse[$sent_node->id][$send_node->id])) {
+            self::sortOrigins($reverse, $sorted, $sent_node->id);
             $reverse[$sent_node->id][$send_node->id] = true;
             $new_predecessors[$sent_node->id] = $send_node->id;
         }
@@ -1060,7 +1077,8 @@ final class TaintFlowGraph extends DataFlowGraph
 
     /**
      * The edges of the graph from their destinations to their origins, with the specialization links (see
-     * linkSpecialization()) in both directions, for linkGeneratorSends() (TaintFlowResolution computes its own).
+     * linkSpecialization()) in both directions, for linkGeneratorSends() and then TaintFlowResolution. The
+     * origins of a node are sorted when linkGeneratorSends() first needs them (see sortOrigins()).
      *
      * @return array<string, array<string, true>>
      * @psalm-capabilities read-props|write-refs
@@ -1085,15 +1103,32 @@ final class TaintFlowGraph extends DataFlowGraph
             }
         }
 
-        // which call stacks a node is reached with first matters to linkGeneratorSends(), and the graphs of the
-        // forked workers are merged in any order
-        foreach ($reverse as &$origins) {
-            ksort($origins, SORT_STRING);
+        return $reverse;
+    }
+
+    /**
+     * Sorts the origins of node $id in $reverse (see getReverseEdges()), unless done already. Which call stacks a
+     * node is reached with first matters to linkGeneratorSends(), and the graphs of the forked workers are merged
+     * in any order. Called before any origin is added to the node as well, so that those come after the sorted
+     * ones.
+     *
+     * @param array<string, array<string, true>> $reverse
+     * @param-out array<string, array<string, true>> $reverse
+     * @param array<string, true> $sorted
+     * @param-out array<string, true> $sorted
+     * @psalm-capabilities write-refs
+     */
+    private static function sortOrigins(array &$reverse, array &$sorted, string $id): void
+    {
+        if (isset($sorted[$id])) {
+            return;
         }
 
-        unset($origins);
+        $sorted[$id] = true;
 
-        return $reverse;
+        if (isset($reverse[$id])) {
+            ksort($reverse[$id], SORT_STRING);
+        }
     }
 
     /**
