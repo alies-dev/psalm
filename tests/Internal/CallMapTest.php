@@ -12,6 +12,7 @@ use Symfony\Component\Process\Process;
 
 use function array_diff_key;
 use function array_fill_keys;
+use function array_filter;
 use function array_keys;
 use function dirname;
 use function file_put_contents;
@@ -51,6 +52,21 @@ final class CallMapTest extends TestCase
                 self::assertArrayHasKey('countable::count', $map);
             }
         }
+    }
+
+    public function testIntroductionsAreTheFirstCallMapOfEachKey(): void
+    {
+        $first_versions = [];
+        foreach ([70, 71, 72, 73, 74, 80, 81, 82, 83, 84, 85, 86] as $version) {
+            /** @var TCallMap $map */
+            $map = require self::DICTIONARY_PATH . '/CallMap_' . $version . '.php';
+            $first_versions += array_fill_keys(array_keys($map), $version);
+        }
+
+        self::assertSame(
+            array_filter($first_versions, static fn(int $version): bool => $version > 70),
+            require self::DICTIONARY_PATH . '/CallMapIntroductions.php',
+        );
     }
 
     public function testForeignImportPreservesLocalReturnMetadata(): void

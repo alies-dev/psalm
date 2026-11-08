@@ -27,7 +27,8 @@ signature in every version are dropped.
 1. Edit the entry in `dictionaries/override/CallMap.php` (to add a missing one, copy it
    from `dictionaries/autogen/CallMap_$latest.php`).
 2. Run `php -d memory_limit=-1 bin/stubs/gen_callmap.php`. It regenerates
-   `dictionaries/CallMap_*.php` and rewrites the delta files.
+   `dictionaries/CallMap_*.php`, `dictionaries/CallMapIntroductions.php` (the version
+   each function and method first appears in) and rewrites the delta files.
 
 The edit applies to every older version up to the first delta that changes the
 function. Narrowing the parameter of `array_key_first` this way changes

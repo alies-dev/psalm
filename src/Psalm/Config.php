@@ -1992,6 +1992,24 @@ final class Config
 
     public function shortenFileName(string $to): string
     {
+        // A path below the base dir shortens to the same suffix on both branches below, whether it
+        // exists or not: a file there implies the base is a directory. Paths the branches treat
+        // differently (Windows, backslashes, a doubled separator after the base, a base with
+        // several trailing slashes) fall through.
+        if (DIRECTORY_SEPARATOR === '/') {
+            $prefix = rtrim($this->base_dir, '/') . '/';
+            $prefix_length = strlen($prefix);
+
+            if (isset($to[$prefix_length])
+                && $to[$prefix_length] !== '/'
+                && strlen($this->base_dir) <= $prefix_length
+                && str_starts_with($to, $prefix)
+                && !str_contains($to, '\\')
+            ) {
+                return substr($to, $prefix_length);
+            }
+        }
+
         if (!is_file($to)) {
             return (string) preg_replace(
                 '/^' . preg_quote(rtrim($this->base_dir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR, '/') . '/',
@@ -2003,9 +2021,8 @@ final class Config
 
         $from = $this->base_dir;
 
-        // some compatibility fixes for Windows paths
+        // some compatibility fixes for Windows paths; $to is a file here, never a directory
         $from = is_dir($from) ? rtrim($from, '\/') . '/' : $from;
-        $to   = is_dir($to)   ? rtrim($to, '\/') . '/'   : $to;
         $from = str_replace('\\', '/', $from);
         $to   = str_replace('\\', '/', $to);
 

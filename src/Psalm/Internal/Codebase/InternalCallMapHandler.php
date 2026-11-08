@@ -24,14 +24,11 @@ use ReflectionException;
 use ReflectionFunction;
 use UnexpectedValueException;
 
-use function array_fill_keys;
-use function array_keys;
 use function assert;
 use function class_exists;
 use function count;
 use function dirname;
 use function explode;
-use function file_exists;
 use function function_exists;
 use function intdiv;
 use function interface_exists;
@@ -95,11 +92,12 @@ final class InternalCallMapHandler
     private static ?array $taint_escape_map = null;
 
     /**
-     * The callmap version (e.g. 80) each function/method first appears in, across all callmaps.
+     * The callmap version (e.g. 80) each function/method first appears in, across all callmaps, for those missing
+     * from the oldest one. Generated with the callmaps.
      *
      * @var ?array<lowercase-string, int>
      */
-    private static ?array $first_callmap_versions = null;
+    private static ?array $callmap_introductions = null;
 
     /**
      * @param  list<PhpParser\Node\Arg>   $args
@@ -603,24 +601,15 @@ final class InternalCallMapHandler
             return null;
         }
 
-        if (self::$first_callmap_versions === null) {
-            self::$first_callmap_versions = [];
-            for ($version = self::MIN_CALLMAP_VERSION; $version <= self::MAX_CALLMAP_VERSION; ++$version) {
-                $file = dirname(__DIR__, 4) . "/dictionaries/CallMap_$version.php";
-                if (!file_exists($file)) { // e.g. 75 to 79
-                    continue;
-                }
-
-                /** @var array<lowercase-string, mixed> */
-                $call_map = require($file);
-                self::$first_callmap_versions += array_fill_keys(array_keys($call_map), $version);
-            }
+        if (self::$callmap_introductions === null) {
+            /** @var array<lowercase-string, int> */
+            self::$callmap_introductions = require(dirname(__DIR__, 4) . '/dictionaries/CallMapIntroductions.php');
         }
 
-        $version = self::$first_callmap_versions[$key] ?? null;
-
         // a key already in the oldest callmap predates the callmaps and cannot be dated
-        if ($version === null || $version <= self::MIN_CALLMAP_VERSION) {
+        $version = self::$callmap_introductions[$key] ?? null;
+
+        if ($version === null) {
             return null;
         }
 
