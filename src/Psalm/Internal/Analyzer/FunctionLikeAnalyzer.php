@@ -660,7 +660,11 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             );
         }
 
-        if (!$check_stmts) {
+        // A type that was checked before is not checked again (see Union::check()): a signature naming a missing class
+        // fails the check in the process that reaches it first and passes it in any other, whichever file that
+        // process analysed before. A method analysed to collect what it initialises or mutates must not depend on
+        // that, so its body is analysed whatever the check says: its regular analysis reports the signature.
+        if (!$check_stmts && !$context->collect_initializations && !$context->collect_mutations) {
             return false;
         }
 
