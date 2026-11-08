@@ -1027,7 +1027,12 @@ final class Codebase
         }
 
         $file_contents = $this->file_provider->getContents($file_path);
-        $this->classlike_storage_provider->cache->writeToCache($classlike_storage, $file_path, $file_contents);
+        $this->classlike_storage_provider->cache->writeToCache(
+            $classlike_storage,
+            $file_path,
+            $file_contents,
+            $this->isDeepScanned($file_path),
+        );
     }
 
     public function exhumeClassLikeStorage(string $fq_classlike_name, string $file_path): void
@@ -1046,6 +1051,7 @@ final class Codebase
             $fq_classlike_name,
             $file_path,
             $file_contents,
+            $this->isDeepScanned($file_path),
         );
 
         if ($storage === null) {
@@ -1063,6 +1069,16 @@ final class Codebase
         }
 
         return true;
+    }
+
+    /**
+     * The storages of the class-likes of a file are cached for the depth of the scan of the file, which the scanner
+     * sets on the file storage before it scans
+     */
+    private function isDeepScanned(string $file_path): bool
+    {
+        return $this->file_storage_provider->has($file_path)
+            && $this->file_storage_provider->get($file_path)->deep_scan;
     }
 
     public static function getPsalmTypeFromReflection(?ReflectionType $type): Union

@@ -65,10 +65,15 @@ final class ClassLikeStorageProvider
     }
 
     /**
+     * @param bool $deep whether the file was scanned deeply (see FileStorageCacheProvider::getLatestFromCache())
      * @return ClassLikeStorage|null null if the cache has no storage for the class-like in the file
      */
-    public function exhume(string $fq_classlike_name, string $file_path, string $file_contents): ?ClassLikeStorage
-    {
+    public function exhume(
+        string $fq_classlike_name,
+        string $file_path,
+        string $file_contents,
+        bool $deep,
+    ): ?ClassLikeStorage {
         $fq_classlike_name_lc = strtolower($fq_classlike_name);
 
         if (isset(self::$storage[$fq_classlike_name_lc])) {
@@ -79,7 +84,7 @@ final class ClassLikeStorageProvider
             throw new LogicException('Cannot exhume when there’s no cache');
         }
 
-        $cached_value = $this->cache->getLatestFromCache($fq_classlike_name_lc, $file_path, $file_contents);
+        $cached_value = $this->cache->getLatestFromCache($fq_classlike_name_lc, $file_path, $file_contents, $deep);
 
         if ($cached_value === null) {
             return null;

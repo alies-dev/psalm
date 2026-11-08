@@ -59,42 +59,48 @@ final class FileStorageProvider
         unset(self::$storage[strtolower($file_path)]);
     }
 
-    public function has(string $file_path, ?string $file_contents = null): bool
+    public function has(string $file_path): bool
     {
-        $original_file_path = $file_path;
-        $file_path = strtolower($file_path);
+        return isset(self::$storage[strtolower($file_path)]);
+    }
 
-        if (isset(self::$storage[$file_path])) {
-            return true;
-        }
+    /**
+     * The storage of the file from a scan at least as deep as asked for: the one in memory, or else the one the cache
+     * has for the contents from a scan exactly that deep, which replaces a shallow one in memory.
+     *
+     * @return FileStorage|null null if there is none, and the file has to be scanned into a new storage
+     */
+    public function exhume(string $file_path, string $file_contents, bool $deep): ?FileStorage
+    {
+        $file_path_lc = strtolower($file_path);
 
-        if ($file_contents === null) {
-            return false;
+        if (isset(self::$storage[$file_path_lc]) && (!$deep || self::$storage[$file_path_lc]->deep_scan)) {
+            return self::$storage[$file_path_lc];
         }
 
         if (!$this->cache) {
-            return false;
+            return null;
         }
 
-        $cached_value = $this->cache->getLatestFromCache($file_path, $file_contents);
+        $cached_value = $this->cache->getLatestFromCache($file_path, $file_contents, $deep);
 
         if (!$cached_value) {
-            return false;
+            return null;
         }
 
         // the cache doesn't tell the spellings of a path apart, but the locations in the storage, and the storages of
         // the class-likes in the file, have the spelling they were scanned with
-        if ($cached_value->file_path !== $original_file_path) {
+        if ($cached_value->file_path !== $file_path) {
             // the scan replaces the entry, which the cache would otherwise skip as already stored
-            $this->cache->forget($file_path);
+            $this->cache->forget($file_path, $deep);
 
-            return false;
+            return null;
         }
 
-        self::$storage[$file_path] = $cached_value;
-        self::$new_storage[$file_path] = $cached_value;
+        self::$storage[$file_path_lc] = $cached_value;
+        self::$new_storage[$file_path_lc] = $cached_value;
 
-        return true;
+        return $cached_value;
     }
 
     /**

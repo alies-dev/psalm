@@ -2191,14 +2191,6 @@
       <code><![CDATA[empty(self::$method_param_uses[$method_id][$offset])]]></code>
     </RiskyTruthyFalsyComparison>
   </file>
-  <file src="src/Psalm/Internal/Provider/FileStorageCacheProvider.php">
-    <InvalidReturnStatement>
-      <code><![CDATA[$this->cache->getItem(strtolower($file_path), hash('xxh128', $file_contents))]]></code>
-    </InvalidReturnStatement>
-    <InvalidReturnType>
-      <code><![CDATA[?FileStorage]]></code>
-    </InvalidReturnType>
-  </file>
   <file src="src/Psalm/Internal/Provider/FileStorageProvider.php">
     <ImpureStaticProperty>
       <code><![CDATA[self::$new_storage]]></code>

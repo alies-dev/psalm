@@ -23,6 +23,7 @@ use const DIRECTORY_SEPARATOR;
  */
 final class FileStorageCacheProvider
 {
+    /** @var Cache<FileStorage> */
     private readonly Cache $cache;
 
     private const FILE_STORAGE_CACHE_DIRECTORY = 'file_cache';
@@ -60,21 +61,41 @@ final class FileStorageCacheProvider
         $this->cache->consolidate();
     }
     
+    /**
+     * A deep scan stores more than a shallow one of the same contents, so each depth has its own entry: under one
+     * key the cache would skip the storage of the second scan as the one it already has.
+     */
     public function writeToCache(FileStorage $storage, string $file_contents): void
     {
-        $this->cache->saveItem(strtolower($storage->file_path), $storage, hash('xxh128', $file_contents));
+        $this->cache->saveItem(
+            self::getKey($storage->file_path, $storage->deep_scan),
+            $storage,
+            hash('xxh128', $file_contents),
+        );
     }
 
     /**
-     * Makes the next writeToCache() of the file store its storage, even if the contents are the same.
+     * Makes the next writeToCache() of the file at that depth store its storage, even if the contents are the same.
      */
-    public function forget(string $file_path): void
+    public function forget(string $file_path, bool $deep): void
     {
-        $this->cache->forgetItem(strtolower($file_path));
+        $this->cache->forgetItem(self::getKey($file_path, $deep));
     }
 
-    public function getLatestFromCache(string $file_path, string $file_contents): ?FileStorage
+    /**
+     * @param bool $deep whether the storage must come from a deep scan or from a shallow one (a deep one would make
+     *     a shallow scan see what only the deep one finds)
+     */
+    public function getLatestFromCache(string $file_path, string $file_contents, bool $deep): ?FileStorage
     {
-        return $this->cache->getItem(strtolower($file_path), hash('xxh128', $file_contents));
+        return $this->cache->getItem(self::getKey($file_path, $deep), hash('xxh128', $file_contents));
+    }
+
+    /**
+     * @psalm-pure
+     */
+    private static function getKey(string $file_path, bool $deep): string
+    {
+        return strtolower($file_path) . ($deep ? "\0deep" : "\0shallow");
     }
 }

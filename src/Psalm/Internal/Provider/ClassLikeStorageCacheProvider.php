@@ -59,11 +59,20 @@ final class ClassLikeStorageCacheProvider
         $this->cache->consolidate();
     }
 
-    public function writeToCache(ClassLikeStorage $storage, string $file_path, string $file_contents): void
-    {
-        $fq_classlike_name_lc = strtolower($storage->name);
-
-        $this->cache->saveItem($file_path."\0".$fq_classlike_name_lc, $storage, hash('xxh128', $file_contents));
+    /**
+     * Like the file storage (see FileStorageCacheProvider::writeToCache()), each depth of scan has its own entry.
+     */
+    public function writeToCache(
+        ClassLikeStorage $storage,
+        string $file_path,
+        string $file_contents,
+        bool $deep,
+    ): void {
+        $this->cache->saveItem(
+            self::getKey(strtolower($storage->name), $file_path, $deep),
+            $storage,
+            hash('xxh128', $file_contents),
+        );
     }
 
     /**
@@ -73,10 +82,19 @@ final class ClassLikeStorageCacheProvider
         string $fq_classlike_name_lc,
         ?string $file_path,
         string $file_contents,
+        bool $deep,
     ): ?ClassLikeStorage {
         return $this->cache->getItem(
-            $file_path."\0".$fq_classlike_name_lc,
+            self::getKey($fq_classlike_name_lc, $file_path, $deep),
             hash('xxh128', $file_contents),
         );
+    }
+
+    /**
+     * @psalm-pure
+     */
+    private static function getKey(string $fq_classlike_name_lc, ?string $file_path, bool $deep): string
+    {
+        return $file_path . "\0" . $fq_classlike_name_lc . ($deep ? "\0deep" : "\0shallow");
     }
 }
