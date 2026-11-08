@@ -2208,6 +2208,92 @@ final class ConfigTest extends TestCase
         $this->assertFalse($config->array_cache);
     }
 
+    /**
+     * @return iterable<string, array{string, string, string}>
+     */
+    public static function providerShortenFileName(): iterable
+    {
+        yield 'file below the base' => ['project', 'project/src/a.php', 'src/a.php'];
+        yield 'missing file below the base' => ['project', 'project/src/missing.php', 'src/missing.php'];
+        yield 'directory below the base' => ['project', 'project/src', 'src'];
+        yield 'the base with a slash' => ['project', 'project/', ''];
+        yield 'the base without a slash' => ['project', 'project', '%root%/project'];
+        yield 'base with a trailing slash' => ['project/', 'project/src/a.php', 'src/a.php'];
+        yield 'base with two trailing slashes' => ['project//', 'project/src/a.php', 'src/a.php'];
+        yield 'missing file, base with two trailing slashes'
+            => ['project//', 'project/src/missing.php', 'src/missing.php'];
+        yield 'file after a doubled separator' => ['project', 'project//src/a.php', 'src/a.php'];
+        yield 'missing file after a doubled separator'
+            => ['project', 'project//src/missing.php', '/src/missing.php'];
+        yield 'file in a sibling sharing the prefix' => ['project', 'project-other/b.php', '../project-other/b.php'];
+        yield 'missing file in a sibling sharing the prefix'
+            => ['project', 'project-other/missing.php', '%root%/project-other/missing.php'];
+        yield 'missing file outside the base' => ['project', 'elsewhere/x.php', '%root%/elsewhere/x.php'];
+        yield 'file with a backslash in its name' => ['project', 'project/src/b\c.php', 'src/b/c.php'];
+        yield 'missing file with a backslash in its name' => ['project', 'project/src/m\c.php', 'src/m\c.php'];
+    }
+
+    #[DataProvider('providerShortenFileName')]
+    #[RequiresOperatingSystem('^(?!WIN)')]
+    public function testShortenFileName(string $base_dir, string $path, string $expected): void
+    {
+        $root = $this->createShortenFileNameTree();
+
+        try {
+            $config = Config::loadFromXML(dirname(__DIR__, 2), '<?xml version="1.0"?><psalm></psalm>');
+            $config->base_dir = $root . '/' . $base_dir;
+
+            $this->assertSame(str_replace('%root%', $root, $expected), $config->shortenFileName($root . '/' . $path));
+        } finally {
+            $this->removeShortenFileNameTree($root);
+        }
+    }
+
+    #[RequiresOperatingSystem('^(?!WIN)')]
+    public function testShortenFileNameUsesTheCurrentBaseDir(): void
+    {
+        $root = $this->createShortenFileNameTree();
+
+        try {
+            $config = Config::loadFromXML(dirname(__DIR__, 2), '<?xml version="1.0"?><psalm></psalm>');
+            $file = $root . '/project/src/a.php';
+
+            $config->base_dir = $root . '/project';
+            $this->assertSame('src/a.php', $config->shortenFileName($file));
+
+            $config->base_dir = $root;
+            $this->assertSame('project/src/a.php', $config->shortenFileName($file));
+
+            $config->base_dir = $root . '/project/src';
+            $this->assertSame('a.php', $config->shortenFileName($file));
+        } finally {
+            $this->removeShortenFileNameTree($root);
+        }
+    }
+
+    private function createShortenFileNameTree(): string
+    {
+        $root = sys_get_temp_dir() . '/' . uniqid('psalm-shorten-');
+        mkdir($root . '/project/src', 0777, true);
+        mkdir($root . '/project-other');
+        file_put_contents($root . '/project/src/a.php', '');
+        file_put_contents($root . '/project/src/b\c.php', '');
+        file_put_contents($root . '/project-other/b.php', '');
+
+        return $root;
+    }
+
+    private function removeShortenFileNameTree(string $root): void
+    {
+        unlink($root . '/project/src/a.php');
+        unlink($root . '/project/src/b\c.php');
+        unlink($root . '/project-other/b.php');
+        rmdir($root . '/project/src');
+        rmdir($root . '/project');
+        rmdir($root . '/project-other');
+        rmdir($root);
+    }
+
     public function testSetsUsePhpStormMetaPath(): void
     {
         $this->project_analyzer = $this->getProjectAnalyzerWithConfig(
