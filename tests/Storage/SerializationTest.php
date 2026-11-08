@@ -164,6 +164,25 @@ final class SerializationTest extends TestCase
     }
 
     /**
+     * @return iterable<string, array{SerializationFixtureParent}>
+     */
+    public static function providerFixtures(): iterable
+    {
+        yield 'trait used by the parent' => [new SerializationFixture(1)];
+        yield 'trait used by the parent and the class' => [new SerializationFixtureUsingTraitAgain(1)];
+    }
+
+    #[DataProvider('providerFixtures')]
+    public function testFixtureKeepsDescribedValues(SerializationFixtureParent $fixture): void
+    {
+        $unserialized = unserialize(serialize($fixture));
+
+        $this->assertInstanceOf($fixture::class, $unserialized);
+        $this->assertSame($fixture->describe(), $unserialized->describe());
+        $this->assertFalse($unserialized->describe()['uninitialized_is_set']);
+    }
+
+    /**
      * Without __serialize() igbinary builds a table of each object's properties, which the object keeps
      * (https://github.com/php/php-src/issues/10126): 376 bytes or more, 8 KB for a MethodStorage. The main
      * process writes every storage it scans to the cache, and keeps using them.

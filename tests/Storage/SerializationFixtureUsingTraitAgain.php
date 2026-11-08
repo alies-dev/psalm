@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Psalm\Tests\Storage;
 
+use Override;
 use Psalm\Storage\UnserializeMemoryUsageSuppressionTrait;
 
 final class SerializationFixtureUsingTraitAgain extends SerializationFixtureParent
@@ -20,5 +21,14 @@ final class SerializationFixtureUsingTraitAgain extends SerializationFixturePare
     {
         parent::__construct('parent readonly');
         $this->parent_private = 'own private';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    #[Override]
+    public function describe(): array
+    {
+        return [...parent::describe(), 'own_parent_private' => $this->parent_private, 'readonly' => $this->readonly];
     }
 }
