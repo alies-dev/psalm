@@ -121,7 +121,10 @@ final class InertBodyVisitor extends PhpParser\NodeVisitorAbstract
                 $this->class_names[] = $node;
             }
         } elseif ($node instanceof String_
-            && preg_match('/^\\\\?[A-Za-z_\x80-\xff][\w\x80-\xff\\\\]*(::[A-Za-z_\x80-\xff][\w\x80-\xff]*)?$/', $node->value)
+            && preg_match(
+                '/^\\\\?[A-Za-z_\x80-\xff][\w\x80-\xff\\\\]*(::[A-Za-z_\x80-\xff][\w\x80-\xff]*)?$/',
+                $node->value,
+            )
         ) {
             $this->class_strings[$node->value] = true;
         }
