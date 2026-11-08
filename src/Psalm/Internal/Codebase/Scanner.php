@@ -12,7 +12,6 @@ use Psalm\Internal\Fork\InitScannerTask;
 use Psalm\Internal\Fork\Pool;
 use Psalm\Internal\Fork\ScannerTask;
 use Psalm\Internal\Fork\ShutdownScannerTask;
-use Psalm\Internal\Provider\ClassLikeStorageProvider;
 use Psalm\Internal\Provider\FileProvider;
 use Psalm\Internal\Provider\FileReferenceProvider;
 use Psalm\Internal\Provider\FileStorageProvider;
@@ -506,6 +505,8 @@ final class Scanner
             // Wait for all tasks to complete and collect the results.
             $forked_pool_data = $pool->runAll(new ShutdownScannerTask);
 
+            $pool_results = [];
+
             foreach ($forked_pool_data as $pool_data) {
                 $pool_data = $pool_data->await();
 
@@ -529,9 +530,6 @@ final class Scanner
                     $this->codebase->taint_flow_graph->addGraph($pool_data['taint_data']);
                 }
 
-                $this->codebase->file_storage_provider->addMore($pool_data['file_storage']);
-                $this->codebase->classlike_storage_provider->addMore($pool_data['classlike_storage']);
-
                 $this->codebase->classlikes->addThreadData($pool_data['classlikes_data']);
 
                 $this->addThreadData($pool_data['scanner_data']);
@@ -539,7 +537,14 @@ final class Scanner
                 $this->codebase->addGlobalConstantTypes($pool_data['global_constants']);
                 $this->codebase->addUnresolvedGlobalConstants($pool_data['unresolved_global_constants']);
                 $this->codebase->functions->addGlobalFunctions($pool_data['global_functions']);
+
+                $pool_results[] = [
+                    'file_storage' => $pool_data['file_storage'],
+                    'classlike_storage' => $pool_data['classlike_storage'],
+                ];
             }
+
+            $this->addPoolResults($files_to_scan, $pool_results);
         } else {
             foreach ($files_to_scan as $file_path => $_) {
                 $this->scanAPath($file_path);
@@ -550,6 +555,86 @@ final class Scanner
         $this->file_reference_provider->addClassLikeFiles($this->classlike_files);
 
         return true;
+    }
+
+    /**
+     * Adds the storages the processes of a pool scanned as a single process scanning $files_to_scan in that order
+     * adds them: the populator, and the merge of a class declared in several files, then see the same codebase
+     * whichever process scanned a file and whenever it finished. Expects the processes' thread data added already.
+     *
+     * @param array<string, string> $files_to_scan
+     * @param list<array{
+     *     file_storage: array<lowercase-string, FileStorage>,
+     *     classlike_storage: array<string, ClassLikeStorage>,
+     * }> $pool_results
+     */
+    public function addPoolResults(array $files_to_scan, array $pool_results): void
+    {
+        $classlike_storage_provider = $this->codebase->classlike_storage_provider;
+
+        $file_storages = [];
+        // per file, in the order the process scanning it found them
+        $file_classlike_storages = [];
+
+        foreach ($pool_results as $pool_result) {
+            $file_storages += $pool_result['file_storage'];
+
+            foreach ($pool_result['classlike_storage'] as $fq_classlike_name_lc => $classlike_storage) {
+                $location = $classlike_storage->stmt_location ?? $classlike_storage->location;
+                $file_path_lc = $location !== null ? strtolower($location->file_path) : '';
+                $file_classlike_storages[$file_path_lc][$fq_classlike_name_lc] = $classlike_storage;
+            }
+        }
+
+        $ordered_file_storages = [];
+        $ordered_classlike_storages = [];
+
+        foreach ($files_to_scan as $file_path => $_) {
+            $file_path_lc = strtolower($file_path);
+
+            if (isset($file_storages[$file_path_lc])) {
+                $ordered_file_storages[$file_path_lc] = $file_storages[$file_path_lc];
+                unset($file_storages[$file_path_lc]);
+            }
+
+            if (isset($file_classlike_storages[$file_path_lc])) {
+                $ordered_classlike_storages[] = $file_classlike_storages[$file_path_lc];
+                unset($file_classlike_storages[$file_path_lc]);
+            }
+        }
+
+        ksort($file_storages, SORT_STRING);
+        ksort($file_classlike_storages, SORT_STRING);
+
+        foreach ($file_classlike_storages as $classlike_storages) {
+            $ordered_classlike_storages[] = $classlike_storages;
+        }
+
+        $this->codebase->file_storage_provider->addMore($ordered_file_storages + $file_storages);
+
+        $declared = [];
+        $redeclared = [];
+
+        foreach ($ordered_classlike_storages as $classlike_storages) {
+            foreach ($classlike_storages as $fq_classlike_name_lc => $_) {
+                if (isset($declared[$fq_classlike_name_lc]) || $classlike_storage_provider->has($fq_classlike_name_lc)) {
+                    $redeclared[$fq_classlike_name_lc] = true;
+                }
+
+                $declared[$fq_classlike_name_lc] = true;
+            }
+
+            $classlike_storage_provider->addMore($classlike_storages);
+        }
+
+        // a class declared in several files belongs to the file whose declaration won
+        foreach ($redeclared as $fq_classlike_name_lc => $_) {
+            $winner_file_path = $classlike_storage_provider->get($fq_classlike_name_lc)->location->file_path ?? null;
+
+            if ($winner_file_path !== null) {
+                $this->classlike_files[$fq_classlike_name_lc] = $winner_file_path;
+            }
+        }
     }
 
     private function convertClassesToFilePaths(ClassLikes $classlikes): void
@@ -918,21 +1003,6 @@ final class Scanner
         $this->classes_to_scan = array_merge($classes_to_scan, $this->classes_to_scan);
         $this->classes_to_deep_scan = array_merge($classes_to_deep_scan, $this->classes_to_deep_scan);
         $this->store_scan_failure = array_merge($store_scan_failure, $this->store_scan_failure);
-        // a class declared in several files belongs to the file whose declaration won
-        foreach ($classlike_files as $fq_classlike_name_lc => $file_path) {
-            if (isset($this->classlike_files[$fq_classlike_name_lc])
-                && $this->classlike_files[$fq_classlike_name_lc] !== $file_path
-            ) {
-                $winner = ClassLikeStorageProvider::getAll()[$fq_classlike_name_lc]->location->file_path ?? null;
-
-                if ($winner === $file_path) {
-                    $this->classlike_files[$fq_classlike_name_lc] = $file_path;
-                }
-
-                unset($classlike_files[$fq_classlike_name_lc]);
-            }
-        }
-
         $this->classlike_files = array_merge($classlike_files, $this->classlike_files);
         $this->deep_scanned_classlike_files = array_merge(
             $deep_scanned_classlike_files,

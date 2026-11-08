@@ -69,12 +69,19 @@ if (!class_exists(Lazy::class, false)) {
             'w2' => $this->scanAlone('b'),
         ];
 
+        $codebase = $this->project_analyzer->getCodebase();
+        $pool_results = [];
+
         foreach ($arrival as $process) {
             [$file_path, $classlike_storages] = $processes[$process];
-            $codebase = $this->project_analyzer->getCodebase();
-            $codebase->classlike_storage_provider->addMore($classlike_storages);
             $codebase->scanner->addThreadData([[], [], [], [], [], ['lib\lazy' => $file_path], [], [], []]);
+            $pool_results[] = ['file_storage' => [], 'classlike_storage' => $classlike_storages];
         }
+
+        $codebase->scanner->addPoolResults(
+            [$this->dir . 'a.php' => $this->dir . 'a.php', $this->dir . 'b.php' => $this->dir . 'b.php'],
+            $pool_results,
+        );
 
         $winner_file = $this->dir . 'a.php';
         $loser_file = $this->dir . 'b.php';
