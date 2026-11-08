@@ -493,6 +493,7 @@ final class ProjectAnalyzer
             $this->codebase->scanFiles($this->scanThreads);
 
             $this->codebase->infer_types_from_usage = true;
+            $this->codebase->analyzer->inferParamTypesOfReportableMethodsOnly();
         } else {
             $this->codebase->diff_run = true;
             $this->progress->debug(count($diff_files) . ' changed files: ' . PHP_EOL);

@@ -496,4 +496,107 @@ final class Bat
             ),
         );
     }
+
+    public function testCheckInfersParamTypesOnlyForMethodsWhoseIssuesCanBeReported(): void
+    {
+        $this->project_analyzer = $this->getProjectAnalyzerForParamTypeInference();
+        $fixable_before = IssueBuffer::getFixableIssues()['MissingParamType'] ?? 0;
+
+        $this->project_analyzer->check('tests/fixtures/DummyProject');
+
+        $possible_param_types = $this->project_analyzer->getCodebase()->analyzer->possible_method_param_types;
+        $this->assertSame(
+            "'hello'",
+            $possible_param_types['vimeo\test\dummyproject\inferencetarget::project'][0]->getId(),
+        );
+        $this->assertArrayNotHasKey('vimeo\test\vendor\vendortarget::vendor', $possible_param_types);
+        $this->assertSame($fixable_before + 1, IssueBuffer::getFixableIssues()['MissingParamType'] ?? 0);
+    }
+
+    public function testCheckPathsInfersParamTypesForAllMethods(): void
+    {
+        $this->project_analyzer = $this->getProjectAnalyzerForParamTypeInference();
+        $codebase = $this->project_analyzer->getCodebase();
+        $codebase->infer_types_from_usage = true;
+
+        $this->project_analyzer->checkPaths([(string) getcwd() . '/tests/fixtures/DummyProject']);
+
+        $this->assertSame(
+            "'hello'",
+            $codebase->analyzer->possible_method_param_types['vimeo\test\vendor\vendortarget::vendor'][0]->getId(),
+        );
+    }
+
+    public function testCheckAltersParamTypesOnlyOfMethodsWhoseIssuesCanBeReported(): void
+    {
+        $this->project_analyzer = $this->getProjectAnalyzerForParamTypeInference();
+        $this->project_analyzer->setIssuesToFix(['MissingParamType' => true]);
+        $this->project_analyzer->alterCodeAfterCompletion(false, true);
+        $vendor_file = (string) getcwd() . '/tests/fixtures/ExtraFiles/dependency/VendorTarget.php';
+        $vendor_contents = $this->file_provider->getContents($vendor_file);
+
+        $this->project_analyzer->check('tests/fixtures/DummyProject');
+
+        $codebase = $this->project_analyzer->getCodebase();
+        $this->assertStringContainsString(
+            'public function project(string $a): void',
+            $codebase->getFileContents((string) getcwd() . '/tests/fixtures/DummyProject/InferenceTarget.php'),
+        );
+        $this->assertSame($vendor_contents, $codebase->getFileContents($vendor_file));
+    }
+
+    private function getProjectAnalyzerForParamTypeInference(): ProjectAnalyzer
+    {
+        $this->file_provider->registerFile(
+            (string) getcwd() . '/tests/fixtures/DummyProject/InferenceTarget.php',
+            '<?php
+
+namespace Vimeo\Test\DummyProject;
+
+use Vimeo\Test\Vendor\VendorTarget;
+
+final class InferenceTarget extends VendorTarget
+{
+    public function project($a): void {}
+}
+
+function callInferenceTargets(InferenceTarget $target, VendorTarget $vendor_target): void
+{
+    $target->project("hello");
+    $target->vendor("hello");
+    $vendor_target->vendor("hello");
+}
+',
+        );
+        $this->file_provider->registerFile(
+            (string) getcwd() . '/tests/fixtures/ExtraFiles/dependency/VendorTarget.php',
+            '<?php
+
+namespace Vimeo\Test\Vendor;
+
+class VendorTarget
+{
+    public function vendor($a): void {}
+}
+',
+        );
+
+        $project_analyzer = $this->getProjectAnalyzerWithConfig(
+            Config::loadFromXML(
+                (string)getcwd(),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="tests/fixtures/DummyProject" />
+                    </projectFiles>
+                    <extraFiles>
+                        <directory name="tests/fixtures/ExtraFiles/dependency" />
+                    </extraFiles>
+                </psalm>',
+            ),
+        );
+        $project_analyzer->setPhpVersion('8.1', 'tests');
+
+        return $project_analyzer;
+    }
 }
