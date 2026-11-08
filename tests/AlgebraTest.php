@@ -334,6 +334,21 @@ final class AlgebraTest extends TestCase
         $this->assertSame(['$a is 5'], self::clauseStrings($clauses));
     }
 
+    public function testFilterClausesKeepsClausesOnVariablesThatOnlyShareAPrefix(): void
+    {
+        $clauses = Context::filterClauses(
+            '$a',
+            [
+                self::clause(['$b' => [new Truthy()]]),
+                self::clause(['$ab' => [new Truthy()]]),
+                self::clause(['$a_b' => [new Truthy()], '$b' => [new Falsy()]]),
+                self::clause(['$a[\'k\']' => [new Truthy()]]),
+            ],
+        );
+
+        $this->assertSame(['$b', '$ab', '($a_b) || (!$b)'], self::clauseStrings($clauses));
+    }
+
     /**
      * @param array<string, non-empty-list<Assertion>> $this_assertions
      * @param array<string, non-empty-list<Assertion>> $other_assertions

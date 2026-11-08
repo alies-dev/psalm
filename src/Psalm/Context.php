@@ -708,23 +708,31 @@ final class Context
         ?Union $new_type = null,
         ?StatementsAnalyzer $statements_analyzer = null,
     ): array {
-        $new_type_string = $new_type ? $new_type->getId() : '';
+        $new_type_string = null;
         $clauses_to_keep = [];
+        $quoted_remove_var_id = preg_quote($remove_var_id, '/');
 
         foreach ($clauses as $clause) {
             $clause = $clause->calculateNegation();
 
-            $quoted_remove_var_id = preg_quote($remove_var_id, '/');
-
             foreach ($clause->possibilities as $var_id => $_) {
-                if (preg_match('/' . $quoted_remove_var_id . '[\]\[\-]/', $var_id)) {
+                // the pattern only matches ids that contain $remove_var_id
+                if (str_contains($var_id, $remove_var_id)
+                    && preg_match('/' . $quoted_remove_var_id . '[\]\[\-]/', $var_id)
+                ) {
                     break 2;
                 }
             }
 
-            if (!isset($clause->possibilities[$remove_var_id])
-                || (count($clause->possibilities[$remove_var_id]) === 1
-                    && isset($clause->possibilities[$remove_var_id][$new_type_string]))
+            if (!isset($clause->possibilities[$remove_var_id])) {
+                $clauses_to_keep[] = $clause;
+                continue;
+            }
+
+            $new_type_string ??= $new_type ? $new_type->getId() : '';
+
+            if (count($clause->possibilities[$remove_var_id]) === 1
+                && isset($clause->possibilities[$remove_var_id][$new_type_string])
             ) {
                 $clauses_to_keep[] = $clause;
             } elseif ($statements_analyzer &&
