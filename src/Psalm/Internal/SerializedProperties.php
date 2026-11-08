@@ -16,9 +16,12 @@ use ReflectionProperty;
 final class SerializedProperties
 {
     /**
-     * @var array<class-string, array<class-string, array<string, string|ReflectionProperty>>>
+     * The class of an object => the special keys of the properties UnserializeMemoryUsageSuppressionTrait reads
+     * (see findSpecialKeys()), most often none
+     *
+     * @var array<string, array<string, string|ReflectionProperty>>
      */
-    private static array $special_keys = [];
+    public static array $special_keys = [];
 
     /**
      * Key in `(array) $object` => the name of the property when $scope can write it, else the property
@@ -30,20 +33,8 @@ final class SerializedProperties
      * @param class-string $scope the class whose method writes the properties
      * @return array<string, string|ReflectionProperty>
      * @psalm-mutation-free
-     * @psalm-suppress ImpureStaticProperty Used for caching
      */
-    public static function getSpecialKeys(string $class, string $scope): array
-    {
-        return self::$special_keys[$class][$scope] ??= self::findSpecialKeys($class, $scope);
-    }
-
-    /**
-     * @param class-string $class
-     * @param class-string $scope
-     * @return array<string, string|ReflectionProperty>
-     * @psalm-mutation-free
-     */
-    private static function findSpecialKeys(string $class, string $scope): array
+    public static function findSpecialKeys(string $class, string $scope): array
     {
         $special_keys = [];
         $seen_keys = [];
