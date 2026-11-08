@@ -637,7 +637,9 @@ final class Scanner
 
         foreach ($ordered_classlike_storages as $classlike_storages) {
             foreach ($classlike_storages as $fq_classlike_name_lc => $_) {
-                if (isset($declared[$fq_classlike_name_lc]) || $classlike_storage_provider->has($fq_classlike_name_lc)) {
+                if (isset($declared[$fq_classlike_name_lc])
+                    || $classlike_storage_provider->has($fq_classlike_name_lc)
+                ) {
                     $redeclared[$fq_classlike_name_lc] = true;
                 }
 
