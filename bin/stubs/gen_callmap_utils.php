@@ -252,6 +252,27 @@ return '.var_export($callMap, true).';');
 }
 
 /**
+ * Writes the callmap version each function and method first appears in, for
+ * InternalCallMapHandler::getIntroducingPhpVersionId(). Keys of the oldest callmap are left out: they can't be dated.
+ *
+ * @param array<int, list<array-key>> $keysByVersion the keys of each full callmap
+ */
+function writeCallMapIntroductions(string $file, array $keysByVersion): void
+{
+    ksort($keysByVersion);
+    $oldest = array_key_first($keysByVersion);
+
+    $introductions = [];
+    foreach ($keysByVersion as $version => $keys) {
+        $introductions += array_fill_keys($keys, $version);
+    }
+
+    file_put_contents($file, '<?php // phpcs:ignoreFile
+
+return '.var_export(array_filter($introductions, static fn(int $version): bool => $version !== $oldest), true).';');
+}
+
+/**
  * @template K as array-key
  * @template V
  * @param array<K, V> $a
