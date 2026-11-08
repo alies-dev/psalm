@@ -116,6 +116,40 @@ final class TypeAnnotationTest extends TestCase
 
                     bar(foo());',
             ],
+            'phpstanTypeAliasInSeparateBlockBeforeFunction' => [
+                'code' => '<?php
+                    /**
+                     * @phpstan-type CoolType = string
+                     */
+                    /**
+                     * @return CoolType
+                     */
+                    function foo() {
+                        return "a";
+                    }
+
+                    $x = foo();',
+                'assertions' => [
+                    '$x===' => 'string',
+                ],
+            ],
+            'typeAliasWithACarriageReturnInsideItsTag' => [
+                'code' => '<?php
+                    /**
+                     * @psalm' . "\r" . '-type CoolType = string
+                     */
+                    /**
+                     * @return CoolType
+                     */
+                    function foo() {
+                        return "a";
+                    }
+
+                    $x = foo();',
+                'assertions' => [
+                    '$x===' => 'string',
+                ],
+            ],
             'almostFreeStandingTypeAlias' => [
                 'code' => '<?php
                     /**
@@ -1144,6 +1178,19 @@ final class TypeAnnotationTest extends TestCase
 
                     class A {}',
                 'error_message' => 'InvalidDocblock',
+            ],
+            'unknownPsalmAnnotationInSeparateBlockBeforeFunction' => [
+                'code' => '<?php
+                    /**
+                     * @psalm-unknowntag
+                     */
+                    /**
+                     * @return string
+                     */
+                    function foo() {
+                        return "a";
+                    }',
+                'error_message' => 'Unrecognised annotation @psalm-unknowntag',
             ],
             'typeAliasInTKeyedArray' => [
                 'code' => '<?php

@@ -94,6 +94,7 @@ use function preg_match;
 use function preg_split;
 use function reset;
 use function sprintf;
+use function str_contains;
 use function str_starts_with;
 use function strlen;
 use function strtolower;
@@ -2355,6 +2356,14 @@ final class ClassLikeNodeScanner
         ?array $type_aliases,
         ?string $self_fqcln,
     ): array {
+        $text = $comment->getText();
+
+        // without these neither alias tags nor the unknown @psalm- tags parsing rejects can be there; the parser
+        // removes \r from tag lines, so that could join one
+        if (!str_contains($text, '@psalm-') && !str_contains($text, '@phpstan-type') && !str_contains($text, "\r")) {
+            return [];
+        }
+
         $parsed_docblock = DocComment::parsePreservingLength($comment);
 
         if (!isset($parsed_docblock->tags['psalm-type']) && !isset($parsed_docblock->tags['phpstan-type'])) {
