@@ -779,6 +779,10 @@ final class UnionTypeComparator
             return true;
         }
 
+        if (self::holdsLiteralOf($type2, $type1) || self::holdsLiteralOf($type1, $type2)) {
+            return true;
+        }
+
         foreach (self::getTypeParts($codebase, $type1) as $type1_part) {
             foreach (self::getTypeParts($codebase, $type2) as $type2_part) {
                 //special case for TIntRange because it can contain a part of another TIntRange.
@@ -805,6 +809,41 @@ final class UnionTypeComparator
         }
 
         return false;
+    }
+
+    /**
+     * Whether $literal is a single literal string or int that $union holds, so that the loop of
+     * canExpressionTypesBeIdentical() would find them identical without comparing every member of $union.
+     * Unions with members getTypeParts() expands are left to that loop.
+     *
+     * @psalm-pure
+     */
+    private static function holdsLiteralOf(Union $union, Union $literal): bool
+    {
+        if (!$literal->isSingle()) {
+            return false;
+        }
+
+        $literal_atomic = $literal->getSingleAtomic();
+
+        if ($literal_atomic::class !== TLiteralString::class && $literal_atomic::class !== TLiteralInt::class) {
+            return false;
+        }
+
+        $union_atomics = $union->getAtomicTypes();
+        $same_key_atomic = $union_atomics[$literal_atomic->getKey()] ?? null;
+
+        if ($same_key_atomic === null || $same_key_atomic::class !== $literal_atomic::class) {
+            return false;
+        }
+
+        foreach ($union_atomics as $atomic) {
+            if ($atomic instanceof TTypeAlias || $atomic instanceof TClassConstant) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

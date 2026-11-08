@@ -508,6 +508,38 @@ final class TypeComparatorTest extends TestCase
         yield 'stringAndInt' => ['a', 0];
     }
 
+    #[DataProvider('getLiterals')]
+    public function testLiteralCanBeIdenticalToTheLiteralAUnionHolds(int|string $value): void
+    {
+        $codebase = $this->project_analyzer->getCodebase();
+        $literal = is_int($value) ? new TLiteralInt($value) : new TLiteralString($value);
+        $same_literal = is_int($value) ? new TLiteralInt($value) : new TLiteralString($value);
+
+        // canExpressionTypesBeIdentical() answers true for a literal its other union holds without this comparison
+        $this->assertTrue(AtomicTypeComparator::canBeIdentical($codebase, $literal, $same_literal));
+
+        $union = new Union([new TLiteralString('other'), new TLiteralInt(42), $same_literal]);
+
+        $this->assertTrue(UnionTypeComparator::canExpressionTypesBeIdentical($codebase, new Union([$literal]), $union));
+        $this->assertTrue(UnionTypeComparator::canExpressionTypesBeIdentical($codebase, $union, new Union([$literal])));
+    }
+
+    /**
+     * @return iterable<string, list{int|string}>
+     * @psalm-pure
+     */
+    public static function getLiterals(): iterable
+    {
+        yield 'zero' => [0];
+        yield 'positiveInt' => [7];
+        yield 'negativeInt' => [-5];
+        yield 'emptyString' => [''];
+        yield 'zeroString' => ['0'];
+        yield 'numericString' => ['01'];
+        yield 'string' => ['a'];
+        yield 'longString' => ['a long string that is longer than the eighty characters an id shows of a literal'];
+    }
+
     /**
      * @param 'int'|'string'|'both' $literal_class
      */
