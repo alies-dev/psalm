@@ -29,6 +29,11 @@ final class FakeParserCacheProvider extends ParserCacheProvider
     }
 
     #[Override]
+    public function dropNewStatementsWithoutDisk(): void
+    {
+    }
+
+    #[Override]
     public function loadStatementsFromCache(string $file_path, ?string $file_content_hash): ?array
     {
         $key = self::getKey($file_path);
