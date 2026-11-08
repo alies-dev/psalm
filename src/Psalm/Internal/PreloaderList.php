@@ -816,6 +816,7 @@ final class PreloaderList {
         \Psalm\Internal\Fork\AnalyzerTask::class,
         \Psalm\Internal\Fork\FileResultTask::class,
         \Psalm\Internal\Fork\IgbinarySerializer::class,
+        \Psalm\Internal\Fork\InheritedScanState::class,
         \Psalm\Internal\Fork\InitAnalyzerTask::class,
         \Psalm\Internal\Fork\InitScannerTask::class,
         \Psalm\Internal\Fork\Pool::class,
