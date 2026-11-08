@@ -16,6 +16,7 @@ use function array_intersect_key;
 use function array_pop;
 use function md5;
 use function str_contains;
+use function strcmp;
 use function strpos;
 use function strtolower;
 use function substr;
@@ -561,7 +562,20 @@ final class CodeUseGraph
             }
         }
 
-        $this->mutation_info = $other->mutation_info + $this->mutation_info;
+        // a single process analyses the roots in path order and keeps the last analysis of a function-like, the one
+        // in the greatest root; an analysis of this run replaces one from the cache
+        foreach ($other->mutation_info as $node_id => $info) {
+            $current = $this->mutation_info[$node_id] ?? null;
+
+            if ($current === null
+                || ($info['fresh'] !== $current['fresh']
+                    ? $info['fresh']
+                    : strcmp($info['root'], $current['root']) > 0)
+            ) {
+                $this->mutation_info[$node_id] = $info;
+            }
+        }
+
         $this->mutation_levels = null;
     }
 
