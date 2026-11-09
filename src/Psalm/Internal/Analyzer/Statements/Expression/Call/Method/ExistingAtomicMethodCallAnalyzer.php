@@ -198,6 +198,7 @@ final class ExistingAtomicMethodCallAnalyzer extends CallAnalyzer
             $method_name_lc,
             $lhs_type_part,
             $lhs_var_id === '$this',
+            ClassTemplateParamCollector::starScope($context),
         );
 
         if ($lhs_var_id === '$this' && $parent_source instanceof FunctionLikeAnalyzer) {
@@ -220,6 +221,7 @@ final class ExistingAtomicMethodCallAnalyzer extends CallAnalyzer
                         $method_name_lc,
                         $lhs_type_part,
                         true,
+                        ClassTemplateParamCollector::starScope($context),
                     );
                 }
             }

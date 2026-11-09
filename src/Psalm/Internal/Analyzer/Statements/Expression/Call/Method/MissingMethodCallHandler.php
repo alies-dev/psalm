@@ -151,6 +151,7 @@ final class MissingMethodCallHandler
                 $method_name_lc,
                 $lhs_type_part,
                 !$statements_analyzer->isStatic() && $method_id->fq_class_name === $context->self,
+                ClassTemplateParamCollector::starScope($context),
             );
 
             // the pseudo-method's own templates are the purity templates of its `_` params
@@ -412,6 +413,7 @@ final class MissingMethodCallHandler
                 $method_name_lc,
                 $lhs_type_part,
                 !$statements_analyzer->isStatic() && $method_id->fq_class_name === $context->self,
+                ClassTemplateParamCollector::starScope($context),
             );
 
             $template_result = new TemplateResult(
@@ -544,6 +546,7 @@ final class MissingMethodCallHandler
             $method_id->method_name,
             $lhs_type_part,
             !$statements_analyzer->isStatic() && $method_id->fq_class_name === $context->self,
+            ClassTemplateParamCollector::starScope($context),
         );
 
         return MethodCallReturnTypeFetcher::getFirstClassCallableType(

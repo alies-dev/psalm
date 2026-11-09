@@ -2428,6 +2428,7 @@ final class ArrayFetchAnalyzer
                             $codebase->classlike_storage_provider->get($type->value),
                             'offsetget',
                             $type,
+                            star_scope: ClassTemplateParamCollector::starScope($context),
                         );
 
                         if ($class_template_params !== null) {

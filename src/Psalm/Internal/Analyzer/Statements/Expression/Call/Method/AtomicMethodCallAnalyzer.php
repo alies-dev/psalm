@@ -272,6 +272,7 @@ final class AtomicMethodCallAnalyzer extends CallAnalyzer
                                 $method_identifier->method_name,
                                 $lhs_type_part,
                                 $lhs_var_id === '$this',
+                                ClassTemplateParamCollector::starScope($context),
                             ) ?? []),
                             $method_storage->template_types ?? [],
                             $fq_class_name,
@@ -965,6 +966,7 @@ final class AtomicMethodCallAnalyzer extends CallAnalyzer
                     null,
                     $lhs_type_part,
                     $lhs_var_id === '$this',
+                    ClassTemplateParamCollector::starScope($context),
                 );
 
                 $lhs_type_part = $mixin->replaceTemplateTypesWithArgTypes(

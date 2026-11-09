@@ -6,8 +6,10 @@ namespace Psalm\Internal\Analyzer\Statements\Expression\Call;
 
 use AssertionError;
 use Psalm\Codebase;
+use Psalm\Context;
 use Psalm\Internal\Type\StarProjection;
 use Psalm\Internal\Type\TemplateDefaults;
+use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
 use Psalm\Storage\ClassLikeStorage;
@@ -18,22 +20,53 @@ use Psalm\Type\Atomic\TGenericObject;
 use Psalm\Type\Atomic\TTemplateParam;
 use Psalm\Type\Union;
 
+use function array_any;
 use function array_keys;
 use function array_merge;
 use function array_search;
+use function reset;
 
 /**
  * @internal
  */
 final class ClassTemplateParamCollector
 {
+    private static int $opened_stars = 0;
+
+    /**
+     * @param lowercase-string $method_name
+     * @param ?string $star_scope the function-like (see {@see self::starScope()}) a `*` argument of the receiver is
+     *                            opened in; without one, a `*` reads as the bound of its template
+     * @return array<string, non-empty-array<string, Union>>|null
+     */
+    public static function collect(
+        Codebase $codebase,
+        ClassLikeStorage $class_storage,
+        ClassLikeStorage $static_class_storage,
+        ?string $method_name = null,
+        ?Atomic $lhs_type_part = null,
+        bool $self_call = false,
+        ?string $star_scope = null,
+    ): ?array {
+        return self::collectForReceiver(
+            $codebase,
+            $class_storage,
+            $static_class_storage,
+            $method_name,
+            $star_scope !== null && $lhs_type_part instanceof TGenericObject
+                ? self::openStars($lhs_type_part, $codebase, $star_scope)
+                : $lhs_type_part,
+            $self_call,
+        );
+    }
+
     /**
      * @param lowercase-string $method_name
      * @return array<string, non-empty-array<string, Union>>|null
      * @psalm-suppress MoreSpecificReturnType
      * @psalm-suppress LessSpecificReturnStatement
      */
-    public static function collect(
+    private static function collectForReceiver(
         Codebase $codebase,
         ClassLikeStorage $class_storage,
         ClassLikeStorage $static_class_storage,
@@ -97,7 +130,7 @@ final class ClassTemplateParamCollector
         $e = $static_class_storage->template_extended_params;
 
         if ($lhs_type_part instanceof TGenericObject) {
-            // members of a `Pair<int, *>` see the bound of the template a `*` stands for
+            // a `*` not opened in a scope (see collect()) reads as the bound of the template it stands for
             $lhs_type_part = StarProjection::readArguments($lhs_type_part, $codebase);
 
             if ($class_storage === $static_class_storage && $class_storage->template_types) {
@@ -126,7 +159,7 @@ final class ClassTemplateParamCollector
 
             $template_result = null;
             if ($class_storage !== $static_class_storage && $static_class_storage->template_types) {
-                $templates = self::collect(
+                $templates = self::collectForReceiver(
                     $codebase,
                     $static_class_storage,
                     $static_class_storage,
@@ -202,7 +235,7 @@ final class ClassTemplateParamCollector
                         if ($lhs_type_part instanceof TGenericObject
                             && $static_class_storage->template_types !== null
                         ) {
-                            $own_params = self::collect(
+                            $own_params = self::collectForReceiver(
                                 $codebase,
                                 $static_class_storage,
                                 $static_class_storage,
@@ -243,6 +276,63 @@ final class ClassTemplateParamCollector
         }
 
         return $class_template_params;
+    }
+
+    /**
+     * The defining class of the templates the `*` arguments of a receiver are opened into in $context: they belong
+     * to the function-like being analysed, like its own templates, so they are not read as their bound there
+     *
+     * @psalm-capabilities read-props
+     */
+    public static function starScope(Context $context): string
+    {
+        return 'fn-' . ($context->calling_method_id ?? $context->calling_function_id);
+    }
+
+    /**
+     * The receiver with each `*` argument opened into a fresh template: `Pair<int, *>` is a `Pair<int, X>` for an
+     * unknown X within the bound, and no other X is known to equal it, so its members accept nothing for X
+     */
+    private static function openStars(TGenericObject $type, Codebase $codebase, string $star_scope): TGenericObject
+    {
+        if (!array_any($type->type_params, StarProjection::isStar(...))) {
+            return $type;
+        }
+
+        $storage = $codebase->classlike_storage_provider->get($type->value);
+        $template_types = $storage->template_types ?? [];
+        $template_names = array_keys($template_types);
+        $opened = [];
+        $type_params = [];
+
+        foreach ($type->type_params as $offset => $type_param) {
+            $template_name = $template_names[$offset] ?? null;
+
+            if (StarProjection::isStar($type_param)) {
+                // a bound naming an earlier template (`@template B of A`) has the argument of that template
+                $bound = $template_name === null
+                    ? Type::getMixed()
+                    : TemplateInferredTypeReplacer::replace(
+                        reset($template_types[$template_name]),
+                        new TemplateResult([], $opened),
+                        $codebase,
+                    );
+
+                $type_param = new Union([new TTemplateParam(
+                    '*' . ($template_name ?? $offset) . '#' . ++self::$opened_stars,
+                    $bound,
+                    $star_scope,
+                )]);
+            }
+
+            if ($template_name !== null) {
+                $opened[$template_name] = [$storage->name => $type_param];
+            }
+
+            $type_params[] = $type_param;
+        }
+
+        return $type->setTypeParams($type_params);
     }
 
     /**
