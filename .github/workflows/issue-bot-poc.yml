@@ -1,0 +1,139 @@
+name: Issue bot PoC
+
+# Runs the issue reproducer corpus on a base and a head revision of vimeo/psalm per experiment
+# (experiments.json), compares them and writes the PR comment it would post to the job summary.
+# Posts nothing anywhere.
+
+on:
+  push:
+    branches: [issue-bot-poc]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-bot-poc
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runs: ${{ steps.plan.outputs.runs }}
+      reports: ${{ steps.plan.outputs.reports }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - id: plan
+        run: |
+          echo "runs=$(jq -c '{include: [.shards as $n | .experiments[] as $e | range(0; $n) | {exp: $e.name, base: $e.base, head: $e.head, base_args: ($e.base_args // ""), head_args: ($e.head_args // ""), shard: ., shards: $n}]}' experiments.json)" >> "$GITHUB_OUTPUT"
+          echo "reports=$(jq -c '{include: [.experiments[] | {exp: .name, base, head, pr: (.pr // "")}]}' experiments.json)" >> "$GITHUB_OUTPUT"
+
+  run:
+    name: Run ${{ matrix.exp }} ${{ matrix.shard }}/${{ matrix.shards }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.runs) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: vimeo/psalm
+          ref: ${{ matrix.base }}
+          path: psalm-base
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: vimeo/psalm
+          ref: ${{ matrix.head }}
+          path: psalm-head
+          persist-credentials: false
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          tools: composer:v2
+          coverage: none
+          extensions: pcntl, posix, intl, bcmath, gmp, mbstring, sodium, zip, xml, dom, simplexml, tokenizer
+      - name: Install dependencies
+        run: |
+          start=$(date +%s)
+          composer update --working-dir=psalm-base --no-dev --no-scripts --no-interaction --no-progress --quiet
+          if cmp -s psalm-base/composer.json psalm-head/composer.json; then
+            cp psalm-base/composer.lock psalm-head/composer.lock
+            composer install --working-dir=psalm-head --no-dev --no-scripts --no-interaction --no-progress --quiet
+          else
+            composer update --working-dir=psalm-head --no-dev --no-scripts --no-interaction --no-progress --quiet
+          fi
+          echo "install: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Run base and head
+        env:
+          SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
+          BASE_ARGS: ${{ matrix.base_args }}
+          HEAD_ARGS: ${{ matrix.head_args }}
+        run: |
+          gunzip -k harness/corpus.jsonl.gz
+          mkdir -p out/base out/head
+          s=${{ matrix.shard }}
+          echo "cpus: $(nproc), $(grep -m1 'model name' /proc/cpuinfo)" | tee -a "$GITHUB_STEP_SUMMARY"
+          for rev in base head; do
+            args=BASE_ARGS; [ $rev = head ] && args=HEAD_ARGS
+            /usr/bin/time -f "$rev: wall %e s, user %U s, sys %S s, max rss %M KB" \
+              php harness/run.php --psalm "psalm-$rev" --corpus harness/corpus.jsonl --out "out/$rev/shard-$s.jsonl" \
+              --jobs "$(nproc)" --timeout 60 --shard "$SHARD" ${!args} 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: run-${{ matrix.exp }}-${{ matrix.shard }}
+          path: out
+          retention-days: 14
+
+  report:
+    name: Report ${{ matrix.exp }}
+    needs: [plan, run]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.reports) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          coverage: none
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: run-${{ matrix.exp }}-*
+          path: in
+          merge-multiple: true
+      - name: Evaluate
+        run: |
+          gunzip -k corpus.jsonl.gz
+          body=/dev/null; [ -n "${{ matrix.pr }}" ] && body="bodies/pr${{ matrix.pr }}.md"
+          mkdir -p report
+          php evaluate.php --corpus corpus.jsonl --base in/base --head in/head \
+            --base-sha "${{ matrix.base }}" --head-sha "${{ matrix.head }}" --pr-body "$body" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --out-md report/comment.md --out-json report/summary.json
+          cat report/comment.md >> "$GITHUB_STEP_SUMMARY"
+          cp -r in report/raw
+      - uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ matrix.exp }}
+          path: report
+          retention-days: 14

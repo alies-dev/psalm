@@ -1,0 +1,12 @@
+{
+  "shards": 4,
+  "experiments": [
+    {"name": "pr13494", "pr": 13494, "base": "8e26c17ea5365f3d1dacfc985d3119b574403ed7", "head": "fa697c4cbe87cdc7757a69bf55a6a28b140fd23d"},
+    {"name": "pr13503", "pr": 13503, "base": "127f608db981d5e1d023603514f7bbfcaae8f570", "head": "93c5b00d1d5e93c71a685e01332ace7610e95c09"},
+    {"name": "pr13508-refactor", "pr": 13508, "base": "0cb48baa5793f9421b81240ddc25f90ea1567383", "head": "9dfdcd9020c242663ca57b9e5cf0928d93a0deda"},
+    {"name": "pr13482-refactor", "pr": 13482, "base": "54fbac2d7bd61aa98ffe4a11bd2dd49fbddb8fd8", "head": "0d16e5c7222682c20f2f2e229e46455cc673d574"},
+    {"name": "pr13495-perf", "pr": 13495, "base": "cf242652aaddf5b47bb34a16d3ff22615d529cd0", "head": "6d9fb583bcff322ad1fe589e7686fc394d9a1643"},
+    {"name": "drift-2026-10-09", "base": "da930193817b48b9702124b65b0359679fc38d13", "head": "a1ae18d5eacdc9ff771b0f13369ecfa415bcdc66"},
+    {"name": "selftest-cold", "base": "a1ae18d5eacdc9ff771b0f13369ecfa415bcdc66", "head": "a1ae18d5eacdc9ff771b0f13369ecfa415bcdc66", "head_args": "--cold"}
+  ]
+}
