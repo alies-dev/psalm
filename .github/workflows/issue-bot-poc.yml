@@ -67,14 +67,16 @@ jobs:
           coverage: none
           extensions: pcntl, posix, intl, bcmath, gmp, mbstring, sodium, zip, xml, dom, simplexml, tokenizer
       - name: Install dependencies
+        env:
+          COMPOSER_ROOT_VERSION: dev-master
         run: |
           start=$(date +%s)
-          composer update --working-dir=psalm-base --no-dev --no-scripts --no-interaction --no-progress --quiet
+          composer update --working-dir=psalm-base --no-dev --no-scripts --no-interaction --no-progress
           if cmp -s psalm-base/composer.json psalm-head/composer.json; then
             cp psalm-base/composer.lock psalm-head/composer.lock
-            composer install --working-dir=psalm-head --no-dev --no-scripts --no-interaction --no-progress --quiet
+            composer install --working-dir=psalm-head --no-dev --no-scripts --no-interaction --no-progress
           else
-            composer update --working-dir=psalm-head --no-dev --no-scripts --no-interaction --no-progress --quiet
+            composer update --working-dir=psalm-head --no-dev --no-scripts --no-interaction --no-progress
           fi
           echo "install: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Run base and head
