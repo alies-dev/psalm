@@ -168,9 +168,10 @@ function runPool(array $entries, int $jobs, int $timeout, string $tmp, $out, cal
                 $sig = pcntl_wifsignaled($status) ? ' (signal ' . pcntl_wtermsig($status) . ')' : '';
                 $rec = ['status' => 'fatal', 'results' => [], 'error' => 'no output' . $sig];
             } elseif (isset($r['fatal'])) {
-                $rec = ['status' => 'fatal', 'results' => [], 'error' => $r['fatal']];
+                $rec = ['status' => 'fatal', 'results' => [], 'error' => str_replace(PSALM_ROOT . '/', '<psalm>/', $r['fatal'])];
             } elseif ($r['internal_error'] !== null) {
-                $rec = ['status' => 'internal_error', 'results' => $r['results'], 'error' => $r['internal_error']];
+                $rec = ['status' => 'internal_error', 'results' => $r['results'],
+                    'error' => str_replace(PSALM_ROOT . '/', '<psalm>/', $r['internal_error'])];
             } else {
                 $rec = ['status' => 'ok', 'results' => $r['results'], 'error' => null];
             }
@@ -343,7 +344,8 @@ function analyze(array $state, string $file_contents, array $settings, bool $fin
                 'type' => $issue->type,
                 'severity' => $issue->severity,
                 'line_from' => $issue->line_from,
-                'message' => $issue->message,
+                // the checkout path differs between the base and head runs
+                'message' => str_replace(PSALM_ROOT . '/', '<psalm>/', $issue->message),
             ];
         }
         break;
