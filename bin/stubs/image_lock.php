@@ -14,7 +14,7 @@ return array (
         'apcu' => 'pie@apcu/apcu:v5.1.28',
         'ds' => 'pecl@1.3.0',
         'ev' => 'pecl@1.1.5',
-        'event' => 'pecl@3.2.0',
+        'event' => 'pecl@3.1.6',
         'grpc' => 'pecl@1.52.1',
         'igbinary' => 'pecl@3.2.17RC1',
         'imagick' => 'pie@imagick/imagick:3.8.1',
@@ -35,7 +35,7 @@ return array (
         'apcu' => 'pie@apcu/apcu:v5.1.28',
         'ds' => 'pecl@1.3.0',
         'ev' => 'pecl@1.1.5',
-        'event' => 'pecl@3.1.6',
+        'event' => 'pecl@3.2.0',
         'grpc' => 'pecl@1.84.0',
         'igbinary' => 'pecl@3.2.17RC1',
         'imagick' => 'pie@imagick/imagick:3.8.1',
@@ -156,7 +156,7 @@ return array (
     ),
     '8.2' => 
     array (
-      'php' => '8.2.35@sha256:212a8b65f28529edcff248b9140edfac3ed8d651917e0eedb1fe6d3fa6950493',
+      'php' => '8.2.35@sha256:95ca190829adff6ca54122aa866c5e9d6165fa0e68f92f6ef777dba180ee8b69',
       'extensions' => 
       array (
         'amqp' => 'pie@php-amqp/php-amqp:v2.2.0',
