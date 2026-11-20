@@ -22,6 +22,7 @@ use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Type\Atomic\TObject;
 use Psalm\Type\Atomic\TObjectWithProperties;
 use Psalm\Type\Atomic\TPropertiesOf;
+use Psalm\Type\Atomic\TString;
 use Psalm\Type\Atomic\TTemplateIndexedAccess;
 use Psalm\Type\Atomic\TTemplateKeyOf;
 use Psalm\Type\Atomic\TTemplateParam;
@@ -33,6 +34,7 @@ use Psalm\Type\Atomic\TValueOf;
 use Psalm\Type\Union;
 use UnexpectedValueException;
 
+use function array_filter;
 use function array_merge;
 use function array_shift;
 use function array_values;
@@ -425,6 +427,34 @@ final class TemplateInferredTypeReplacer
     }
 
     /**
+     * A string is never an instance of a class, even one with __toString(), but the comparator accepts the
+     * object-to-string cast, so the generic intersection reports an overlap with class conditions.
+     */
+    private static function isStringAgainstClassCondition(
+        Atomic $candidate,
+        Union $conditional_type,
+        Codebase $codebase,
+    ): bool {
+        if (!$candidate instanceof TString) {
+            return false;
+        }
+
+        $non_object_atomics = array_filter(
+            $conditional_type->getAtomicTypes(),
+            static fn(Atomic $atomic): bool => !$atomic instanceof TNamedObject && !$atomic instanceof TObject,
+        );
+
+        return !$non_object_atomics
+            || Type::intersectUnionTypes(
+                new Union([$candidate]),
+                new Union($non_object_atomics),
+                $codebase,
+                false,
+                false,
+            ) === null;
+    }
+
+    /**
      * @param array<string, array<string, non-empty-list<TemplateBound>>> $inferred_lower_bounds
      */
     private static function replaceConditional(
@@ -461,6 +491,8 @@ final class TemplateInferredTypeReplacer
 
             $matching_if_types = [];
             $matching_else_types = [];
+            $string_else_types = [];
+            $has_uncertain_candidate = false;
 
             $l = $template_type->getAtomicTypes();
             foreach (isset($l['mixed']) ? [$l['mixed']] : $l as $candidate_atomic_type) {
@@ -487,7 +519,16 @@ final class TemplateInferredTypeReplacer
                     false,
                 )) {
                     $matching_else_types[] = $candidate_atomic_type;
+                } elseif (self::isStringAgainstClassCondition($candidate_atomic_type, $conditional_type, $codebase)) {
+                    $string_else_types[] = $candidate_atomic_type;
+                } else {
+                    $has_uncertain_candidate = true;
                 }
+            }
+
+            // Next to a candidate that may match the condition, dropping the strings keeps both branches
+            if (!$has_uncertain_candidate) {
+                $matching_else_types = [...$matching_else_types, ...$string_else_types];
             }
 
             $if_candidate_type = $matching_if_types ? new Union($matching_if_types) : null;

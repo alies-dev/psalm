@@ -1129,6 +1129,223 @@ final class ConditionalReturnTypeTest extends TestCase
                     '$three' => 'float',
                 ],
             ],
+            'conditionalTrueBranchNarrowsTemplateForBoundCheck' => [
+                'code' => '<?php
+                    interface Animal {}
+                    final class Dog implements Animal {}
+
+                    /** @template TModel of Animal */
+                    final class Zoo
+                    {
+                        /**
+                         * @template TVal
+                         * @param callable(): TVal $cb
+                         * @psalm-return (TVal is Animal ? self<TVal> : list<TVal>)
+                         */
+                        public function map(callable $cb)
+                        {
+                            throw new \RuntimeException();
+                        }
+                    }
+
+                    /** @var Zoo<Dog> $z */
+                    $z = new Zoo();
+                    $a = $z->map(static fn(): Dog => new Dog());
+                    $b = $z->map(static fn(): string => "x");',
+                'assertions' => [
+                    '$a' => 'Zoo<Dog>',
+                    '$b' => 'list<string>',
+                ],
+            ],
+            'conditionalTrueBranchNarrowsTemplateForBoundCheckWithNativeReturnType' => [
+                'code' => '<?php
+                    interface Animal {}
+                    final class Dog implements Animal {}
+
+                    /** @template TModel of Animal */
+                    final class Zoo
+                    {
+                        /**
+                         * @template TVal
+                         * @param callable(): TVal $cb
+                         * @psalm-return (TVal is Animal ? self<TVal> : list<TVal>)
+                         */
+                        public function map(callable $cb): mixed
+                        {
+                            throw new \RuntimeException();
+                        }
+                    }
+
+                    /** @var Zoo<Dog> $z */
+                    $z = new Zoo();
+                    $a = $z->map(static fn(): Dog => new Dog());
+                    $b = $z->map(static fn(): string => "x");',
+                'assertions' => [
+                    '$a' => 'Zoo<Dog>',
+                    '$b' => 'list<string>',
+                ],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'stringDoesNotMatchStringableClassCondition' => [
+                'code' => '<?php
+                    class Base implements \Stringable
+                    {
+                        #[\Override]
+                        public function __toString(): string { return "x"; }
+                    }
+
+                    class Plain {}
+
+                    /** @template TModel of object */
+                    final class Box
+                    {
+                        /**
+                         * @template TVal
+                         * @param callable(): TVal $cb
+                         * @psalm-return (TVal is Base ? list<Base> : string)
+                         */
+                        public function viaStringable(callable $cb)
+                        {
+                            throw new \RuntimeException();
+                        }
+
+                        /**
+                         * @template TVal
+                         * @param callable(): TVal $cb
+                         * @psalm-return (TVal is Plain ? list<Plain> : string)
+                         */
+                        public function viaPlain(callable $cb)
+                        {
+                            throw new \RuntimeException();
+                        }
+                    }
+
+                    /** @var Box<Base> $b */
+                    $b = new Box();
+                    $a = $b->viaStringable(static fn(): string => "x");
+                    $c = $b->viaPlain(static fn(): string => "x");
+                    $d = $b->viaStringable(static fn(): int => 5);
+                    $e = $b->viaStringable(static fn(): Base => new Base());
+                    $f = $b->viaStringable(static fn() => rand() ? new Base() : "x");',
+                'assertions' => [
+                    '$a' => 'string',
+                    '$c' => 'string',
+                    '$d' => 'string',
+                    '$e' => 'list<Base>',
+                    '$f' => 'list<Base>|string',
+                ],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'uncertainCandidateKeepsBothConditionalBranches' => [
+                'code' => '<?php
+                    class Base implements \Stringable
+                    {
+                        #[\Override]
+                        public function __toString(): string { return "x"; }
+                    }
+
+                    /**
+                     * @template T
+                     * @param T $v
+                     * @return (T is Base ? int : string)
+                     */
+                    function pick($v): int|string
+                    {
+                        return $v instanceof Base ? 1 : "x";
+                    }
+
+                    /** @var object|string $a */
+                    $a = null;
+                    /** @var \Stringable|string $c */
+                    $c = null;
+                    /** @var Base|string $d */
+                    $d = null;
+
+                    $r1 = pick($a);
+                    $r3 = pick($c);
+                    $r4 = pick($d);',
+                'assertions' => [
+                    '$r1' => 'int|string',
+                    '$r3' => 'int|string',
+                    '$r4' => 'int|string',
+                ],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'templateCandidateWithDisjointBoundSelectsElseBranch' => [
+                'code' => '<?php
+                    class Base implements \Stringable
+                    {
+                        #[\Override]
+                        public function __toString(): string { return "x"; }
+                    }
+
+                    /**
+                     * @template T
+                     * @param T $v
+                     * @return (T is Base ? int : string)
+                     */
+                    function pick($v): int|string
+                    {
+                        return $v instanceof Base ? 1 : "x";
+                    }
+
+                    /**
+                     * @template S of string
+                     * @param S|null $s
+                     */
+                    function fromNullableString(?string $s): string
+                    {
+                        $r = pick($s);
+                        /** @psalm-check-type-exact $r = string */
+                        return $r;
+                    }
+
+                    /**
+                     * @template I of int
+                     * @param I|false $i
+                     */
+                    function fromNullableInt(int|false $i): string
+                    {
+                        $r = pick($i);
+                        /** @psalm-check-type-exact $r = string */
+                        return $r;
+                    }',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
+            'uncertainCandidateDoesNotKeepBothBranchesForDefiniteElseCandidate' => [
+                'code' => '<?php
+                    class Base implements \Stringable
+                    {
+                        #[\Override]
+                        public function __toString(): string { return "x"; }
+                    }
+
+                    /**
+                     * @template T
+                     * @param T $v
+                     * @return (T is Base ? int : string)
+                     */
+                    function pick($v): int|string
+                    {
+                        return $v instanceof Base ? 1 : "x";
+                    }
+
+                    /** @param scalar|null $v */
+                    function fromScalar($v): string
+                    {
+                        $r = pick($v);
+                        /** @psalm-check-type-exact $r = string */
+                        return $r;
+                    }',
+                'assertions' => [],
+                'ignored_issues' => [],
+                'php_version' => '8.0',
+            ],
         ];
     }
 
@@ -1146,6 +1363,83 @@ final class ConditionalReturnTypeTest extends TestCase
                         return $key === null ? "a" : $key;
                     }',
                 'error_message' => 'InvalidDocblock',
+            ],
+            'conditionalElseBranchStillBoundChecked' => [
+                'code' => '<?php
+                    interface Animal {}
+                    final class Dog implements Animal {}
+
+                    /** @template TModel of Animal */
+                    final class Zoo
+                    {
+                        /**
+                         * @template TVal
+                         * @param callable(): TVal $cb
+                         * @psalm-return (TVal is Animal ? string : self<TVal>)
+                         */
+                        public function map(callable $cb)
+                        {
+                            throw new \RuntimeException();
+                        }
+                    }',
+                'error_message' => 'InvalidTemplateParam',
+            ],
+            'conditionalTrueBranchWithUnrelatedConditionStillBoundChecked' => [
+                'code' => '<?php
+                    interface Animal {}
+                    final class Plant {}
+
+                    /** @template TModel of Animal */
+                    final class Zoo
+                    {
+                        /**
+                         * @template TVal
+                         * @param callable(): TVal $cb
+                         * @psalm-return (TVal is Plant ? self<TVal> : string)
+                         */
+                        public function map(callable $cb)
+                        {
+                            throw new \RuntimeException();
+                        }
+                    }',
+                'error_message' => 'InvalidTemplateParam',
+            ],
+            'conditionalNarrowingKeepsIndexedAccessInIfBranch' => [
+                'code' => '<?php
+                    /**
+                     * @template T
+                     * @template A of array<string, int>
+                     * @template K of key-of<A>
+                     * @param T $x
+                     * @param A $a
+                     * @param K $k
+                     * @return (T is int ? A[K] : null)
+                     */
+                    function f($x, array $a, $k)
+                    {
+                        return "wrong";
+                    }',
+                'error_message' => 'InvalidReturnStatement',
+            ],
+            'conditionalNarrowingKeepsNestedConditionalInIfBranch' => [
+                'code' => '<?php
+                    interface Animal {}
+                    final class Dog implements Animal {}
+                    final class Plant {}
+
+                    /** @template A of Animal */
+                    class Box {}
+
+                    /**
+                     * @template T
+                     * @param T $x
+                     * @return (T is Animal ? (T is Dog ? Box<Plant> : string) : string)
+                     */
+                    function f($x)
+                    {
+                        throw new RuntimeException();
+                    }',
+                'error_message' => 'InvalidTemplateParam',
             ],
         ];
     }
