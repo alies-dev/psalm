@@ -32,6 +32,15 @@ final class TDependentGetClass extends TString implements DependentType
             : 'class-string<' . $this->as_type->getId($exact) . '>';
     }
 
+    /**
+     * @psalm-pure
+     */
+    #[Override]
+    protected function getChildNodeKeys(): array
+    {
+        return ['as_type'];
+    }
+
     #[Override]
     public function getKey(bool $include_extra = true): string
     {
