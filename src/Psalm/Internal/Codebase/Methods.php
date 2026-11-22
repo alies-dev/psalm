@@ -175,23 +175,33 @@ final class Methods
                 );
             }
 
-            $codebase->addReferenceToFunctionLike(
-                strtolower((string) $declaring_method_id),
-                $code_location,
-                $calling_context,
-                $is_used,
-                $source_file_path,
-            );
+            $referenced_method_ids = [strtolower((string) $declaring_method_id) => true];
 
             $appearing_method_id = $class_storage->appearing_method_ids[$method_name] ?? null;
 
-            // a trait method is analysed as a method of the class using the trait
-            if ($appearing_method_id !== null
-                && $class_storage->user_defined
-                && strtolower((string) $appearing_method_id) !== strtolower((string) $declaring_method_id)
-            ) {
+            if ($appearing_method_id !== null && $class_storage->user_defined) {
+                $appearing_fq_class_name = strtolower($appearing_method_id->fq_class_name);
+
+                // the call resolves to another method once a class the method is inherited through declares it
+                if ($fq_class_name !== $appearing_fq_class_name) {
+                    $referenced_method_ids[$fq_class_name . '::' . $method_name] = true;
+
+                    foreach ($class_storage->parent_classes as $parent_class_lc => $_) {
+                        if ($parent_class_lc === $appearing_fq_class_name) {
+                            break;
+                        }
+
+                        $referenced_method_ids[$parent_class_lc . '::' . $method_name] = true;
+                    }
+                }
+
+                // a trait method is analysed as a method of the class using the trait
+                $referenced_method_ids[strtolower((string) $appearing_method_id)] = true;
+            }
+
+            foreach ($referenced_method_ids as $referenced_method_id => $_) {
                 $codebase->addReferenceToFunctionLike(
-                    strtolower((string) $appearing_method_id),
+                    $referenced_method_id,
                     $code_location,
                     $calling_context,
                     $is_used,
