@@ -195,8 +195,10 @@ final class Methods
                     }
                 }
 
-                // a trait method is analysed as a method of the class using the trait
+                // a trait method appears in the class using the trait, possibly under an alias, and is analysed
+                // as a method of that class under the name the trait gives it
                 $referenced_method_ids[strtolower((string) $appearing_method_id)] = true;
+                $referenced_method_ids[$appearing_fq_class_name . '::' . $declaring_method_id->method_name] = true;
             }
 
             foreach ($referenced_method_ids as $referenced_method_id => $_) {
