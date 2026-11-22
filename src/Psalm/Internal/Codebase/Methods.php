@@ -175,22 +175,23 @@ final class Methods
                 );
             }
 
-            if ((string) $method_id !== (string) $declaring_method_id
+            $codebase->addReferenceToFunctionLike(
+                strtolower((string) $declaring_method_id),
+                $code_location,
+                $calling_context,
+                $is_used,
+                $source_file_path,
+            );
+
+            $appearing_method_id = $class_storage->appearing_method_ids[$method_name] ?? null;
+
+            // a trait method is analysed as a method of the class using the trait
+            if ($appearing_method_id !== null
                 && $class_storage->user_defined
-                && isset($class_storage->potential_declaring_method_ids[$method_name])
+                && strtolower((string) $appearing_method_id) !== strtolower((string) $declaring_method_id)
             ) {
-                foreach ($class_storage->potential_declaring_method_ids[$method_name] as $potential_id => $_) {
-                    $codebase->addReferenceToFunctionLike(
-                        strtolower($potential_id),
-                        $code_location,
-                        $calling_context,
-                        $is_used,
-                        $source_file_path,
-                    );
-                }
-            } else {
                 $codebase->addReferenceToFunctionLike(
-                    strtolower((string) $declaring_method_id),
+                    strtolower((string) $appearing_method_id),
                     $code_location,
                     $calling_context,
                     $is_used,

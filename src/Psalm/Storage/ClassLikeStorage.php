@@ -385,11 +385,6 @@ final class ClassLikeStorage implements HasAttributesInterface
     public array $inheritable_method_ids = [];
 
     /**
-     * @var array<lowercase-string, array<string, bool>>
-     */
-    public array $potential_declaring_method_ids = [];
-
-    /**
      * @var array<string, PropertyStorage>
      */
     public array $properties = [];
