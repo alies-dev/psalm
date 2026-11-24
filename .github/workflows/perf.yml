@@ -100,7 +100,7 @@ jobs:
           base_sha=$(git merge-base "origin/$BASE_REF" "$HEAD_SHA")
           if git diff --quiet "$base_sha" "$HEAD_SHA" -- composer.json; then deps_changed=0; else deps_changed=1; fi
           # Composer root version: 6.x-dev on maintenance branches, dev-<branch> otherwise.
-          if [[ "$BASE_REF" =~ ^[0-9]+(\.[0-9]+)*\.x$ ]]; then root_version="$BASE_REF-dev"; else root_version="dev-$BASE_REF"; fi
+          if [[ "$BASE_REF" =~ ^[0-9]+(\.[0-9]+)*\.x$ ]]; then root_version="$BASE_REF-dev"; elif [[ "$BASE_REF" == demo/* ]]; then root_version="dev-master"; else root_version="dev-$BASE_REF"; fi
           {
             echo "base_sha=$base_sha"
             echo "head_sha=$HEAD_SHA"
