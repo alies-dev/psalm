@@ -5,7 +5,7 @@ name: Perf
 
 on:
   pull_request:
-    branches: [master, 6.x]
+    branches: [master, 6.x, demo/perf-hot-files]
     types: [opened, synchronize, reopened, ready_for_review]
     # Skips PRs that only change docs, tests or CI, which can't change how fast Psalm runs. The last matching
     # pattern wins, so changes to this workflow still run it.
