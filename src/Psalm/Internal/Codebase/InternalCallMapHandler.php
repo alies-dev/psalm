@@ -75,14 +75,29 @@ final class InternalCallMapHandler
     private static ?int $loaded_php_minor_version = null;
 
     /**
+     * The callmap of the analysed version, which is one of $call_maps
+     *
      * @var non-empty-array<lowercase-string, array<int|string,string>>|null
      */
     private static ?array $call_map = null;
 
+    /** The version of the callmap (see getCallMapVersion()) that $call_map holds */
+    private static ?int $loaded_call_map_version = null;
+
     /**
-     * @var array<string, non-empty-list<TCallable>>|null
+     * The callmaps loaded so far, by version of the callmap: a process that analyses another PHP version again
+     * does not read the file again
+     *
+     * @var array<int, non-empty-array<lowercase-string, array<int|string,string>>>
      */
-    private static ?array $call_map_callables = [];
+    private static array $call_maps = [];
+
+    /**
+     * The callables made from the callmap of each version, by version of the callmap
+     *
+     * @var array<int, array<string, non-empty-list<TCallable>>>
+     */
+    private static array $call_map_callables = [];
 
     /**
      * @var non-empty-array<string, non-empty-list<int>>|null
@@ -304,8 +319,11 @@ final class InternalCallMapHandler
 
         $call_map = self::getCallMap();
 
-        if (isset(self::$call_map_callables[$call_map_key])) {
-            return self::$call_map_callables[$call_map_key];
+        // getCallMap() has set the version of the callmap
+        $call_map_version = (int) self::$loaded_call_map_version;
+
+        if (isset(self::$call_map_callables[$call_map_version][$call_map_key])) {
+            return self::$call_map_callables[$call_map_version][$call_map_key];
         }
 
         if (!isset($call_map[$call_map_key])) {
@@ -402,7 +420,7 @@ final class InternalCallMapHandler
             $possible_callables[] = new TCallable($function_params, $return_type);
         }
 
-        self::$call_map_callables[$call_map_key] = $possible_callables;
+        self::$call_map_callables[$call_map_version][$call_map_key] = $possible_callables;
 
         return $possible_callables;
     }
@@ -435,30 +453,34 @@ final class InternalCallMapHandler
 
         $analyzer_version_int = self::getCallMapVersion($analyzer_major_version, $analyzer_minor_version);
 
-        /** @var non-empty-array<lowercase-string, array<int|string, string>> */
-        $call_map = require(dirname(__DIR__, 4) . "/dictionaries/CallMap_$analyzer_version_int.php");
+        if (!isset(self::$call_maps[$analyzer_version_int])) {
+            /** @var non-empty-array<lowercase-string, array<int|string, string>> $call_map */
+            $call_map = require(dirname(__DIR__, 4) . "/dictionaries/CallMap_$analyzer_version_int.php");
 
-        self::$call_map = $call_map;
-        // the callables of the CallMap of another version
-        self::$call_map_callables = [];
+            self::$call_maps[$analyzer_version_int] = $call_map;
+        }
 
-        assert(!empty(self::$call_map));
+        self::$call_map = self::$call_maps[$analyzer_version_int];
+        self::$loaded_call_map_version = $analyzer_version_int;
 
         self::$loaded_php_major_version = $analyzer_major_version;
         self::$loaded_php_minor_version = $analyzer_minor_version;
 
-        /**
-         * @var non-empty-array<string, non-empty-list<int>>
-         */
-        $taint_map_data = require(dirname(__DIR__, 4) . '/dictionaries/InternalTaintSinkMap.php');
+        // the same for every version
+        if (self::$taint_sink_map === null) {
+            /**
+             * @var non-empty-array<string, non-empty-list<int>>
+             */
+            $taint_map_data = require(dirname(__DIR__, 4) . '/dictionaries/InternalTaintSinkMap.php');
 
-        $taint_map = [];
-        foreach ($taint_map_data as $key => $value) {
-            $cased_key = strtolower($key);
-            $taint_map[$cased_key] = $value;
+            $taint_map = [];
+            foreach ($taint_map_data as $key => $value) {
+                $cased_key = strtolower($key);
+                $taint_map[$cased_key] = $value;
+            }
+
+            self::$taint_sink_map = $taint_map;
         }
-
-        self::$taint_sink_map = $taint_map;
 
         return self::$call_map;
     }
